@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="../css/main.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Poppins:ital,wght@0,300;0,400;1,300&display=swap"
+      rel="stylesheet"
+    />
+    <title></title>
+  </head>
+  <body>
+    <div class="centerLogin">
+      <img id="img-mcbp" src="../img/mcbp.svg" alt="MCBP Logo" />
+      <h1 id="h1-welcome">Welcome!<br />Choose login type</h1>
+      <div class="div-buttons">
+        <p id="microsoft" class="mButton p-welcome-button">Microsoft</p>
+        <p id="offline" class="mButton p-welcome-button">Offline</p>
+      </div>
+    </div>
+    <script>
+      ["microsoft", "offline"].forEach((e) => {
+        document.getElementById(e).addEventListener("click", () => {
+          window.api.send("login" + e);
+        });
+      });
+
+      window.api.onSetVersion((version) => {
+        document.querySelector("title").innerHTML = `MCBP v${version} > Login`;
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="../css/main.css" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Poppins:ital,wght@0,300;0,400;1,300&display=swap"
+      rel="stylesheet"
+    />
+    <title></title>
+  </head>
+  <body>
+    <section class="panel-section-left">
+      <div class="server-info">
+        <form id="server">
+          <label for="ip" class="label-server-adress">Server Adress</label>
+          <input
+            type="text"
+            id="ip"
+            class="input-sever-adress"
+            spellcheck="false"
+            required
+          />
+          <label for="version" class="label-server-version">Version</label>
+          <input
+            type="text"
+            id="version"
+            class="input-server-version"
+            spellcheck="false"
+          />
+          <p id="connect" class="mButton button-connect bot-connection-buttons">
+            Connect
+          </p>
+          <p id="leave" class="mButton button-leave bot-connection-buttons">
+            Leave
+          </p>
+        </form>
+      </div>
+      <section class="section-bot-actions">
+        <p class="p-bot-actions">Scripts</p>
+        <div class="div-actions"></div>
+      </section>
+    </section>
+    <section class="panel-section-right">
+      <p class="p-bot-logs p-text-container">Logs</p>
+      <div class="div-logs div-text-container">
+        <pre class="pre-logs"></pre>
+      </div>
+      <p class="p-bot-chat p-text-container">Chat</p>
+      <div class="div-chat div-text-container">
+        <pre class="pre-chat"></pre>
+        <form class="form-chat-message">
+          <label for="chat-message" class="hide">x</label>
+          <input
+            type="text"
+            id="chat-message"
+            class="input-chat-message"
+            spellcheck="false"
+          />
+          <p id="send" class="mButton button-send-chat-message">Send</p>
+        </form>
+      </div>
+    </section>
+
+    <style>
+      .pre-logs {
+        height: 100%;
+      }
+      .pre-chat {
+        height: 85%;
+      }
+      pre {
+        padding: 0 1%;
+        font-size: 15px;
+        width: 98%;
+        color: var(--font-main-color);
+        overflow-y: scroll;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        word-break: break-word;
+        overflow-wrap: break-word;
+        font-weight: 200;
+      }
+
+      body {
+        display: flex;
+      }
+      .hide {
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+      .button-send-chat-message {
+        padding: 2px 10px;
+        display: inline;
+        position: relative;
+        bottom: 2px;
+      }
+
+      .input-chat-message {
+        width: 75%;
+        border: 2px solid var(--font-main-color);
+        border-radius: 10px;
+        padding: 0 2px;
+      }
+      .panel-section-right {
+        width: 50%;
+        height: 100%;
+        display: flex;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-evenly;
+      }
+
+      .div-text-container {
+        width: 95%;
+        margin-left: 2.5%;
+        border: 2px solid var(--font-main-color);
+        border-radius: 10px;
+        height: 42.5%;
+      }
+      .p-text-container {
+        width: 100%;
+        text-align: center;
+      }
+      .div-actions {
+        width: 95%;
+        margin-left: 2.5%;
+        border: 2px solid var(--font-main-color);
+        border-radius: 10px;
+        height: 75vh;
+      }
+      .p-bot-actions {
+        width: 100%;
+        text-align: center;
+      }
+      .section-bot-actions {
+        height: max-content;
+      }
+      .panel-section-left {
+        width: 50%;
+        height: 100%;
+      }
+      .input-sever-adress {
+        width: 95%;
+        margin-left: 2.5%;
+        position: relative;
+        bottom: 10px;
+        text-align: center;
+      }
+      .label-server-adress {
+        display: block;
+        width: 100%;
+        text-align: center;
+        position: relative;
+        z-index: 10;
+      }
+      input {
+        border: none;
+        border-bottom: 2px solid var(--font-main-color);
+        background-color: var(--background-color);
+        color: var(--font-user-color);
+        font-size: 18px;
+        font-weight: lighter;
+        border-radius: 3px;
+        outline: none;
+      }
+      .label-server-version {
+        display: block;
+        z-index: 10;
+        position: relative;
+        bottom: 10px;
+      }
+      .input-server-version {
+        width: 50px;
+        text-align: center;
+        position: relative;
+        bottom: 20px;
+        z-index: 1;
+      }
+      .label-server-version,
+      .input-server-version {
+        left: 10px;
+      }
+      .bot-connection-buttons {
+        display: inline-block;
+        width: 30%;
+        position: relative;
+        bottom: 20px;
+        margin-left: 5px;
+        left: 20%;
+      }
+
+      #server {
+        display: block;
+        position: relative;
+      }
+    </style>
+    <script defer>
+      let onlineMode;
+      let accountEmail;
+      let accountPassword;
+      let accountUsername;
+      document.querySelectorAll("form").forEach((form) => {
+        form.addEventListener("submit", (event) => event.preventDefault());
+      });
+
+      function formatTime() {
+        const now = new Date();
+        let hours = now.getHours();
+        let minutes = now.getMinutes();
+        let seconds = now.getSeconds();
+        hours = hours < 10 ? "0" + hours : hours;
+        minutes = minutes < 10 ? "0" + minutes : minutes;
+        seconds = seconds < 10 ? "0" + seconds : seconds;
+        return `${hours}:${minutes}:${seconds}`;
+      }
+
+      function checkbox(id) {
+        cb = document.getElementById(id);
+        if (cb.value === "off") {
+          cb.setAttribute("value", "on");
+        } else {
+          cb.setAttribute("value", "off");
+        }
+      }
+
+      window.api.onSetUsername((username) => {
+        onlineMode = false;
+        accountUsername = username;
+      });
+      window.api.onSetAccount((email, password) => {
+        onlineMode = true;
+        accountPassword = password;
+        accountEmail = email;
+      });
+      window.api.onSetVersion((version) => {
+        let tempText;
+        if (onlineMode) tempText = "Microsoft";
+        else tempText = "Offline";
+
+        document.querySelector(
+          "title"
+        ).innerHTML = `MCBP v${version} > Login > ${tempText} > Panel`;
+      });
+
+      window.api.onLog((text) => {
+        let preLogs = document.querySelector(".pre-logs").innerHTML;
+        //preLogs = preLogs.replace(text + "\n", "");
+        preLogs += `<time>${formatTime()}</time> ` + text + "\n";
+        document.querySelector(".pre-logs").innerHTML = preLogs;
+        document
+          .querySelector(".pre-logs")
+          .scrollTo(0, document.querySelector(".pre-logs").scrollHeight);
+      });
+      window.api.onClearLog((text) => {
+        let preLogs = document.querySelector(".pre-logs").innerHTML;
+        let lines = [];
+        let logsToLines = preLogs.split("\n");
+        let updatedLogs = "";
+        for (var i = 0; i < logsToLines.length; i++) {
+          let currentLine = logsToLines[i];
+          if (!currentLine.includes(text) && currentLine != "")
+            updatedLogs += currentLine + "\n";
+        }
+        document.querySelector(".pre-logs").innerHTML = updatedLogs;
+        document
+          .querySelector(".pre-logs")
+          .scrollTo(0, document.querySelector(".pre-logs").scrollHeight);
+      });
+      window.api.onChat((text) => {
+        document.querySelector(".pre-chat").innerText += text + "\n";
+        document
+          .querySelector(".pre-chat")
+          .scrollTo(0, document.querySelector(".pre-chat").scrollHeight);
+      });
+
+      function sendChatMessageFunction() {
+        window.api.sendChatMessage(
+          document.getElementById("chat-message").value
+        );
+        document.getElementById("chat-message").value = "";
+      }
+      document
+        .querySelector(".form-chat-message")
+        .addEventListener("submit", (event) => sendChatMessageFunction());
+      document
+        .querySelector("#send")
+        .addEventListener("click", (event) => sendChatMessageFunction());
+      document.getElementById("connect").addEventListener("click", () => {
+        if (onlineMode) {
+          window.api.serverConnect({
+            ip: document.getElementById("ip").value,
+            version: document.getElementById("version").value,
+            username: accountEmail,
+            password: accountPassword,
+            auth: "microsoft",
+          });
+        } else {
+          window.api.serverConnect({
+            ip: document.getElementById("ip").value,
+            version: document.getElementById("version").value,
+            username: accountUsername,
+          });
+        }
+      });
+      document.getElementById("leave").addEventListener("click", () => {
+        window.api.serverDisconnect();
+      });
+
+      window.api.onScript((html, scriptId) => {
+        document.querySelector(".div-actions").innerHTML += html;
+
+        document.querySelectorAll("form").forEach((form) => {
+          form.addEventListener("submit", (event) => event.preventDefault());
+        });
+        let scriptName = String(scriptId);
+        console.log(scriptName);
+        //let toggle = document.querySelector(`.${scriptName}-name`);
+        let toggle = `document.querySelector('.${scriptName}-name')`;
+
+        console.log(toggle);
+        let createdFunction = `function run${scriptName}() {if (${toggle}.classList.contains("script-name-active")) {window.api.onScriptToggleOff('${scriptName}');${toggle}.classList.remove("script-name-active");} else {window.api.onScriptToggleOn('${scriptName}');${toggle}.classList.add("script-name-active")}}`;
+        console.log(createdFunction);
+
+        setTimeout(() => {
+          window.api.execJS(createdFunction);
+          document
+            .querySelector(`.${scriptName}-name`)
+            .setAttribute("onclick", `run${scriptName}()`);
+        }, 10);
+
+        //toggle.setAttribute(
+        //  "onclick",
+        //  '() => {console.log(scriptName);if (toggle.classList.contains("script-name-active")) {window.api.onScriptToggleOff(scriptName);toggle.classList.remove("script-name-active");} else {window.api.onScriptToggleOn(scriptName);toggle.classList.add("script-name-active");}}'
+        //);
+
+        // STAN PIERWOTNY
+        //toggle.addEventListener("click", () => {
+        //  console.log(scriptName);
+        //  if (toggle.classList.contains("script-name-active")) {
+        //    window.api.onScriptToggleOff(scriptName);
+        //    toggle.classList.remove("script-name-active");
+        //  } else {
+        //    window.api.onScriptToggleOn(scriptName);
+        //    toggle.classList.add("script-name-active");
+        //  }
+        //});
+      });
+    </script>
+  </body>
+</html>

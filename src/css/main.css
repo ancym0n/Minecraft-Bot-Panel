@@ -1,0 +1,170 @@
+* {
+  margin: 0;
+  padding: 0;
+  font-family: "Poppins", sans-serif;
+  --background-color: #1e1b25;
+  --font-main-color: #9171f8;
+  --font-user-color: #4f3f7b;
+  --button-background-color: #9171f817;
+  cursor: default;
+  transition: all 0.3s;
+  -webkit-user-select: none;
+  user-select: none;
+  scroll-behavior: smooth;
+}
+::-webkit-scrollbar {
+  width: 0;
+}
+::-webkit-scrollbar-track {
+  background: none;
+}
+h1,
+p,
+label {
+  font-weight: lighter;
+  color: var(--font-main-color);
+}
+
+body {
+  width: 100%;
+  height: 100vh;
+  position: relative;
+  background-color: var(--background-color);
+}
+
+.mButton {
+  border-radius: 10px;
+  text-align: center;
+  width: 170px;
+  font-style: italic;
+  border: 2px solid;
+}
+
+.mButton:hover {
+  background-color: var(--button-background-color);
+  cursor: pointer;
+}
+
+.centerLogin {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+}
+
+label {
+  font-style: italic;
+  font-weight: lighter;
+}
+
+#h1-welcome {
+  font-size: 31px;
+  text-align: center;
+}
+
+.p-welcome-button {
+  font-size: 27px;
+}
+
+#img-mcbp {
+  margin-top: 80px;
+  width: 224px;
+}
+
+#microsoft {
+  margin-right: 30px;
+}
+
+.div-buttons {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+  margin-top: 20px;
+}
+.div-buttons p:hover {
+  cursor: pointer;
+}
+
+.script-container {
+  text-align: center;
+  width: 100%;
+  aspect-ratio: 1/1;
+  position: relative;
+
+  border: 2px solid var(--font-main-color);
+  overflow-y: scroll;
+  border-radius: 10px;
+  margin: 1.5%;
+}
+.script-name {
+  width: 100%;
+  cursor: pointer;
+  border-bottom: 2px solid var(--font-main-color);
+  font-weight: normal;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background-color: var(--background-color);
+}
+
+.script-name:hover {
+  background-color: var(--font-user-color);
+  border-top-left-radius: 1px;
+  border-top-right-radius: 1px;
+}
+
+.script-text-input {
+  border: 2px solid var(--font-main-color);
+  border-radius: 5px;
+  width: 90%;
+  font-size: 16px;
+  text-align: center;
+}
+
+.script-name-active {
+  color: var(--background-color) !important;
+  background-color: var(--font-main-color) !important;
+}
+
+input[type="checkbox"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 15px;
+  aspect-ratio: 1/1;
+  border: 0.15em solid var(--font-main-color);
+  cursor: pointer;
+  position: relative;
+  top: 2px;
+  margin-left: 2px;
+}
+
+input[type="checkbox"]:checked {
+  background-color: var(--font-main-color);
+}
+
+.div-actions {
+  display: grid;
+  grid-template-columns: repeat(3, 31%); /* Creates 3 equal columns */
+  gap: 2.5%; /* Space between the boxes */
+  height: auto;
+  grid-auto-rows: 31%;
+  row-gap: 0;
+  overflow-y: scroll;
+}
+
+.section-bot-actions {
+  position: relative;
+}
+
+time {
+  color: var(--font-user-color);
+  font-size: 10px;
+  position: relative;
+  bottom: 1px;
+  margin-right: 3px;
+}
+
+.script-options {
+  padding-bottom: 2px;
+}

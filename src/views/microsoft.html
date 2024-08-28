@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="../css/main.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Poppins:ital,wght@0,300;0,400;1,300&display=swap"
+      rel="stylesheet"
+    />
+    <title></title>
+  </head>
+  <body>
+    <div class="centerLogin">
+      <img id="img-mcbp" src="../img/mcbp.svg" alt="MCBP Logo" />
+      <div class="loginField">
+        <form id="mailForm">
+          <label for="email">email:</label>
+          <input type="email" id="email" spellcheck="false" required />
+        </form>
+        <form id="passForm">
+          <label for="password">password:</label>
+          <input type="password" id="password" spellcheck="false" required />
+        </form>
+      </div>
+      <p id="continue" class="mButton">Continue</p>
+    </div>
+    <style>
+      #mcbp {
+        margin-top: 85px;
+      }
+      label {
+        font-size: 31px;
+      }
+      .mButton {
+        font-size: 25px;
+      }
+      form {
+        width: 460px;
+        position: relative;
+        display: flex;
+        align-items: center;
+      }
+      #mailForm {
+        margin-top: 40px;
+        margin-bottom: 5px;
+      }
+      #passForm {
+        margin-bottom: 20px;
+      }
+
+      input {
+        border: none;
+        border-bottom: 2px solid var(--font-main-color);
+        background-color: var(--background-color);
+        color: var(--font-user-color);
+        font-size: 25px;
+        font-weight: lighter;
+        border-radius: 3px;
+        width: 100%;
+        margin-left: 10px;
+      }
+
+      input:focus {
+        outline: none;
+        background-color: var(--button-background-color);
+      }
+    </style>
+    <script defer>
+      document.getElementById("email").addEventListener("input", () => {
+        const inputField = document.getElementById("email");
+        if (inputField.value.includes(" ")) {
+          inputField.value = inputField.value.replace(" ", "");
+        }
+      });
+
+      function submit() {
+        const email = document.getElementById("email").value;
+        const password = document.getElementById("password").value;
+        window.api.sendFormData({ email, password });
+      }
+      document
+        .querySelector("#mailForm")
+        .addEventListener("submit", (event) => {
+          event.preventDefault();
+          submit();
+        });
+      document
+        .querySelector("#passForm")
+        .addEventListener("submit", (event) => {
+          event.preventDefault();
+          submit();
+        });
+      document.querySelector(".mButton").addEventListener("click", (event) => {
+        submit();
+      });
+
+      window.api.onSetVersion((version) => {
+        document.querySelector(
+          "title"
+        ).innerHTML = `MCBP v${version} > Login > Microsoft`;
+      });
+    </script>
+  </body>
+</html>

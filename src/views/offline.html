@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="../css/main.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Poppins:ital,wght@0,300;0,400;1,300&display=swap"
+      rel="stylesheet"
+    />
+    <title></title>
+  </head>
+  <body>
+    <div class="centerLogin">
+      <img id="img-mcbp" src="../img/mcbp.svg" alt="MCBP Logo" />
+      <div class="loginField">
+        <form>
+          <label for="username">username:</label>
+          <input
+            type="text"
+            id="username"
+            spellcheck="false"
+            maxlength="16"
+            required
+          />
+        </form>
+      </div>
+      <p id="continue" class="mButton">Continue</p>
+    </div>
+    <style>
+      #mcbp {
+        margin-top: 85px;
+      }
+      label {
+        font-size: 31px;
+      }
+      .mButton {
+        font-size: 25px;
+      }
+      form {
+        width: 460px;
+        height: 100px;
+        position: relative;
+        margin-top: 40px;
+        margin-bottom: 20px;
+        display: flex;
+        align-items: center;
+      }
+      input {
+        border: none;
+        border-bottom: 2px solid var(--font-main-color);
+        background-color: var(--background-color);
+        color: var(--font-user-color);
+        font-size: 25px;
+        font-weight: lighter;
+        border-radius: 3px;
+        width: 100%;
+        margin-left: 10px;
+      }
+
+      input:focus {
+        outline: none;
+        background-color: var(--button-background-color);
+      }
+    </style>
+    <script defer>
+      function submit(event) {
+        event.preventDefault();
+        const username = document.getElementById("username").value;
+        window.api.sendFormData({ username });
+      }
+      document
+        .querySelector("form")
+        .addEventListener("submit", (event) => submit(event));
+
+      document
+        .querySelector(".mButton")
+        .addEventListener("click", (event) => submit(event));
+
+      window.api.onSetVersion((version) => {
+        document.querySelector(
+          "title"
+        ).innerHTML = `MCBP v${version} > Login > Offline`;
+      });
+    </script>
+  </body>
+</html>
