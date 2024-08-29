@@ -47,7 +47,14 @@ function createMainWindow() {
   }
 
   function loadScripts(directory, type) {
-    let fullDirectory = path.join(__dirname, directory);
+    let fullDirectory;
+    if (type != "custom") fullDirectory = path.join(__dirname, directory);
+    else
+      fullDirectory = path.join(
+        process.resourcesPath,
+        "app.asar.unpacked",
+        directory
+      );
     fs.readdir(fullDirectory, (err, files) => {
       let scriptAmount = 0;
       files.forEach((file) => {
@@ -103,7 +110,7 @@ function createMainWindow() {
     loadScripts("./src/js/scripts", "default");
     clearLog(defaultLoading);
     log(customLoading);
-    loadScripts("./custom/scripts", "custom");
+    loadScripts(`./custom/scripts`, "custom");
     clearLog(customLoading);
   }
   const mainWindow = new BrowserWindow({

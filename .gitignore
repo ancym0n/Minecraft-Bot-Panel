@@ -130,6 +130,6 @@ dist
 .pnp.*
 Hidden/
 package-lock.json
-fileSizeChecker.py
 .hintrc
 forge.config.js
+.py
