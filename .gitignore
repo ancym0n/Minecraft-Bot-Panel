@@ -133,3 +133,5 @@ package-lock.json
 .hintrc
 forge.config.js
 .py
+
+test.js
