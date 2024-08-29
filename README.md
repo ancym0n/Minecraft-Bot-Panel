@@ -7,17 +7,19 @@
 GUI-based Minecraft bot manager with custom script creation.  
 Supports Microsoft logins.
 
+
+![Banner](src/img/github/banner.png)
 > [!NOTE]
 > MCBP is still in Beta version.  
-> [Report bugs](https://github.com/ancym0n/Minecraft-Bot-Panel/issues/new)
+> [![MCVersions](https://img.shields.io/badge/Report_Bugs-blue?&style=flat)](https://github.com/ancym0n/Minecraft-Bot-Panel/issues/new)
 
 ## Contents
 
 - [**Features**](#features)
-- [**Screenshots**](#screenshots)
 - [**Default Scripts**](#default-scripts)
 - [**Documentation**](#documentation)
 - [**Script Library**](#script-library)
+- [**Theme/CSS Library**](#themecss-library)
 
 ### Features
 
@@ -27,10 +29,6 @@ Supports Microsoft logins.
 - Prebuilt scripts
 - User-friendly UI
 - Dark mode
-
-### Screenshots
-
-![Banner](src/img/github/banner.png)
 
 ### Default Scripts
 
@@ -48,5 +46,9 @@ Supports Microsoft logins.
 Coming soon...
 
 ### Script Library
+
+Coming soon...
+
+### Theme/CSS Library
 
 Coming soon...
