@@ -28,6 +28,9 @@
     },
     "linux": {
       "icon": "src/icons/app-icon.png"
+    },
+    "mac": {
+      "icon": "src/icons/app-icon.icns"
     }
   },
   "devDependencies": {
