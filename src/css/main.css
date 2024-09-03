@@ -121,10 +121,6 @@ nav a {
   padding: 0.25rem;
 }
 
-.d {
-  height: 200vh;
-}
-
 #banner:hover #background-video {
   transform: scale(1.1);
   opacity: 0.5;
@@ -170,4 +166,72 @@ hr {
   border: 1px solid var(--font-main-color);
   width: 90%;
   margin-left: 5%;
+}
+
+.a-button {
+  background-color: var(--font-main-color);
+  color: var(--background-color);
+  padding: 5px 20px;
+  position: relative;
+  top: 10px;
+  border-radius: 10px;
+  text-decoration: none;
+}
+
+.license {
+  text-decoration: none;
+  border-radius: 10px;
+  padding: 0 2px;
+}
+.license:hover {
+  border-radius: 5px;
+}
+
+#lic {
+  width: 100%;
+  text-align: center;
+  padding: 1rem 0;
+  background-color: #0000001a;
+}
+
+small {
+  font-style: italic;
+  opacity: 0.5;
+}
+
+@media (max-width: 1092px) {
+  .title > h1 {
+    font-size: 3rem !important;
+  }
+  .title > p {
+    font-size: 1.2rem !important;
+  }
+  #lic {
+    font-size: 1rem;
+  }
+  .info {
+    flex-direction: column;
+  }
+  .info > img {
+    margin: 3rem 0;
+  }
+  .txt {
+    width: 90% !important;
+    text-align: center;
+  }
+}
+
+@media (max-width: 1000px) {
+  .title > h1 {
+    font-size: 2rem !important;
+  }
+  .title > p {
+    font-size: 0.7rem !important;
+  }
+  .txt {
+    font-size: 1rem !important;
+  }
+  #lic {
+    font-size: 0.5rem;
+  }
 }
