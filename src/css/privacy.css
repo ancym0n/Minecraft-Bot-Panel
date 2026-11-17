@@ -132,6 +132,10 @@
   animation-delay: 0.58s;
 }
 
+#privacy > div:nth-of-type(8) {
+  animation-delay: 0.64s;
+}
+
 #privacy ul {
   list-style-type: none;
   display: grid;

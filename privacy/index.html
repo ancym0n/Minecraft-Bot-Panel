@@ -116,11 +116,11 @@
 
     <section id="privacy">
       <h1>Privacy Policy</h1>
-        <p id="last-updated" aria-busy="true">
+      <p id="last-updated" aria-busy="true">
         Last updated:
         <a
           id="last-updated-date"
-          data-fallback="2026-11-17T18:20:00+01:00"
+          data-fallback="2026-11-18T12:00:00+01:00"
           href="https://github.com/ancym0n/Minecraft-Bot-Panel/commits/page"
           target="_blank"
           rel="noopener"
@@ -129,97 +129,140 @@
       </p>
 
       <div>
-        <h2>1. How MCBP Handles Your Data</h2>
+        <h2>1. The Short Version</h2>
         <p>
-          MCBP is a desktop app that runs on your own computer. It has no
-          servers, no user accounts, and no analytics. It does not send any
-          information to the developer, and nothing you enter in the app ever
-          leaves your device except for the connections described below.
+          MCBP runs on your computer. There are no MCBP servers, no accounts, no
+          analytics, and nothing gets sent to me. The only things that go over
+          the internet are the connections listed below, and they're all things
+          the app needs to actually work.
         </p>
       </div>
 
       <div>
-        <h2>2. What Is Stored on Your Device</h2>
-        <p>
-          The username or email you log in with is kept in memory while the app
-          is open. When you sign in with a Microsoft account, Mineflayer's login
-          library caches your authentication tokens on your computer so you do
-          not have to enter a device code every time you connect. If you click
-          <strong>Later</strong> on an update prompt, that skipped version
-          number is saved in the app window's local storage. Any scripts or
-          styles you add to <i>custom/scripts/</i> and <i>custom/theme.css</i>
-          stay in local files on your computer.
-        </p>
-      </div>
-
-      <div>
-        <h2>3. Network Connections</h2>
-        <p>
-          When you click <strong>Connect</strong>, the app connects directly to
-          the Minecraft server address you entered. If you use Microsoft mode,
-          it also talks to official Microsoft and Xbox Live login servers to
-          authenticate your account. The app window loads the <i>Nunito</i> and
-          <i>Poppins</i> fonts from Google Fonts, so Google can see your IP
-          address when it opens.
-        </p>
-        <p>
-          On launch and when you click <strong>Sync Versions</strong>, MCBP
-          checks <i>registry.npmjs.org</i> and downloads newer releases of
-          <i>mineflayer</i>, <i>minecraft-data</i>, and
-          <i>mineflayer-pathfinder</i> into its local
-          <i>mineflayer-runtime</i> folder. It also checks GitHub Releases to
-          let you know when a new version of MCBP is out (updates are never
-          forced).
-        </p>
-      </div>
-
-      <div>
-        <h2>4. Custom Scripts</h2>
-        <p>
-          Scripts placed inside <i>custom/scripts/</i> run locally on your
-          computer with Node.js access. Only add custom scripts that you wrote
-          yourself or that come from a source you trust and have checked first.
-        </p>
-      </div>
-
-      <div>
-        <h2>5. This Website</h2>
-        <p>
-          This site does not use tracking cookies or analytics. Your browser
-          loads fonts from Google Fonts, and the page queries the GitHub API,
-          shields.io, and raw GitHub content for the latest release packages,
-          download count, star count, and supported Minecraft version range, so
-          those services can see your IP address. The Download Manager caches
-          the latest release metadata in your browser's local storage, and the
-          last updated date is cached in session storage until you close the
-          tab.
-        </p>
-      </div>
-
-      <div>
-        <h2>6. Summary</h2>
-        <p>In short, MCBP guarantees the following:</p>
+        <h2>2. What Gets Saved on Your Computer</h2>
         <ul>
           <li>
-            <strong>No Data Collection or Sale:</strong> Nothing from the app is
-            collected, sold, or shared with third parties.
+            <strong>Microsoft logins:</strong> when you sign in, Mineflayer's
+            login library caches your tokens so you don't need a new device code
+            every time. MCBP also keeps a small list of accounts you've used
+            (email or name, Minecraft name, UUID) so you can pick them again.
+            You can remove an account from the login screen and its cached
+            tokens go with it.
           </li>
           <li>
-            <strong>No Tracking:</strong> The app has no analytics, advertising,
-            or background tracking.
+            <strong>Settings:</strong> the last Minecraft version you picked,
+            your script options, AI settings, and any update you chose to skip.
           </li>
           <li>
-            <strong>You Stay in Control:</strong> All saved data is in files on
-            your device, and the full source code is open on GitHub.
+            <strong>Session logs:</strong> each session writes a Markdown log
+            (what you clicked, chat, game events) into the app's
+            <i>logs</i> folder, so you can look back at what happened or attach
+            it to a bug report. They never leave your computer unless you send
+            them yourself.
+          </li>
+          <li>
+            <strong>Downloads:</strong> the Mineflayer runtime, the Mineflayer
+            docs for Script Studio, and, if you set up the AI, Ollama and its
+            models.
+          </li>
+          <li>
+            <strong>Your files:</strong> anything in <i>custom/scripts/</i> and
+            <i>custom/theme.css</i>.
           </li>
         </ul>
       </div>
 
       <div>
-        <h2>7. Changes to This Policy</h2>
+        <h2>3. Network Connections</h2>
+        <ul>
+          <li>
+            <strong>Minecraft servers:</strong> when you click
+            <strong>Connect</strong>, the bot connects straight to the server
+            you typed in.
+          </li>
+          <li>
+            <strong>Microsoft &amp; Xbox Live:</strong> only in Microsoft mode,
+            to log you in.
+          </li>
+          <li>
+            <strong>npm</strong> (<i>registry.npmjs.org</i>): on launch and when
+            you click Sync, to check for and download newer <i>mineflayer</i>,
+            <i>minecraft-data</i> and <i>mineflayer-pathfinder</i> versions.
+          </li>
+          <li>
+            <strong>GitHub:</strong> to check for new MCBP releases (updates are
+            never forced) and to download the Mineflayer docs used in Script
+            Studio.
+          </li>
+          <li>
+            <strong>Ollama:</strong> only if you use the AI. Setup downloads
+            Ollama and the model you pick from Ollama's servers.
+          </li>
+          <li>
+            <strong>Google Fonts:</strong> the app loads the <i>Nunito</i> and
+            <i>Poppins</i> fonts, so Google sees your IP address when it opens.
+          </li>
+        </ul>
+      </div>
+
+      <div>
+        <h2>4. The AI Stays Local</h2>
         <p>
-          This Privacy Policy may be updated if the app changes how it handles
-          data. Any updates will be published on this page.
+          ChatAI, AIAgent and the Script Studio generator all talk to Ollama
+          running on your own machine (<i>127.0.0.1</i>). Chat messages, game
+          info and prompts are not sent to any cloud AI service. Keep in mind
+          that whatever the bot says in chat is, of course, seen by the
+          Minecraft server and the players on it.
+        </p>
+      </div>
+
+      <div>
+        <h2>5. Custom Scripts</h2>
+        <p>
+          Scripts in <i>custom/scripts/</i> (including ones made in Studio) run
+          on your computer with full Node.js access. Same goes for code the
+          AIAgent writes if you turn on <strong>Allow Code</strong>. Only run
+          scripts you wrote yourself or got from someone you trust, and only
+          give Allow Code to players you trust.
+        </p>
+      </div>
+
+      <div>
+        <h2>6. This Website</h2>
+        <p>
+          No cookies, no analytics. Your browser loads fonts from Google Fonts,
+          and the page asks the GitHub API, shields.io and raw GitHub content
+          for the latest release files, download and star counts, and the
+          supported Minecraft versions, so those services can see your IP
+          address. The Download Manager caches release info in your browser's
+          local storage, and the "last updated" date above is cached in session
+          storage until you close the tab.
+        </p>
+      </div>
+
+      <div>
+        <h2>7. In Short</h2>
+        <ul>
+          <li>
+            <strong>Nothing collected or sold:</strong> no data from the app is
+            collected, sold or shared with anyone.
+          </li>
+          <li>
+            <strong>No tracking:</strong> no analytics, no ads, nothing running
+            in the background phoning home.
+          </li>
+          <li>
+            <strong>You're in control:</strong> everything is stored in files on
+            your device, and the full source code is on GitHub.
+          </li>
+        </ul>
+      </div>
+
+      <div>
+        <h2>8. Changes to This Policy</h2>
+        <p>
+          If the app starts handling data differently, this page gets updated.
+          The date at the top shows when it last changed.
         </p>
       </div>
 
@@ -256,11 +299,7 @@
 
         <h1 id="dm-title">Download</h1>
 
-        <div
-          id="dm-os-tabs"
-          role="tablist"
-          aria-label="Operating system"
-        ></div>
+        <div id="dm-os-tabs" role="tablist" aria-label="Operating system"></div>
 
         <div id="dm-asset-list" role="list"></div>
 
