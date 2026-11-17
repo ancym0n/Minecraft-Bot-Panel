@@ -119,8 +119,8 @@
       <div>
         <h2>1. Installation</h2>
         <p>
-          The easiest way to get started is to grab a ready-made build from the
-          releases page:
+          Click <strong>Download</strong> above to open the Download Manager,
+          which detects your operating system and recommends the right build:
           <code>MCBPv&lt;version&gt;-win.x64-setup.exe</code> (Windows
           installer), <code>MCBPv&lt;version&gt;-win.x64.zip</code>,
           <code>Minecraft-Bot-Panel-&lt;version&gt;-x86_64.AppImage</code>, or
@@ -157,8 +157,9 @@ npm run make</code></pre>
             <strong>1. Pick a login mode:</strong> Choose
             <strong>Microsoft</strong> for premium accounts or
             <strong>Offline</strong> to join with any username up to 16
-            characters. For Microsoft login, enter your email and leave the
-            password blank to sign in with a Microsoft device code.
+            characters. In Microsoft mode, authenticate through the in-app
+            sign-in window or your browser using the Xbox Live device code
+            (automatically copied to your clipboard and cached locally).
           </li>
           <li>
             <strong>2. Enter the server address:</strong> Type the target server
@@ -168,19 +169,25 @@ npm run make</code></pre>
             pick a specific Minecraft version from the list.
           </li>
           <li>
-            <strong>3. Spawn the bot:</strong> Click <strong>Connect</strong>.
-            If you are using a Microsoft account, look at the
-            <strong>Logs</strong> panel for the
-            <i>microsoft.com/link</i> verification URL and one-time code. You
-            can also click <strong>Sync Versions</strong> at any time to check
-            npm for newer Mineflayer protocol updates.
+            <strong>3. Spawn &amp; drive the bot:</strong> Click
+            <strong>Connect</strong>. Use the <strong>Control &amp; Radar</strong>
+            tab to drive the bot with <code>WASD</code> +
+            <code>Space</code>/<code>Shift</code>/<code>Ctrl</code> + arrow keys
+            (or the on-screen pad), check live HP/hunger/XP/ping/coordinates,
+            and interact with nearby players or mobs (<strong>Guard</strong>,
+            <strong>Follow</strong>, <strong>GoTo</strong>,
+            <strong>Look</strong>, <strong>Hit</strong>).
           </li>
           <li>
-            <strong>4. Control &amp; chat:</strong> Set your options in the
-            <strong>Scripts</strong> grid and click a script's top header bar to
-            toggle it on or off. Use the <strong>Chat</strong> panel to read
-            live server chat and send messages or <code>/commands</code> as the
-            bot.
+            <strong>4. Inventory, scripts &amp; chat:</strong> Open the
+            <strong>Inventory</strong> tab to inspect all 46 slots, equip or
+            drop items, or click <strong>Auto-Gear</strong>. Toggle any of the
+            13 modules in the <strong>Scripts</strong> grid, and use the
+            <strong>Chat</strong> panel to send server messages,
+            <code>/commands</code>, or local <code>!</code> bot commands
+            (<code>!help</code>, <code>!pos</code>, <code>!hp</code>,
+            <code>!gear</code>, <code>!goto</code>, <code>!follow</code>,
+            <code>!guard</code>, <code>!stop</code>).
           </li>
         </ul>
       </div>
@@ -188,7 +195,7 @@ npm run make</code></pre>
       <div>
         <h2>3. Default Scripts</h2>
         <p>
-          MCBP comes with six built-in scripts. Fill in a script's options
+          MCBP comes with 13 built-in scripts. Fill in a script's options
           first, then click its top title bar to turn it on (green) or off. You
           can click the headers below to preview how they toggle in the app:
         </p>
@@ -206,6 +213,60 @@ npm run make</code></pre>
               <p class="script-options-list">
                 Options: <code>Jump</code>, <code>Move</code>,
                 <code>Rotate</code>, <code>Sneak</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">AutoArmor</button>
+            <div class="script-card-body">
+              <p>
+                Equips the highest-tier armor pieces from inventory and keeps a
+                totem or shield in the off-hand slot.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Repeat</code>, <code>Offhand Shield/Totem</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">AutoEat</button>
+            <div class="script-card-body">
+              <p>
+                Automatically eats high-saturation food when hunger drops or
+                golden apples when health is low.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Repeat</code>, <code>Eat on Low HP</code>,
+                <code>Min Food [1-20]</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">AutoTool</button>
+            <div class="script-card-body">
+              <p>
+                Switches to the fastest harvesting tool when breaking blocks and
+                the best weapon in combat.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Mine Tools</code>, <code>Combat Weapon</code>,
+                <code>Save Durability</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">AutoTotem</button>
+            <div class="script-card-body">
+              <p>
+                Keeps a Totem of Undying in the off-hand slot and can
+                automatically disconnect on critical HP.
+              </p>
+              <p class="script-options-list">
+                Options: <code>AutoLog Low HP</code>, <code>Min HP [1-20]</code>
               </p>
             </div>
           </div>
@@ -250,6 +311,50 @@ npm run make</code></pre>
           </div>
 
           <div class="script-card">
+            <button type="button" class="script-card-title">Guard</button>
+            <div class="script-card-body">
+              <p>
+                Escorts a target player (or guards the nearest player/position)
+                and fights nearby hostile mobs or PvP threats.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Hostile Mobs</code>, <code>Defend PvP</code>,
+                <code>Auto Weapon</code>, <code>Protect Player</code>,
+                <code>Radius</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">HumanAI</button>
+            <div class="script-card-body">
+              <p>
+                Plays autonomously: swims in water, eats food, equips gear,
+                blocks creepers, defends itself, and collects drops.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Self Defense</code>, <code>Auto Survival</code>,
+                <code>Collect Drops</code>, <code>Natural Look</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">KillAura</button>
+            <div class="script-card-body">
+              <p>
+                Aims at and attacks selected target types within range using the
+                best weapon in inventory.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Hostile Mobs</code>, <code>Players</code>,
+                <code>Passive Mobs</code>, <code>Auto Weapon</code>,
+                <code>Range</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
             <button type="button" class="script-card-title">Mine</button>
             <div class="script-card-body">
               <p>
@@ -258,7 +363,8 @@ npm run make</code></pre>
                 digs.
               </p>
               <p class="script-options-list">
-                Options: <code>Repeat</code>, <code>Block ID</code>
+                Options: <code>Repeat</code>, <code>Auto Tool</code>,
+                <code>Block ID</code>
               </p>
             </div>
           </div>
