@@ -333,8 +333,28 @@ function buildFallbackRelease(tagStr) {
         browser_download_url: `${base}/Minecraft-Bot-Panel-${ver}-x86_64.AppImage`,
       },
       {
-        name: `MCBPv${ver}-linux.x64.zip`,
-        browser_download_url: `${base}/MCBPv${ver}-linux.x64.zip`,
+        name: `MCBPv${ver}-linux.amd64.deb`,
+        browser_download_url: `${base}/MCBPv${ver}-linux.amd64.deb`,
+      },
+      {
+        name: `MCBPv${ver}-linux.x86_64.rpm`,
+        browser_download_url: `${base}/MCBPv${ver}-linux.x86_64.rpm`,
+      },
+      {
+        name: `MCBPv${ver}-linux.x64.pacman`,
+        browser_download_url: `${base}/MCBPv${ver}-linux.x64.pacman`,
+      },
+      {
+        name: `MCBPv${ver}-linux.x64.tar.gz`,
+        browser_download_url: `${base}/MCBPv${ver}-linux.x64.tar.gz`,
+      },
+      {
+        name: `MCBPv${ver}-mac.arm64.dmg`,
+        browser_download_url: `${base}/MCBPv${ver}-mac.arm64.dmg`,
+      },
+      {
+        name: `MCBPv${ver}-mac.x64.dmg`,
+        browser_download_url: `${base}/MCBPv${ver}-mac.x64.dmg`,
       },
     ],
   };
