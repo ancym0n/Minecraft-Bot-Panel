@@ -6,28 +6,29 @@
 [![MC Versions](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FPrismarineJS%2Fminecraft-data%2Fmaster%2Fdata%2Fpc%2Fcommon%2Fversions.json&query=%24%5B-1%5D&prefix=1.8%20%E2%9E%99%20&label=MC%20Versions&color=9171f8&labelColor=efeaff&style=flat)](https://github.com/PrismarineJS/mineflayer)
 [![Website](https://img.shields.io/badge/Website-ancymon.dev-9171f8?labelColor=efeaff&logo=globe&logoColor=white)](https://ancymon.dev/Minecraft-Bot-Panel/)
 
-Desktop client for running and controlling Minecraft bots powered by Mineflayer. Includes built-in combat and survival modules, live inventory management, direct keyboard/pad bot control, and custom script support.
+A desktop app for running Minecraft bots without writing code. Log in, join a server, and then drive the bot yourself, turn on one of the 26 built-in scripts, or just ask it to do stuff in chat with a local AI. Built on [Mineflayer](https://github.com/PrismarineJS/mineflayer).
 
 ![Banner](github/github-banner.png)
 
-## Features
+## What it can do
 
-- **Microsoft OAuth2 & Offline Login**: Authenticate Microsoft accounts through an in-app sign-in window or system browser using Xbox Live device codes (automatically copied to clipboard and cached locally so you stay signed in across launches), or connect in Offline mode with any username.
-- **Direct Bot Control, Radar & Minigame Signs**: Drive the bot with toggleable on-screen WASD/Jump/Sneak/Sprint buttons or keyboard capture mode. View live telemetry (HP, hunger, coordinates, held item) and real-time lists of nearby **Players**, **Mobs**, and **Signs** (with formatted sign text lines and one-click **Click**, **Hit**, and **Go** buttons to join server minigames).
-- **Live 46-Slot Inventory & Opened Container GUI**: Inspect equipped armor, off-hand, main inventory (27 slots), and hotbar (9 slots) with item counts and durability bars, plus any **currently opened server container / GUI menu** (`bot.currentWindow`). Click container slots directly (left-click, right-click, shift-click, drop, or close) to navigate server minigame selectors, shops, and chests.
-- **Built-in Automation Scripts**: Ships with 26 ready-to-use scripts covering survival, combat, storage, farming, fishing, excavation, building, and navigation. Script settings are saved automatically between sessions.
-- **Auto-Synced Mineflayer Runtime**: Checks npm in the background for newer `mineflayer`, `minecraft-data`, and `mineflayer-pathfinder` releases so new Minecraft versions work without rebuilding the application. Leaving the version field set to `Auto` detects the server version automatically.
-- **Console Commands & Live Chat**: Renders server chat with full Minecraft color codes, hex RGB colors, bold, italic, underline, and strikethrough formatting. Send server chat messages and `/commands` (with `Up`/`Down` arrow command history), or run local bot console commands prefixed with `!` (`!help`, `!pos`, `!hp`, `!gear`, `!gearup [wood|stone|iron|diamond]`, `!signs`, `!sign <text>`, `!close`, `!weapon`, `!tool <block>`, `!goto <x> <y> <z>`, `!follow <player>`, `!guard <player>`, `!hunt <player>`, `!stop`, `!dropall`, `!respawn`).
-- **Local Chat AI (Ollama)**: Hit Auto-Setup and it grabs Ollama plus a model that fits your PC (Qwen 3, Gemma 3, Llama, Phi-4 Mini...). The bot chats back like a normal player, and longer replies get split into a few messages with small random gaps, so anti-spam plugins leave it alone.
-- **AI Agent**: Turn on **Actions** and players can just ask the bot to do stuff in chat, like "come here", "follow me", "mine 10 oak logs" or "turn on autoeat". It picks a model that can actually run actions, finds a way around when it gets stuck (jumps, re-paths, digs or bridges) and tries another approach if a task fails. You can limit it to certain players, and if you trust them you can even let it write its own Mineflayer code. Settings are the same in the AI tab and on the ChatAI / AIAgent cards, change one and the other follows.
-- **Script Studio**: Start from a premade template, look things up in the Mineflayer docs (downloaded for your version automatically, with an offline copy built in), or just describe what you want and let your local AI write it. It checks the code for errors and drops it straight into the Scripts tab.
-- **Custom Scripts & Themes**: Drop `.js` scripts into `custom/scripts` and custom CSS overrides into `custom/theme.css`.
+- **Log in your way.** Microsoft accounts work through an in-app window or your browser (the device code gets copied for you), and accounts you've used before are remembered. Offline mode works with any name.
+- **Drive it yourself.** WASD, jump, sneak and sprint from the keyboard or the on-screen pad. You see HP, hunger, coords and the held item, plus a radar of nearby **players**, **mobs** and **signs**. Signs show their text and have **Click**, **Hit** and **Go** buttons, which is great for joining minigames on lobby servers.
+- **Full inventory.** All 46 slots with counts and durability, one-click Auto-Gear, and whatever chest, shop or menu the server opens. You can left, right or shift-click through those just like in game.
+- **26 built-in scripts.** Farming, fishing, mining, tunneling, building, chest looting, combat, auto-eat, auto-armor, reconnecting, a full wood-to-diamond GearUp and a Survival mode that just plays on its own. Your settings stick between sessions. Full list below.
+- **Local AI chat.** Hit **Auto-Setup** and it downloads Ollama and a model that fits your PC (Qwen 3, Gemma 3, Llama, Phi-4 Mini...). The bot then chats like a normal player and splits long replies into a few messages with small random gaps, so anti-spam plugins don't kick it. Nothing goes to the cloud.
+- **AI Agent.** Turn on **Actions** and players can say "come here", "follow me", "mine 10 oak logs" or "turn on autoeat" and the bot does it. When it gets stuck it jumps, re-paths, digs or bridges, and if something fails it tries another way. You choose who's allowed to give it orders, and if you really trust them, you can let it write its own Mineflayer code.
+- **Script Studio.** Start from a template, read the Mineflayer docs right next to the editor (downloaded for your version, with an offline copy built in), or describe what you want and let your local AI write it. It checks for errors and drops the script straight into the Scripts tab.
+- **Chat and console.** Server chat with all its colors and formatting, `/commands` with arrow-key history, and `!` bot commands: `!help`, `!pos`, `!hp`, `!gear`, `!gearup [wood|stone|iron|diamond]`, `!signs`, `!sign <text>`, `!ai <msg>`, `!logs`, `!close`, `!weapon`, `!tool <block>`, `!goto <x> <y> <z>`, `!follow <player>`, `!guard <player>`, `!hunt <player>`, `!stop`, `!dropall`, `!respawn`.
+- **Keeps up with Minecraft.** It checks npm in the background for newer `mineflayer`, `minecraft-data` and `mineflayer-pathfinder`, so new Minecraft versions usually work without a new MCBP build. Leave the version on `Auto` and it detects the server version.
+- **Session logs.** Every session writes a Markdown log you can open with `!logs`. Handy for bug reports.
+- **Make it yours.** Drop `.js` files into `custom/scripts` and restyle the whole app with `custom/theme.css`.
 
 ## Built-in Scripts
 
 | Script            | Options                                                                         | Description                                                                                     |
 | ----------------- | ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| **AIAgent**       | `Reply to All Chat`, `Model`, `Allowed Players`                                 | Lets the local AI run bot actions (move, follow, mine, attack, toggle scripts) from chat        |
+| **AIAgent**       | `Reply to All Chat`, `Model`, `Allowed Players`, `Allow Code`                   | Lets the local AI run bot actions (move, follow, mine, attack, toggle scripts) from chat        |
 | **AntiAFK**       | `Jump`, `Move`, `Rotate`, `Sneak`                                               | Performs randomized movement actions to prevent idle kicks                                      |
 | **AutoArmor**     | `Repeat`, `Offhand Shield/Totem`                                                | Equips the highest-tier armor pieces from inventory and keeps a totem or shield in off-hand     |
 | **AutoBuild**     | `Template / File`, `Size [blocks]`                                              | Builds structures (`platform`, `wall`, `bunker`, `tower`, `bridge`, or `.json` schematic files) |
@@ -38,7 +39,7 @@ Desktop client for running and controlling Minecraft bots powered by Mineflayer.
 | **AutoRespawn**   | `Return to Area`, `Work Area [X Y Z]`                                           | Automatically respawns upon death and paths back to the work area or death coordinates          |
 | **AutoTool**      | `Mine Tools`, `Combat Weapon`, `Save Durability`                                | Switches to the fastest harvesting tool when breaking blocks and best weapon in combat          |
 | **AutoTotem**     | `AutoLog Low HP`, `Min HP [1-20]`                                               | Keeps a Totem of Undying in the off-hand slot and optionally disconnects on critical HP         |
-| **ChatAI**        | `Reply to All Chat`, `Context`, `Split Replies`, `Model`, `Cooldown`, `Gap`     | Replies to players in chat with a local Ollama model, paced to avoid anti-spam kicks            |
+| **ChatAI**        | `Reply to All Chat`, `Context`, `Split Replies`, `Model`, `Cooldown`, `Persona` | Replies to players in chat with a local Ollama model, paced to avoid anti-spam kicks            |
 | **ChestStealer**  | `Steal Supplies`, `Deposit Mined`, `Repeat`, `Filter`                           | Withdraws supplies from nearby chests/barrels/shulkers or deposits mined resources into storage |
 | **ClearInv**      | `Repeat`                                                                        | Drops all stacks from the bot's inventory                                                       |
 | **Excavator**     | `Tunnel Mode`, `Auto Tool`, `Size / Width`, `Length / Depth`                    | Digs straight tunnels or clears 3D quarry volumes layer by layer using the best tool            |
@@ -67,7 +68,7 @@ Grab the latest build for your system from the [Releases](https://github.com/anc
 - **Any other distro**: `Minecraft-Bot-Panel-<version>-x86_64.AppImage` or the `.tar.gz`
 - **macOS** (Intel & Apple Silicon): `MCBPv<version>-mac.<arch>.dmg`. The app isn't notarized, so the first time right-click it and pick **Open** (on newer macOS: System Settings → Privacy & Security → **Open Anyway**).
 
-You don't need Node.js for any of these. Mineflayer, Ollama and the docs all download by themselves inside the app.
+You don't need Node.js for any of these. Mineflayer, Ollama and the docs all get downloaded by the app when it needs them.
 
 Updates are optional and the app asks first. Windows, AppImage, deb, rpm and pacman builds update themselves (Linux packages ask for your password once). On macOS and the zip / tar.gz builds it just downloads the new version or opens the release page for you.
 
@@ -87,9 +88,9 @@ Updates are optional and the app asks first. Windows, AppImage, deb, rpm and pac
    ```
    On Linux `npm run make` builds all the Linux packages plus the Windows installer. rpm needs `rpmbuild` and pacman needs `bsdtar`; if one is missing that package just gets skipped. macOS builds only work on a Mac (Apple's tools don't run anywhere else); there it builds the Mac, Linux and Windows packages.
 
-## Writing Custom Scripts
+## Writing your own scripts
 
-The easiest way is the **Studio** tab: start from a template or describe the script and let your local AI write it, then **Save & Load**. You can also click **Folder** in the Scripts tab (or open `custom/scripts/`) and create a `.js` file exporting `info` and `script`:
+The easiest way is the **Studio** tab: pick a template or describe what you want and let your local AI write it, then hit **Save & Load**. If you'd rather do it by hand, click **Folder** in the Scripts tab (or open `custom/scripts/`) and add a `.js` file that exports `info` and `script`:
 
 ```js
 const info = {
@@ -128,9 +129,11 @@ module.exports = { info, script };
 - `libs`: Runtime libraries `{ goals, Movements, Vec3, mcData }` (6th argument), so scripts don't need to `require` Mineflayer packages.
 - Option types: `checkbox`, `input` (optional `placeholder`), and `select` with `choices: ["a", "b"]` or `[{ value, label }]`.
 
-## Custom Theme (`custom/theme.css`)
+Scripts get full Node.js access, so only run ones you wrote or trust.
 
-Override any CSS variables in `custom/theme.css` to customize the color palette:
+## Custom theme
+
+Not a fan of purple? Override the colors (or anything else) in `custom/theme.css`:
 
 ```css
 :root {
@@ -146,3 +149,11 @@ Override any CSS variables in `custom/theme.css` to customize the color palette:
   --accent-border: #a488ff;
 }
 ```
+
+## Privacy
+
+No analytics, no accounts, nothing sent to me. Logins, settings, logs and AI models stay on your machine. The full policy is on the [website](https://ancymon.dev/Minecraft-Bot-Panel/privacy).
+
+## License
+
+[GPL-3.0](./LICENSE). Found a bug? [Open an issue](https://github.com/ancym0n/Minecraft-Bot-Panel/issues).
