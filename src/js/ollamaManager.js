@@ -7,6 +7,8 @@ const { spawn, execFile } = require("child_process");
 
 const DEFAULT_HOST = "http://127.0.0.1:11434";
 
+// tags: chat = good for talking, tools = supports function calling (AI Agent),
+// code = tuned for writing scripts. think = model emits reasoning we disable.
 const RECOMMENDED_MODELS = [
   {
     name: "llama3.2:1b",
@@ -14,23 +16,55 @@ const RECOMMENDED_MODELS = [
     sizeLabel: "1.3 GB",
     minRamGb: 4,
     tier: "light",
-    desc: "Ultra-fast responses, minimal CPU/RAM usage",
+    tags: ["chat", "tools"],
+    desc: "Tiny and fast, fine for low-end PCs",
   },
   {
-    name: "qwen2.5:1.5b",
-    label: "Qwen 2.5 1.5B",
-    sizeLabel: "1.0 GB",
+    name: "qwen3:1.7b",
+    label: "Qwen 3 1.7B",
+    sizeLabel: "1.4 GB",
+    minRamGb: 6,
+    tier: "light",
+    tags: ["chat", "tools"],
+    think: true,
+    desc: "Best small model, multilingual, solid tool calling",
+  },
+  {
+    name: "gemma3:1b",
+    label: "Gemma 3 1B",
+    sizeLabel: "0.8 GB",
     minRamGb: 4,
     tier: "light",
-    desc: "Fast multilingual chat (English, Polish & more)",
+    tags: ["chat"],
+    desc: "Very natural short chat replies (no actions)",
   },
   {
-    name: "gemma2:2b",
-    label: "Gemma 2 2B",
-    sizeLabel: "1.6 GB",
-    minRamGb: 6,
+    name: "qwen3:4b",
+    label: "Qwen 3 4B",
+    sizeLabel: "2.5 GB",
+    minRamGb: 10,
     tier: "balanced",
-    desc: "Clean, natural short player replies",
+    tags: ["chat", "tools"],
+    think: true,
+    desc: "Smart all-rounder for chat and AI Agent actions",
+  },
+  {
+    name: "gemma3:4b",
+    label: "Gemma 3 4B",
+    sizeLabel: "3.3 GB",
+    minRamGb: 10,
+    tier: "balanced",
+    tags: ["chat"],
+    desc: "Most human-sounding replies in its size",
+  },
+  {
+    name: "phi4-mini",
+    label: "Phi-4 Mini 3.8B",
+    sizeLabel: "2.5 GB",
+    minRamGb: 10,
+    tier: "balanced",
+    tags: ["chat", "tools"],
+    desc: "Strong reasoning and function calling",
   },
   {
     name: "llama3.2:3b",
@@ -38,33 +72,265 @@ const RECOMMENDED_MODELS = [
     sizeLabel: "2.0 GB",
     minRamGb: 8,
     tier: "balanced",
-    desc: "Great balance of speed and game awareness",
+    tags: ["chat", "tools"],
+    desc: "Reliable balance of speed and game awareness",
   },
   {
-    name: "qwen2.5:3b",
-    label: "Qwen 2.5 3B",
-    sizeLabel: "1.9 GB",
-    minRamGb: 8,
-    tier: "balanced",
-    desc: "Smart multilingual conversationalist for servers",
+    name: "qwen3:8b",
+    label: "Qwen 3 8B",
+    sizeLabel: "5.2 GB",
+    minRamGb: 16,
+    tier: "heavy",
+    tags: ["chat", "tools"],
+    think: true,
+    desc: "High-intelligence agent for 16 GB+ RAM or a GPU",
   },
   {
     name: "llama3.1:8b",
     label: "Llama 3.1 8B",
-    sizeLabel: "4.7 GB",
-    minRamGb: 15,
+    sizeLabel: "4.9 GB",
+    minRamGb: 16,
     tier: "heavy",
-    desc: "High-intelligence model for 16GB+ RAM or GPU",
+    tags: ["chat", "tools"],
+    desc: "Proven 8B model with dependable tool use",
   },
   {
-    name: "qwen2.5:7b",
-    label: "Qwen 2.5 7B",
-    sizeLabel: "4.7 GB",
-    minRamGb: 15,
+    name: "gemma3:12b",
+    label: "Gemma 3 12B",
+    sizeLabel: "8.1 GB",
+    minRamGb: 24,
     tier: "heavy",
-    desc: "Deep context & multilingual roleplay for GPU systems",
+    tags: ["chat"],
+    desc: "Rich roleplay and conversation for strong GPUs",
+  },
+  {
+    name: "qwen2.5-coder:1.5b",
+    label: "Qwen 2.5 Coder 1.5B",
+    sizeLabel: "1.0 GB",
+    minRamGb: 4,
+    tier: "light",
+    tags: ["code"],
+    desc: "Fast script writer for the Studio tab",
+  },
+  {
+    name: "qwen2.5-coder:3b",
+    label: "Qwen 2.5 Coder 3B",
+    sizeLabel: "1.9 GB",
+    minRamGb: 8,
+    tier: "balanced",
+    tags: ["code"],
+    desc: "Better Mineflayer scripts, still quick",
+  },
+  {
+    name: "qwen2.5-coder:7b",
+    label: "Qwen 2.5 Coder 7B",
+    sizeLabel: "4.7 GB",
+    minRamGb: 14,
+    tier: "heavy",
+    tags: ["code", "tools"],
+    desc: "Best local script generation quality",
   },
 ];
+
+const THINKING_MODEL_RE = /^(qwen3|deepseek-r1|magistral|qwq)/i;
+
+function modelInfo(name) {
+  const clean = String(name || "").trim();
+  return (
+    RECOMMENDED_MODELS.find((m) => m.name === clean) ||
+    RECOMMENDED_MODELS.find(
+      (m) => `${m.name}:latest` === clean || m.name === `${clean}:latest`,
+    ) ||
+    null
+  );
+}
+
+function isThinkingModel(name) {
+  const info = modelInfo(name);
+  return info ? Boolean(info.think) : THINKING_MODEL_RE.test(String(name));
+}
+
+// Families known to support Ollama function calling (for unknown tags).
+const TOOLS_MODEL_RE =
+  /^(qwen2\.5|qwen3|qwq|llama3\.[123]|llama4|mistral|mixtral|phi4-mini|granite3|granite4|command-r|hermes3|firefunction|smollm2|nemotron|cogito|gpt-oss|devstral|magistral)/i;
+
+function supportsTools(name) {
+  const info = modelInfo(name);
+  if (info) return info.tags.includes("tools");
+  return TOOLS_MODEL_RE.test(String(name || ""));
+}
+
+// Some models (e.g. llama3.1) sometimes print a tool call as plain JSON
+// instead of using tool_calls. Turn that text back into calls.
+function parseTextToolCalls(text, toolNames = []) {
+  const raw = String(text || "")
+    .replace(/<\|python_tag\|>/g, "")
+    .replace(/^```(?:json)?\s*|```\s*$/g, "")
+    .trim();
+  const norm = (n) =>
+    String(n || "")
+      .toLowerCase()
+      .replace(/[^a-z]/g, "");
+  // "get_status {...}" or "follow_player({...})"
+  const named = raw.match(
+    /^([A-Za-z_][\w-]*)\s*\(?\s*(\{[\s\S]*\})?\s*\)?\s*$/,
+  );
+  // Bare words like "stop" are normal replies, not calls.
+  const callShaped =
+    named && (named[2] || /\(/.test(raw) || /_/.test(named[1]));
+  if (named && callShaped && !/^[[{]/.test(raw)) {
+    const real = toolNames.find((t) => norm(t) === norm(named[1]));
+    if (!real) return [];
+    let args = {};
+    try {
+      const obj = named[2] ? JSON.parse(named[2]) : {};
+      args = obj.arguments || obj.parameters || {};
+    } catch (_) {}
+    return [{ function: { name: real, arguments: args } }];
+  }
+  if (!/^[[{]/.test(raw)) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    const objs = raw.match(/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g) || [];
+    parsed = [];
+    for (const o of objs) {
+      try {
+        parsed.push(JSON.parse(o));
+      } catch (_) {}
+    }
+  }
+  const list = Array.isArray(parsed) ? parsed : [parsed];
+  const calls = [];
+  for (const item of list) {
+    if (!item || typeof item !== "object") continue;
+    const fnObj =
+      item.function && typeof item.function === "object" ? item.function : item;
+    const name = fnObj.name || item.tool || "";
+    const real = toolNames.find((t) => norm(t) === norm(name));
+    if (!real) continue;
+    let args = fnObj.arguments ?? fnObj.parameters ?? item.args ?? {};
+    if (typeof args === "string") {
+      try {
+        args = JSON.parse(args);
+      } catch (_) {
+        args = {};
+      }
+    }
+    calls.push({ function: { name: real, arguments: args || {} } });
+  }
+  return calls;
+}
+
+function looksLikeCode(text) {
+  const t = String(text || "").trim();
+  return (
+    /^[[{]/.test(t) ||
+    /\{\s*"/.test(t) ||
+    /"\w+"\s*:/.test(t) ||
+    /\b[a-z]+_[a-z_]+\(/.test(t) ||
+    /<\|python_tag\|>|<tool_call>/i.test(t)
+  );
+}
+
+function cleanModelText(raw) {
+  return String(raw || "")
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/<think>[\s\S]*$/i, "")
+    .trim();
+}
+
+// Splits a reply into chat-sized messages, preferring sentence boundaries.
+function splitIntoMessages(text, maxLen = 100, maxParts = 3) {
+  const limit = Math.max(30, Math.min(250, Number(maxLen) || 100));
+  const clean = String(text || "")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/\*\*|__|`+/g, "")
+    .replace(/(^|\s)[*_]([^*_\s][^*_]*?)[*_](?=\s|[.,!?]|$)/g, "$1$2")
+    .replace(/^\s*[#>]+\s*/gm, "")
+    .replace(/^\s*[-•]\s+/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!clean) return [];
+
+  const sentences = clean.match(/[^.!?…]+[.!?…]+["')\]]*|[^.!?…]+$/g) || [
+    clean,
+  ];
+  const wrapWords = (text, out) => {
+    let line = "";
+    for (const word of text.split(" ")) {
+      if (word.length > limit) {
+        if (line) out.push(line);
+        for (let i = 0; i < word.length; i += limit) {
+          out.push(word.slice(i, i + limit));
+        }
+        line = "";
+      } else if (!line) {
+        line = word;
+      } else if (line.length + 1 + word.length <= limit) {
+        line += ` ${word}`;
+      } else {
+        out.push(line);
+        line = word;
+      }
+    }
+    if (line) out.push(line);
+  };
+
+  const pieces = [];
+  for (const raw of sentences) {
+    const sentence = raw.trim();
+    if (!sentence) continue;
+    if (sentence.length <= limit) {
+      pieces.push(sentence);
+      continue;
+    }
+    // Too long: break at clause boundaries first, words only as a last resort.
+    const clauses = sentence.match(/[^,;:–—]+[,;:–—]?/g) || [sentence];
+    let line = "";
+    for (const rawClause of clauses) {
+      const clause = rawClause.trim();
+      if (!clause) continue;
+      if (!line) {
+        line = clause;
+      } else if (line.length + 1 + clause.length <= limit) {
+        line += ` ${clause}`;
+      } else {
+        pieces.push(line);
+        line = clause;
+      }
+      if (line.length > limit) {
+        wrapWords(line, pieces);
+        line = pieces.pop();
+      }
+    }
+    if (line) pieces.push(line);
+  }
+
+  const parts = [];
+  for (const piece of pieces) {
+    const last = parts[parts.length - 1];
+    if (last && last.length + 1 + piece.length <= limit) {
+      parts[parts.length - 1] = `${last} ${piece}`;
+    } else {
+      parts.push(piece);
+    }
+  }
+
+  const cap = Math.max(1, Math.min(6, Number(maxParts) || 3));
+  if (parts.length > cap) {
+    parts.length = cap;
+    const tail = parts[cap - 1].replace(/[\s,;:–—-]+$/, "");
+    if (!/[.!?…]$/.test(tail)) {
+      parts[cap - 1] =
+        tail.length + 3 <= limit
+          ? `${tail}...`
+          : `${tail.slice(0, limit - 3)}...`;
+    }
+  }
+  return parts;
+}
 
 function execFilePromise(cmd, args, opts = {}) {
   return new Promise((resolve) => {
@@ -159,17 +425,33 @@ class OllamaManager {
     this.lastReplyTime = 0;
     this.isGenerating = false;
 
+    this.replyTimes = [];
+    this.activePulls = new Map();
+    this.installedNames = [];
+    this.noToolsModels = new Set();
+    this.warmModels = new Map();
+
     this.config = {
       enabled: false,
+      agentEnabled: false,
       model: "",
+      agentModel: "",
+      agentAllowCode: false,
+      scriptModel: "",
       triggerMode: "mention", // "mention" | "all"
       cooldownSec: 4,
-      maxTokens: 70,
+      maxTokens: 160,
       includeBotContext: true,
       ignoreSelf: true,
       customTriggers: "",
+      splitMessages: true,
+      maxMessageLength: 100,
+      maxParts: 3,
+      messageDelaySec: 1.6,
+      maxRepliesPerMinute: 6,
+      agentAllowedPlayers: "",
       systemPrompt:
-        "You are a friendly, real human Minecraft player chatting on a multiplayer server. Reply naturally in 1 short sentence (under 140 characters). Never use markdown, bullet points, or assistant phrases. Reply in the same language the player used (e.g. Polish or English).",
+        "You are a friendly, real human Minecraft player chatting on a multiplayer server. Keep replies short and casual like real chat. Never use markdown, lists, or assistant phrases. Reply in the same language the player used.",
     };
   }
 
@@ -186,14 +468,43 @@ class OllamaManager {
     try {
       const raw = JSON.parse(fs.readFileSync(this.configPath, "utf8"));
       if (raw && typeof raw === "object") {
-        this.config = { ...this.config, ...raw };
+        // Scripts always start switched off, so never resume them from disk.
+        this.config = {
+          ...this.config,
+          ...raw,
+          enabled: false,
+          agentEnabled: false,
+        };
       }
     } catch (_) {}
     return this.config;
   }
 
   saveConfig(partial = {}) {
-    this.config = { ...this.config, ...partial };
+    const clean = {};
+    for (const [key, value] of Object.entries(partial || {})) {
+      if (value === undefined || !(key in this.config)) continue;
+      clean[key] = value;
+    }
+    const num = (v, min, max, fallback) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+    };
+    if ("cooldownSec" in clean)
+      clean.cooldownSec = num(clean.cooldownSec, 0, 120, 4);
+    if ("messageDelaySec" in clean)
+      clean.messageDelaySec = num(clean.messageDelaySec, 0.5, 15, 1.6);
+    if ("maxMessageLength" in clean)
+      clean.maxMessageLength = num(clean.maxMessageLength, 30, 250, 100);
+    if ("maxParts" in clean) clean.maxParts = num(clean.maxParts, 1, 6, 3);
+    if ("maxRepliesPerMinute" in clean)
+      clean.maxRepliesPerMinute = num(clean.maxRepliesPerMinute, 1, 30, 6);
+    if (
+      "triggerMode" in clean &&
+      !["all", "mention"].includes(clean.triggerMode)
+    )
+      clean.triggerMode = "mention";
+    this.config = { ...this.config, ...clean };
     if (this.configPath) {
       try {
         fs.mkdirSync(path.dirname(this.configPath), { recursive: true });
@@ -339,22 +650,30 @@ class OllamaManager {
       }
     }
 
-    let recommended = "qwen2.5:1.5b";
+    const gpuGb = vramGb || 0;
+    let recommended = "qwen3:1.7b";
+    let recommendedCode = "qwen2.5-coder:1.5b";
     let reason = `${totalRamGb} GB RAM · ${cpuCores} threads`;
+    if (gpuName) {
+      reason = `${gpuName}${vramGb && !/VRAM/.test(gpuName) ? ` (${vramGb} GB VRAM)` : ""} · ${totalRamGb} GB RAM`;
+    }
 
-    if (vramGb >= 6 || totalRamGb >= 20) {
-      recommended = "qwen2.5:3b";
-      reason = gpuName
-        ? `${gpuName}${vramGb ? ` (${vramGb} GB VRAM)` : ""} · ${totalRamGb} GB RAM`
-        : `${totalRamGb} GB RAM · ${cpuCores} threads`;
-    } else if (totalRamGb >= 10) {
-      recommended = "llama3.2:3b";
-      reason = `${totalRamGb} GB RAM · ${cpuCores} threads`;
-    } else if (totalRamGb >= 7) {
-      recommended = "qwen2.5:1.5b";
-      reason = `Fastest for ${totalRamGb} GB RAM`;
+    if (gpuGb >= 8 || totalRamGb >= 24) {
+      recommended = "qwen3:8b";
+      recommendedCode = "qwen2.5-coder:7b";
+    } else if (gpuGb >= 4 || totalRamGb >= 14) {
+      recommended = "qwen3:4b";
+      recommendedCode =
+        gpuGb >= 6 || totalRamGb >= 16
+          ? "qwen2.5-coder:7b"
+          : "qwen2.5-coder:3b";
+    } else if (totalRamGb >= 6) {
+      recommended = "qwen3:1.7b";
+      recommendedCode =
+        totalRamGb >= 8 ? "qwen2.5-coder:3b" : "qwen2.5-coder:1.5b";
     } else {
       recommended = "llama3.2:1b";
+      recommendedCode = "qwen2.5-coder:1.5b";
       reason = `Lightweight for ${totalRamGb} GB RAM`;
     }
 
@@ -367,10 +686,11 @@ class OllamaManager {
       gpuName,
       vramGb,
       recommendedModel: recommended,
+      recommendedCodeModel: recommendedCode,
       recommendReason: reason,
       catalog: RECOMMENDED_MODELS.map((m) => ({
         ...m,
-        isRecommended: m.name === recommended,
+        isRecommended: m.name === recommended || m.name === recommendedCode,
         fitsHardware: totalRamGb >= m.minRamGb,
       })),
     };
@@ -409,6 +729,7 @@ class OllamaManager {
       serverRunning = false;
     }
 
+    this.installedNames = installedModels.map((m) => m.name);
     if (!this.config.model) {
       if (installedModels.length > 0) {
         const recInstalled = installedModels.find(
@@ -431,6 +752,8 @@ class OllamaManager {
       installedModels,
       hardware: hw,
       config: this.config,
+      agentModelResolved: this.resolveAgentModel(),
+      pulling: Array.from(this.activePulls.keys()),
     };
   }
 
@@ -565,12 +888,42 @@ class OllamaManager {
     };
   }
 
-  pullModel(modelName, onProgress = () => {}) {
+  // One download per model: later callers just subscribe to its progress.
+  pullModel(modelName, onProgress = () => {}, { makeActive = false } = {}) {
     const cleanModel = String(modelName || "").trim();
     if (!cleanModel) {
       return Promise.resolve({ ok: false, error: "No model name specified." });
     }
+    const existing = this.activePulls.get(cleanModel);
+    if (existing) {
+      existing.listeners.add(onProgress);
+      if (makeActive) existing.makeActive = true;
+      return existing.promise;
+    }
+    const entry = {
+      listeners: new Set([onProgress]),
+      makeActive,
+      promise: null,
+    };
+    const emit = (p) => {
+      for (const fn of entry.listeners) {
+        try {
+          fn(p);
+        } catch (_) {}
+      }
+    };
+    entry.promise = this.pullModelRaw(cleanModel, emit, entry).finally(() => {
+      this.activePulls.delete(cleanModel);
+    });
+    this.activePulls.set(cleanModel, entry);
+    return entry.promise;
+  }
 
+  isPulling(modelName) {
+    return this.activePulls.has(String(modelName || "").trim());
+  }
+
+  pullModelRaw(cleanModel, onProgress, entry) {
     return new Promise((resolve) => {
       try {
         const u = new URL(`${this.host}/api/pull`);
@@ -652,7 +1005,21 @@ class OllamaManager {
                 resolve({ ok: false, error: pullError });
                 return;
               }
-              this.saveConfig({ model: cleanModel });
+              const info = modelInfo(cleanModel);
+              const codeOnly =
+                (info && !info.tags.includes("chat")) ||
+                (!info && /coder/i.test(cleanModel));
+              // Only switch models when the user asked for it explicitly.
+              if (entry?.makeActive) {
+                this.saveConfig(
+                  codeOnly
+                    ? { scriptModel: cleanModel }
+                    : { model: cleanModel },
+                );
+              }
+              if (!this.installedNames.includes(cleanModel)) {
+                this.installedNames.push(cleanModel);
+              }
               onProgress({
                 stage: "ready",
                 model: cleanModel,
@@ -675,7 +1042,11 @@ class OllamaManager {
     });
   }
 
-  async autoSetup({ preferredModel = "", onProgress = () => {} } = {}) {
+  async autoSetup({
+    preferredModel = "",
+    onProgress = () => {},
+    keepModel = false,
+  } = {}) {
     const hw = await this.detectHardwareAndRecommend();
     const targetModel =
       preferredModel || this.config.model || hw.recommendedModel;
@@ -704,9 +1075,7 @@ class OllamaManager {
     }
 
     const alreadyHasModel = status.installedModels.some(
-      (m) =>
-        m.name === targetModel ||
-        m.name.split(":")[0] === targetModel.split(":")[0],
+      (m) => m.name === targetModel || m.name === `${targetModel}:latest`,
     );
 
     if (!alreadyHasModel) {
@@ -727,7 +1096,7 @@ class OllamaManager {
       });
     }
 
-    this.saveConfig({ model: targetModel });
+    if (!keepModel) this.saveConfig({ model: targetModel });
     const finalStatus = await this.getStatus();
     return {
       ok: true,
@@ -736,8 +1105,32 @@ class OllamaManager {
     };
   }
 
+  isActive() {
+    return Boolean(this.config.enabled || this.config.agentEnabled);
+  }
+
+  canCommand(sender) {
+    const list = String(this.config.agentAllowedPlayers || "")
+      .split(/[\s,]+/)
+      .map((p) => p.trim().toLowerCase())
+      .filter(Boolean);
+    if (!list.length) return true;
+    return list.includes(String(sender || "").toLowerCase());
+  }
+
+  recentReplyCount() {
+    const cutoff = Date.now() - 60000;
+    this.replyTimes = this.replyTimes.filter((t) => t > cutoff);
+    return this.replyTimes.length;
+  }
+
+  markReplied() {
+    this.lastReplyTime = Date.now();
+    this.replyTimes.push(this.lastReplyTime);
+  }
+
   shouldRespondToChat({ sender, message, botUsername }) {
-    if (!this.config.enabled) return false;
+    if (!this.isActive()) return false;
     const cleanMsg = String(message || "").trim();
     if (!cleanMsg) return false;
 
@@ -750,12 +1143,16 @@ class OllamaManager {
       return false;
     }
 
-    // Ignore server command echoes or system announcements without a sender
     if (cleanMsg.startsWith("/")) return false;
 
-    const now = Date.now();
-    const cooldownMs = Math.max(1, Number(this.config.cooldownSec) || 4) * 1000;
-    if (now - this.lastReplyTime < cooldownMs || this.isGenerating) {
+    const cooldownMs = Math.max(0, Number(this.config.cooldownSec) || 0) * 1000;
+    if (Date.now() - this.lastReplyTime < cooldownMs || this.isGenerating) {
+      return false;
+    }
+    if (
+      this.recentReplyCount() >=
+      Math.max(1, Number(this.config.maxRepliesPerMinute) || 6)
+    ) {
       return false;
     }
 
@@ -763,7 +1160,6 @@ class OllamaManager {
       return Boolean(cleanSender && cleanSender !== "Server");
     }
 
-    // "mention" mode: respond when bot username or custom trigger words appear in message
     const lowerMsg = cleanMsg.toLowerCase();
     if (botUsername && lowerMsg.includes(botUsername.toLowerCase())) {
       return true;
@@ -782,6 +1178,162 @@ class OllamaManager {
     return false;
   }
 
+  resolveModel(overrideModel = "") {
+    return String(
+      overrideModel ||
+        this.config.model ||
+        this.cachedHardware?.recommendedModel ||
+        "qwen3:1.7b",
+    ).trim();
+  }
+
+  isInstalled(name) {
+    const n = String(name || "");
+    return this.installedNames.some((m) => m === n || m === `${n}:latest`);
+  }
+
+  // Model used for actions: explicit choice, else the chat model if it can
+  // call tools, else the best installed tools model, else the recommendation.
+  resolveAgentModel(overrideModel = "") {
+    const explicit = String(
+      overrideModel || this.config.agentModel || "",
+    ).trim();
+    if (explicit) return explicit;
+    const chat = this.resolveModel();
+    if (supportsTools(chat) && !this.noToolsModels.has(chat)) return chat;
+    const toolsCatalog = RECOMMENDED_MODELS.filter((m) =>
+      m.tags.includes("tools"),
+    )
+      .slice()
+      .sort((a, b) => b.minRamGb - a.minRamGb);
+    const ram = this.cachedHardware?.totalRamGb || 8;
+    for (const m of toolsCatalog) {
+      if (m.minRamGb <= Math.max(ram, 8) && this.isInstalled(m.name))
+        return m.name;
+    }
+    const otherInstalled = this.installedNames.find(
+      (n) =>
+        supportsTools(n) && !this.noToolsModels.has(n) && !/coder/i.test(n),
+    );
+    if (otherInstalled) return otherInstalled;
+    return this.cachedHardware?.recommendedModel || "qwen3:1.7b";
+  }
+
+  // Loads a model into memory so the first reply isn't slow.
+  warmUp(model) {
+    const name = String(model || "").trim();
+    if (!name) return Promise.resolve(false);
+    const last = this.warmModels.get(name) || 0;
+    if (Date.now() - last < 10 * 60 * 1000) return Promise.resolve(true);
+    this.warmModels.set(name, Date.now());
+    return httpJsonRequest(`${this.host}/api/generate`, {
+      method: "POST",
+      timeout: 120000,
+      body: { model: name, keep_alive: "30m" },
+    })
+      .then(() => true)
+      .catch(() => {
+        this.warmModels.delete(name);
+        return false;
+      });
+  }
+
+  buildSystemPrompt(botContext, { agent = false, model = "" } = {}) {
+    let sysPrompt = String(
+      this.config.systemPrompt ||
+        "You are a friendly Minecraft player chatting on a server.",
+    ).trim();
+
+    const maxLen = Number(this.config.maxMessageLength) || 100;
+    const maxParts = Number(this.config.maxParts) || 3;
+    sysPrompt += this.config.splitMessages
+      ? `\nKeep the whole reply under ${maxLen * maxParts} characters, written as up to ${maxParts} short sentences.`
+      : `\nReply with exactly 1 short sentence under ${Math.min(maxLen * 2, 200)} characters.`;
+    sysPrompt +=
+      "\nPlain text only, no emojis spam, no quotes around the reply, never prefix it with your name.";
+
+    if (agent) {
+      sysPrompt +=
+        "\nYou control a real Minecraft bot through the provided tools. When a player asks you to do something (move, follow, mine, fight, equip, start or stop a script), call the matching tool instead of only talking about it. Use get_status only when you need facts. If a tool returns an error or says you are stuck, try a different approach (another tool, other coordinates, mining the obstacle, run_code if available) before giving up, and tell the player briefly if it still fails. Movement, mining and attack tools only START the action: say you are on your way or starting, never that you already arrived or finished. Your chat reply must be normal words: never write JSON, code or tool names in chat. Never invent tool results.";
+    }
+
+    if (this.config.includeBotContext && botContext) {
+      const ctxParts = [];
+      if (botContext.username)
+        ctxParts.push(`Your username: ${botContext.username}`);
+      if (typeof botContext.health === "number")
+        ctxParts.push(
+          `HP: ${botContext.health}/20, Food: ${botContext.food}/20`,
+        );
+      if (botContext.position)
+        ctxParts.push(
+          `Coords: ${botContext.position.x}, ${botContext.position.y}, ${botContext.position.z} (${botContext.dimension || "overworld"})`,
+        );
+      if (botContext.heldItem) ctxParts.push(`Holding: ${botContext.heldItem}`);
+      if (botContext.nearbyPlayers?.length)
+        ctxParts.push(`Nearby players: ${botContext.nearbyPlayers.join(", ")}`);
+      if (botContext.activeScripts?.length)
+        ctxParts.push(`Current tasks: ${botContext.activeScripts.join(", ")}`);
+      if (ctxParts.length > 0) {
+        sysPrompt += `\n[Game State: ${ctxParts.join(" | ")}]`;
+      }
+    }
+
+    if (isThinkingModel(model) && /^qwen3/i.test(model)) {
+      sysPrompt += "\n/no_think";
+    }
+    return sysPrompt;
+  }
+
+  chatBody(model, messages, extra = {}) {
+    const body = {
+      model,
+      messages,
+      stream: false,
+      keep_alive: "30m",
+      options: {
+        temperature: 0.7,
+        num_predict: Math.max(
+          40,
+          Math.min(400, Number(this.config.maxTokens) || 160),
+        ),
+      },
+      ...extra,
+    };
+    if (isThinkingModel(model)) body.think = false;
+    return body;
+  }
+
+  finalizeReply(rawText, botContext) {
+    const cleaned = cleanModelText(rawText);
+    let reply = (looksLikeCode(cleaned) ? "" : cleaned)
+      .replace(/\r?\n+/g, " ")
+      .replace(/^["']|["']$/g, "")
+      .trim();
+    if (botContext?.username) {
+      const escaped = botContext.username.replace(
+        /[.*+?^${}()|[\]\\]/g,
+        "\\$&",
+      );
+      reply = reply.replace(new RegExp(`^<?${escaped}>?:\\s*`, "i"), "").trim();
+    }
+    const maxLen = Number(this.config.maxMessageLength) || 100;
+    const parts = this.config.splitMessages
+      ? splitIntoMessages(reply, maxLen, this.config.maxParts)
+      : splitIntoMessages(reply, Math.min(240, maxLen * 2), 1);
+    return { reply: parts.join(" "), parts };
+  }
+
+  rememberExchange(sender, message, reply) {
+    this.chatHistory.push(
+      { role: "user", content: `${sender}: ${message}` },
+      { role: "assistant", content: reply },
+    );
+    if (this.chatHistory.length > 12) {
+      this.chatHistory.splice(0, this.chatHistory.length - 12);
+    }
+  }
+
   async generateChatReply({
     sender = "Player",
     message = "",
@@ -789,17 +1341,11 @@ class OllamaManager {
     overrideModel = "",
     bypassCooldown = false,
   } = {}) {
-    const model = String(
-      overrideModel ||
-        this.config.model ||
-        this.cachedHardware?.recommendedModel ||
-        "qwen2.5:1.5b",
-    ).trim();
+    const model = this.resolveModel(overrideModel);
 
     if (!message || !String(message).trim()) {
       return { ok: false, error: "Empty message." };
     }
-
     if (!bypassCooldown && this.isGenerating) {
       return { ok: false, error: "Already generating a reply." };
     }
@@ -808,101 +1354,39 @@ class OllamaManager {
     const startMs = Date.now();
 
     try {
-      let sysPrompt = String(
-        this.config.systemPrompt ||
-          "You are a friendly Minecraft player chatting on a server. Reply naturally in 1 short sentence under 140 characters.",
-      ).trim();
-
-      if (this.config.includeBotContext && botContext) {
-        const ctxParts = [];
-        if (botContext.username)
-          ctxParts.push(`Your username: ${botContext.username}`);
-        if (typeof botContext.health === "number")
-          ctxParts.push(
-            `HP: ${botContext.health}/20, Food: ${botContext.food}/20`,
-          );
-        if (botContext.position)
-          ctxParts.push(
-            `Coords: ${botContext.position.x}, ${botContext.position.y}, ${botContext.position.z} (${botContext.dimension || "overworld"})`,
-          );
-        if (botContext.heldItem)
-          ctxParts.push(`Holding: ${botContext.heldItem}`);
-        if (
-          Array.isArray(botContext.nearbyPlayers) &&
-          botContext.nearbyPlayers.length > 0
-        )
-          ctxParts.push(
-            `Nearby players: ${botContext.nearbyPlayers.join(", ")}`,
-          );
-        if (
-          Array.isArray(botContext.activeScripts) &&
-          botContext.activeScripts.length > 0
-        )
-          ctxParts.push(
-            `Current tasks: ${botContext.activeScripts.join(", ")}`,
-          );
-        if (ctxParts.length > 0) {
-          sysPrompt += `\n[Game State: ${ctxParts.join(" | ")}]`;
-        }
-      }
-
       const messages = [
-        { role: "system", content: sysPrompt },
+        {
+          role: "system",
+          content: this.buildSystemPrompt(botContext, { model }),
+        },
         ...this.chatHistory.slice(-6),
         { role: "user", content: `${sender}: ${message}` },
       ];
 
       const res = await httpJsonRequest(`${this.host}/api/chat`, {
         method: "POST",
-        timeout: 25000,
-        body: {
-          model,
-          messages,
-          stream: false,
-          keep_alive: "10m",
-          options: {
-            temperature: 0.7,
-            num_predict: Math.max(
-              20,
-              Math.min(120, Number(this.config.maxTokens) || 70),
-            ),
-          },
-        },
+        timeout: 45000,
+        body: this.chatBody(model, messages),
       });
 
-      let reply = String(res?.message?.content || "")
-        .replace(/<think>[\s\S]*?<\/think>/gi, "")
-        .replace(/\r?\n+/g, " ")
-        .replace(/^["']|["']$/g, "")
-        .trim();
-
-      // Strip accidental self-prefix if the model wrote "BotName: hello"
-      if (botContext?.username) {
-        const prefixRe = new RegExp(`^<?${botContext.username}>?:\\s*`, "i");
-        reply = reply.replace(prefixRe, "").trim();
-      }
-
-      if (reply.length > 220) {
-        reply = `${reply.slice(0, 217)}...`;
-      }
-
+      const raw = String(res?.message?.content || "");
+      const { reply, parts } = this.finalizeReply(raw, botContext);
       if (!reply) {
-        return { ok: false, error: "Model returned an empty response." };
+        // Prompts may ask the model to stay quiet (blank output) on purpose.
+        return raw.length && !raw.trim()
+          ? { ok: false, silent: true, model }
+          : { ok: false, error: "Model returned an empty response.", model };
       }
 
-      this.lastReplyTime = Date.now();
-      this.chatHistory.push(
-        { role: "user", content: `${sender}: ${message}` },
-        { role: "assistant", content: reply },
-      );
-      if (this.chatHistory.length > 12) {
-        this.chatHistory.splice(0, this.chatHistory.length - 12);
-      }
+      if (!bypassCooldown) this.markReplied();
+      this.rememberExchange(sender, message, reply);
 
       return {
         ok: true,
         reply,
+        parts,
         model,
+        actions: [],
         latencyMs: Date.now() - startMs,
       };
     } catch (err) {
@@ -915,10 +1399,291 @@ class OllamaManager {
       this.isGenerating = false;
     }
   }
+
+  // Chat reply where the model may call bot functions (tools) first.
+  async runAgent({
+    sender = "Player",
+    message = "",
+    botContext = null,
+    tools = [],
+    executeTool = async () => "Unknown tool",
+    overrideModel = "",
+    bypassCooldown = false,
+    maxRounds = 5,
+    remember = true,
+  } = {}) {
+    const model = this.resolveAgentModel(overrideModel);
+    if (!message || !String(message).trim()) {
+      return { ok: false, error: "Empty message." };
+    }
+    if (!bypassCooldown && this.isGenerating) {
+      return { ok: false, error: "Already generating a reply." };
+    }
+
+    this.isGenerating = true;
+    const startMs = Date.now();
+    const actions = [];
+    const toolNames = tools.map((t) => t.function.name);
+    // Results the model must read before answering.
+    const INFO_TOOLS = new Set(["get_status", "list_scripts", "run_code"]);
+
+    const runCalls = async (calls) => {
+      let needsFollowUp = false;
+      for (const call of calls.slice(0, 4)) {
+        const name = call?.function?.name || "";
+        let args = call?.function?.arguments || {};
+        if (typeof args === "string") {
+          try {
+            args = JSON.parse(args);
+          } catch (_) {
+            args = {};
+          }
+        }
+        let result;
+        let failed = false;
+        try {
+          result = toolNames.includes(name)
+            ? await executeTool(name, args, { sender })
+            : `Error: unknown tool ${name}`;
+        } catch (err) {
+          result = `Error: ${err.message || err}`;
+        }
+        const resultText =
+          typeof result === "string" ? result : JSON.stringify(result);
+        failed = /^(error|failed|no path|stuck|could not|cannot|unknown)/i.test(
+          resultText,
+        );
+        if (failed || INFO_TOOLS.has(name)) needsFollowUp = true;
+        actions.push({ name, args, result: resultText, failed });
+        messages.push({
+          role: "tool",
+          tool_name: name,
+          content: resultText.slice(0, 1500),
+        });
+      }
+      return needsFollowUp;
+    };
+
+    const messages = [
+      {
+        role: "system",
+        content: this.buildSystemPrompt(botContext, { agent: true, model }),
+      },
+      ...this.chatHistory.slice(-6),
+      { role: "user", content: `${sender}: ${message}` },
+    ];
+
+    try {
+      let finalText = "";
+      for (let round = 0; round < maxRounds; round++) {
+        let res;
+        try {
+          res = await httpJsonRequest(`${this.host}/api/chat`, {
+            method: "POST",
+            timeout: 90000,
+            body: this.chatBody(model, messages, {
+              tools,
+              options: {
+                temperature: 0.3,
+                num_predict: round === 0 ? 300 : 160,
+                num_ctx: 8192,
+              },
+            }),
+          });
+        } catch (err) {
+          if (/does not support tools/i.test(err.message || "")) {
+            this.noToolsModels.add(model);
+            this.isGenerating = false;
+            const fallback = await this.generateChatReply({
+              sender,
+              message,
+              botContext,
+              bypassCooldown,
+            });
+            return {
+              ...fallback,
+              note: `${model} cannot run actions. Pick a model tagged Actions for the agent.`,
+            };
+          }
+          throw err;
+        }
+
+        const msg = res?.message || {};
+        let calls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+        let content = String(msg.content || "");
+        if (!calls.length) {
+          calls = parseTextToolCalls(cleanModelText(content), toolNames);
+          if (calls.length) content = "";
+        }
+        if (!calls.length) {
+          finalText = content;
+          break;
+        }
+
+        messages.push({ role: "assistant", content, tool_calls: calls });
+        const needsFollowUp = await runCalls(calls);
+        // Plain actions with a ready reply: skip another model round.
+        const spoken = cleanModelText(content);
+        if (!needsFollowUp && spoken && !looksLikeCode(spoken)) {
+          finalText = spoken;
+          break;
+        }
+      }
+
+      let { reply, parts } = this.finalizeReply(finalText, botContext);
+      if (!reply && actions.length) {
+        const last = actions[actions.length - 1];
+        reply = last.failed ? "Hmm, I couldn't do that right now." : "On it!";
+        parts = [reply];
+      }
+      if (!reply) {
+        return finalText.length && !finalText.trim()
+          ? { ok: false, silent: true, model, actions }
+          : {
+              ok: false,
+              error: "Model returned an empty response.",
+              model,
+              actions,
+            };
+      }
+
+      if (!bypassCooldown) this.markReplied();
+      if (remember) this.rememberExchange(sender, message, reply);
+      return {
+        ok: true,
+        reply,
+        parts,
+        model,
+        actions,
+        latencyMs: Date.now() - startMs,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        error: err.message || "Failed to query Ollama API",
+        model,
+        actions,
+      };
+    } finally {
+      this.isGenerating = false;
+    }
+  }
+
+  resolveScriptModel(installed = []) {
+    if (this.config.scriptModel) return this.config.scriptModel;
+    const names = installed.map((m) => m.name);
+    const coder = names.find((n) => /coder/i.test(n));
+    return (
+      coder ||
+      this.config.model ||
+      this.cachedHardware?.recommendedCodeModel ||
+      "qwen2.5-coder:3b"
+    );
+  }
+
+  // Streams a full answer for script generation; onToken gets the text so far.
+  streamChat({ model, messages, options = {}, onToken = () => {}, signal }) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (val) => {
+        if (!settled) {
+          settled = true;
+          resolve(val);
+        }
+      };
+      try {
+        const u = new URL(`${this.host}/api/chat`);
+        const lib = u.protocol === "https:" ? https : http;
+        const body = {
+          model,
+          messages,
+          stream: true,
+          keep_alive: "30m",
+          options,
+        };
+        if (isThinkingModel(model)) body.think = false;
+        const payload = JSON.stringify(body);
+        const req = lib.request(
+          {
+            hostname: u.hostname,
+            port: u.port || 11434,
+            path: u.pathname,
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Content-Length": Buffer.byteLength(payload),
+            },
+          },
+          (res) => {
+            if (res.statusCode < 200 || res.statusCode >= 300) {
+              let errText = "";
+              res.on("data", (c) => (errText += c));
+              res.on("end", () =>
+                finish({
+                  ok: false,
+                  error: `HTTP ${res.statusCode}: ${errText.slice(0, 160)}`,
+                }),
+              );
+              return;
+            }
+            let buffer = "";
+            let text = "";
+            let streamError = "";
+            res.setEncoding("utf8");
+            res.on("data", (chunk) => {
+              buffer += chunk;
+              const lines = buffer.split("\n");
+              buffer = lines.pop() || "";
+              for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                  const evt = JSON.parse(line);
+                  if (evt.error) streamError = evt.error;
+                  const piece = evt?.message?.content || "";
+                  if (piece) {
+                    text += piece;
+                    onToken(text);
+                  }
+                } catch (_) {}
+              }
+            });
+            res.on("end", () =>
+              finish(
+                streamError
+                  ? { ok: false, error: streamError, text }
+                  : { ok: true, text },
+              ),
+            );
+            res.on("error", (err) => finish({ ok: false, error: err.message }));
+          },
+        );
+        req.setTimeout(300000, () => req.destroy(new Error("Timed out")));
+        req.on("error", (err) =>
+          finish({
+            ok: false,
+            error: signal?.aborted ? "Cancelled" : err.message,
+          }),
+        );
+        if (signal) {
+          signal.addEventListener("abort", () =>
+            req.destroy(new Error("Cancelled")),
+          );
+        }
+        req.write(payload);
+        req.end();
+      } catch (err) {
+        finish({ ok: false, error: err.message });
+      }
+    });
+  }
 }
 
 module.exports = {
   OllamaManager,
   ollamaManager: new OllamaManager(),
   RECOMMENDED_MODELS,
+  splitIntoMessages,
+  cleanModelText,
+  parseTextToolCalls,
+  supportsTools,
 };
