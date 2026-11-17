@@ -1,0 +1,203 @@
+#content {
+  width: 95%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+  align-items: center;
+  gap: 1.05rem;
+  padding: 1.85rem 1.5rem 2.15rem;
+  background-color: var(--panel-bg);
+  border: 2px solid var(--dark-main-color);
+  border-radius: 18px;
+  box-shadow: 0 0.45rem 0 0 var(--dark-main-color);
+  text-align: center;
+  opacity: 0;
+  animation: mcbpLoadIn 0.45s var(--spring-ease) 0.12s forwards;
+}
+
+#stats {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem 0;
+  background-color: rgba(145, 113, 248, 0.12);
+  border: 2px solid var(--dark-main-color);
+  border-radius: 12px;
+  padding: 0.4rem 0.45rem;
+  margin: -0.15rem 0 0.15rem;
+  min-height: calc(1.25rem + 0.8rem + 4px);
+  max-width: 100%;
+  position: relative;
+  /* Size changes (skeleton -> real stats) are animated from JS by setting
+     explicit width/height; these transitions make that glide smoothly. */
+  transition:
+    width 0.45s var(--smooth-ease),
+    height 0.45s var(--smooth-ease),
+    min-height 0.45s var(--smooth-ease),
+    margin 0.45s var(--smooth-ease),
+    padding 0.45s var(--smooth-ease),
+    border-width 0.45s var(--smooth-ease),
+    opacity 0.35s ease,
+    transform 0.35s var(--spring-ease);
+  --smooth-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+#stats.is-resizing {
+  overflow: hidden;
+}
+
+#stats[hidden],
+#stats .stat-item[hidden],
+#stats:not(.is-loading):not(.is-swapping) .stat-skeletons {
+  display: none !important;
+}
+
+/* While loading, the skeletons lay out as direct flex items of #stats */
+.stat-skeletons {
+  display: contents;
+}
+
+/* While swapping to real stats, the skeletons become an overlay that keeps
+   shimmering through the resize, then crossfades into the real items. */
+#stats.is-swapping .stat-skeletons {
+  display: flex;
+  position: absolute;
+  inset: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem 0;
+  padding: inherit;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.35s ease;
+}
+
+#stats.is-swapping.is-loaded .stat-skeletons {
+  opacity: 0;
+}
+
+/* Real items stay invisible until the box has finished resizing,
+   then fade in (prevents text reflowing inside a moving box). */
+#stats:not(.is-loaded) .stat-item {
+  opacity: 0;
+}
+
+/* Stat links must never inherit the full-width mobile button style */
+#content #stats a.stat-item {
+  width: auto;
+}
+
+#stats.is-empty {
+  opacity: 0;
+  transform: scale(0.96);
+}
+
+/* Loading placeholders: same height as real items, so nothing jumps */
+.stat-skeleton {
+  display: block;
+  width: var(--w, 6rem);
+  height: 0.85rem;
+  margin: 0.2rem 0.65rem;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    rgba(177, 151, 252, 0.14) 0%,
+    rgba(177, 151, 252, 0.34) 50%,
+    rgba(177, 151, 252, 0.14) 100%
+  );
+  background-size: 200% 100%;
+  animation: statShimmer 1.3s ease-in-out infinite;
+}
+
+.stat-skeleton + .stat-skeleton {
+  position: relative;
+}
+
+.stat-skeleton + .stat-skeleton::before {
+  content: "";
+  position: absolute;
+  left: calc(-0.65rem - 1px);
+  top: -0.2rem;
+  bottom: -0.2rem;
+  border-left: 1.5px solid rgba(107, 76, 230, 0.45);
+}
+
+.stat-skeleton.is-row-start::before {
+  display: none !important;
+}
+
+@keyframes statShimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
+@keyframes statFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+#stats.is-loaded .stat-item {
+  animation: statFadeIn 0.35s ease both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stat-skeleton,
+  #stats.is-loaded .stat-item {
+    animation: none;
+  }
+
+  #stats {
+    transition: none;
+  }
+}
+
+.stat-item {
+  font-family: "Nunito", "Poppins", sans-serif;
+  font-size: 0.84rem;
+  font-weight: 800;
+  color: var(--main-color);
+  background: none;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  line-height: 1.25rem;
+  padding: 0 0.65rem;
+  margin: 0;
+  white-space: nowrap;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.stat-item:not([hidden]) ~ .stat-item:not([hidden]) {
+  border-left: 1.5px solid rgba(107, 76, 230, 0.45);
+}
+
+.stat-item.is-row-start {
+  border-left: none !important;
+}
+
+#content > div:not(#stats) {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.65rem;
+  width: 100%;
+  min-width: 0;
+}
+
+#content > div:not(#stats) > a {
+  margin: 0;
+}
