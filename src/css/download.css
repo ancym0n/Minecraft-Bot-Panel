@@ -1,0 +1,372 @@
+/* ---------- Download button & Download Modal ---------- */
+
+#download-btn {
+  gap: 0.5rem;
+}
+
+#download-btn .btn-icon {
+  flex-shrink: 0;
+  display: block;
+  transition: transform 0.3s var(--spring-ease);
+}
+
+body.is-modal-open {
+  overflow: hidden;
+}
+
+@keyframes dmCardEnter {
+  0% {
+    opacity: 0;
+    filter: blur(8px);
+    transform: translateY(10px) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    filter: blur(0px);
+    transform: translateY(0) scale(1);
+  }
+}
+
+#download-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 950;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    padding 0.3s ease;
+}
+
+#download-modal[hidden] {
+  display: none !important;
+}
+
+#download-modal.is-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+#dm-backdrop {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(22, 19, 31, 0.78);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  transition: opacity 0.28s ease;
+}
+
+/* Matches #content panel card 1:1 */
+#dm-window {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 26rem);
+  max-height: min(90vh, 38rem);
+  max-height: min(90dvh, 38rem);
+  display: grid;
+  justify-items: center;
+  align-items: center;
+  gap: 1.05rem;
+  padding: 1.85rem 1.5rem 1.55rem;
+  background-color: var(--panel-bg);
+  border: 2px solid var(--dark-main-color);
+  border-radius: 18px;
+  box-shadow: 0 0.45rem 0 0 var(--dark-main-color);
+  text-align: center;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  filter: blur(8px);
+  transform: translateY(18px) scale(0.95);
+  transition:
+    transform 0.38s var(--spring-ease),
+    filter 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    width 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+    padding 0.3s ease,
+    gap 0.3s ease;
+}
+
+#download-modal.is-open #dm-window {
+  filter: blur(0px);
+  transform: translateY(0) scale(1);
+}
+
+#dm-title {
+  margin: 0;
+}
+
+.dm-icon-btn {
+  position: absolute;
+  top: 0.9rem;
+  right: 0.9rem;
+  appearance: none;
+  width: 2.15rem;
+  height: 2.15rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(145, 113, 248, 0.12);
+  color: var(--main-color);
+  border: 2px solid var(--dark-main-color);
+  border-radius: 11px;
+  box-shadow: 0 0.24rem 0 0 var(--dark-main-color);
+  cursor: pointer;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    transform 0.25s var(--spring-ease),
+    box-shadow 0.25s var(--spring-ease),
+    background-color 0.2s ease,
+    color 0.2s ease;
+}
+
+/* ---------- OS Switcher (matches #stats box) ---------- */
+
+#dm-os-tabs {
+  position: relative;
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 0.35rem;
+  padding: 0.3rem;
+  margin: -0.15rem 0 0.1rem;
+  background-color: rgba(145, 113, 248, 0.12);
+  border: 2px solid var(--dark-main-color);
+  border-radius: 12px;
+  max-width: 100%;
+  isolation: isolate;
+}
+
+.dm-tab-slider {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-color: var(--background-color);
+  border: 2px solid var(--dark-main-color);
+  border-radius: 9px;
+  box-shadow: 0 0.18rem 0 0 var(--dark-main-color);
+  opacity: 0;
+  transition:
+    transform 0.36s var(--spring-ease),
+    width 0.36s var(--spring-ease),
+    height 0.36s var(--spring-ease),
+    opacity 0.2s ease;
+}
+
+.dm-tab-slider.is-ready {
+  opacity: 1;
+}
+
+.dm-os-tab {
+  position: relative;
+  z-index: 1;
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.42rem;
+  font-family: "Nunito", "Poppins", sans-serif;
+  font-size: 0.88rem;
+  font-weight: 800;
+  color: var(--main-color);
+  background-color: transparent;
+  border: 2px solid transparent;
+  border-radius: 9px;
+  padding: 0.38rem 0.95rem;
+  cursor: pointer;
+  white-space: nowrap;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    color 0.22s ease,
+    background-color 0.22s ease,
+    transform 0.22s var(--spring-ease);
+}
+
+.dm-os-tab svg {
+  flex-shrink: 0;
+  display: block;
+  transition: transform 0.28s var(--spring-ease);
+}
+
+.dm-os-tab.is-active {
+  color: var(--title-color);
+}
+
+.dm-os-tab.is-active svg {
+  transform: scale(1.08);
+}
+
+#dm-os-tabs:not(.has-slider) .dm-os-tab.is-active {
+  background-color: var(--background-color);
+  border-color: var(--dark-main-color);
+  box-shadow: 0 0.18rem 0 0 var(--dark-main-color);
+}
+
+/* ---------- Download Buttons (matches main <a> 3D buttons) ---------- */
+
+#dm-asset-list {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.78rem;
+  padding-bottom: 0.3rem;
+  transition:
+    height 0.34s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.15s ease,
+    filter 0.15s ease,
+    transform 0.15s ease;
+}
+
+#dm-asset-list.is-resizing {
+  overflow: hidden;
+}
+
+#dm-asset-list.is-switching {
+  opacity: 0;
+  filter: blur(8px);
+  transform: translateY(5px) scale(0.98);
+  pointer-events: none;
+}
+
+#download-modal a.dm-card {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 1.15rem;
+  margin: 0;
+  background-color: var(--background-color);
+  border: 2px solid var(--dark-main-color);
+  border-radius: 14px;
+  box-shadow: 0 0.42rem 0 0 var(--dark-main-color);
+  color: var(--title-color);
+  text-decoration: none;
+  animation: dmCardEnter 0.36s var(--spring-ease) both;
+  animation-delay: calc(var(--i, 0) * 55ms);
+  transition:
+    transform 0.3s var(--spring-ease),
+    box-shadow 0.3s var(--spring-ease),
+    background-color 0.3s ease,
+    color 0.3s ease,
+    padding 0.28s ease;
+}
+
+.dm-card-left {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.dm-card-left svg {
+  flex-shrink: 0;
+  display: block;
+}
+
+.dm-card-title {
+  font-family: "Nunito", "Poppins", sans-serif;
+  font-size: 1.02rem;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.dm-star-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--title-color);
+  flex-shrink: 0;
+}
+
+.dm-card-right {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.dm-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.16rem 0.55rem;
+  font-family: "Nunito", "Poppins", sans-serif;
+  font-size: 0.76rem;
+  font-weight: 800;
+  line-height: 1.2;
+  color: var(--title-color);
+  background-color: rgba(30, 26, 43, 0.38);
+  border: 1.5px solid rgba(242, 237, 255, 0.38);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.dm-dl-arrow {
+  flex-shrink: 0;
+  display: block;
+  transition: transform 0.3s var(--spring-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #dm-window,
+  .dm-tab-slider,
+  #dm-asset-list,
+  #download-modal a.dm-card {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* ---------- Skeletons ---------- */
+
+.dm-skeleton-card {
+  width: 100%;
+  height: 3.1rem;
+  border-radius: 14px;
+  border: 2px solid var(--dark-main-color);
+  background: linear-gradient(
+    90deg,
+    rgba(177, 151, 252, 0.14) 0%,
+    rgba(177, 151, 252, 0.34) 50%,
+    rgba(177, 151, 252, 0.14) 100%
+  );
+  background-size: 200% 100%;
+  animation: statShimmer 1.3s ease-in-out infinite;
+}
+
+/* ---------- Footer (matches #credit) ---------- */
+
+#dm-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  margin-top: -0.15rem;
+  font-size: 0.86rem;
+  font-weight: 800;
+  color: var(--dark-main-color);
+}
+
+#dm-footer a {
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  margin: 0;
+  color: var(--main-color);
+  font-size: inherit;
+}
+
+#dm-footer a.report-link {
+  color: var(--dark-main-color);
+  opacity: 0.78;
+}
+
+#dm-version-pill[hidden],
+#dm-footer-sep[hidden] {
+  display: none !important;
+}

@@ -68,7 +68,9 @@ a.stat-item:active {
 }
 
 #credit a:hover,
-#credit a:active {
+#credit a:active,
+#dm-footer a:hover,
+#dm-footer a:active {
   background: none;
   box-shadow: none;
   transform: none;
@@ -104,4 +106,29 @@ a.stat-item:active {
 #privacy > div:hover {
   transform: translateY(-2px);
   box-shadow: 0 calc(0.38rem + 2px) 0 0 var(--dark-main-color);
+}
+
+#download-btn:hover .btn-icon,
+#download-modal a.dm-card:hover .dm-dl-arrow {
+  transform: translateY(1.5px);
+}
+
+.dm-icon-btn:hover {
+  background-color: var(--background-color);
+  color: #ffffff;
+  transform: translateY(-2px);
+  box-shadow: 0 calc(0.24rem + 2px) 0 0 var(--dark-main-color);
+}
+
+.dm-icon-btn:active {
+  transform: translateY(2px);
+  box-shadow: 0 0.1rem 0 0 var(--dark-main-color);
+}
+
+.dm-os-tab:hover:not(.is-active) {
+  color: var(--title-color);
+}
+
+.dm-os-tab:active {
+  transform: translateY(1px);
 }
