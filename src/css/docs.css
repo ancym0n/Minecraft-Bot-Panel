@@ -1,0 +1,231 @@
+#docs {
+  width: 95%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+  align-items: center;
+  gap: 1.1rem;
+  padding: 0.5rem 0;
+  text-align: center;
+}
+
+#docs h1 {
+  margin-bottom: 0.35rem;
+  opacity: 0;
+  animation: mcbpLoadIn 0.45s var(--spring-ease) 0.18s forwards;
+}
+
+#docs h2 {
+  margin-bottom: 0.55rem;
+  color: var(--title-color);
+}
+
+#docs h3 {
+  margin-top: 0.85rem;
+  margin-bottom: 0.35rem;
+  font-size: 1.08rem;
+  color: var(--title-color);
+}
+
+#docs > div {
+  width: 100%;
+  min-width: 0;
+  background-color: var(--panel-bg);
+  border: 2px solid var(--dark-main-color);
+  border-radius: 16px;
+  box-shadow: 0 0.38rem 0 0 var(--dark-main-color);
+  padding: 1.35rem 1.65rem 1.5rem;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  overflow-wrap: break-word;
+  opacity: 0;
+  animation: mcbpLoadIn 0.45s var(--spring-ease) forwards;
+  transition:
+    transform 0.3s var(--spring-ease),
+    box-shadow 0.3s var(--spring-ease);
+}
+
+#docs > div:nth-of-type(1) {
+  animation-delay: 0.22s;
+}
+
+#docs > div:nth-of-type(2) {
+  animation-delay: 0.28s;
+}
+
+#docs > div:nth-of-type(3) {
+  animation-delay: 0.34s;
+}
+
+#docs > div:nth-of-type(4) {
+  animation-delay: 0.4s;
+}
+
+#docs > div:nth-of-type(5) {
+  animation-delay: 0.46s;
+}
+
+#docs > div:nth-of-type(6) {
+  animation-delay: 0.52s;
+}
+
+#docs ul,
+#docs ol {
+  list-style-type: none;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.6rem;
+  margin-top: 0.2rem;
+}
+
+/* Built-in scripts interactive grid styled after MCBP's .script-container */
+.scripts-grid {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.7rem;
+  margin-top: 0.35rem;
+  text-align: left;
+}
+
+.script-card {
+  min-width: 0;
+  background-color: var(--bg-dark);
+  border: 2px solid var(--dark-main-color);
+  border-radius: 14px;
+  box-shadow: 0 0.3rem 0 0 var(--dark-main-color);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition:
+    border-color 0.25s ease,
+    transform 0.25s var(--spring-ease),
+    box-shadow 0.25s var(--spring-ease);
+}
+
+.script-card-title {
+  width: 100%;
+  cursor: pointer;
+  padding: 0.45rem 0.6rem;
+  font-size: 0.92rem;
+  font-weight: 800;
+  text-align: center;
+  color: var(--title-color);
+  background-color: var(--accent-dark-bg);
+  border: none;
+  border-bottom: 2px solid var(--dark-main-color);
+  transition:
+    background-color 0.25s ease,
+    border-color 0.25s ease,
+    color 0.25s ease;
+}
+
+.script-card-title.script-name-active {
+  background-color: var(--green-color) !important;
+  border-bottom-color: var(--dark-green-color) !important;
+  color: #133926 !important;
+}
+
+.script-card-body {
+  min-width: 0;
+  padding: 0.65rem 0.75rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  flex: 1;
+}
+
+.script-card-body p {
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.script-options-list {
+  font-size: 0.8rem !important;
+  color: var(--main-color) !important;
+  margin-top: auto;
+}
+
+/* Code blocks styled after MCBP's dark <pre> panels */
+.code-box {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  background-color: var(--bg-dark);
+  border: 2px solid var(--dark-main-color);
+  border-radius: 12px;
+  box-shadow: 0 0.28rem 0 0 var(--dark-main-color);
+  overflow: hidden;
+  text-align: left;
+  margin-top: 0.2rem;
+}
+
+.code-box-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.4rem 0.75rem;
+  background-color: var(--accent-dark-bg);
+  border-bottom: 2px solid var(--dark-main-color);
+}
+
+.code-box-header span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Nunito", "Poppins", monospace;
+  font-size: 0.8rem;
+  font-weight: 800;
+  color: var(--light-main-color);
+}
+
+.copy-btn {
+  flex-shrink: 0;
+  cursor: pointer;
+  padding: 0.18rem 0.6rem;
+  font-size: 0.74rem;
+  font-weight: 800;
+  border-radius: 8px;
+  background-color: var(--panel-bg);
+  border: 1.5px solid var(--accent-border);
+  box-shadow: 0 0.16rem 0 0 var(--dark-main-color);
+  color: var(--light-main-color);
+  transition:
+    transform 0.2s var(--spring-ease),
+    box-shadow 0.2s var(--spring-ease),
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.copy-btn.is-copied {
+  background-color: rgba(123, 255, 208, 0.18);
+  border-color: var(--dark-green-color);
+  box-shadow: 0 0.16rem 0 0 var(--dark-green-color);
+  color: var(--green-color);
+}
+
+pre {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  padding: 0.75rem 0.9rem;
+  font-family: "Nunito", "Poppins", monospace;
+  font-size: 0.84rem;
+  font-weight: 700;
+  line-height: 1.48;
+  color: var(--light-main-color);
+  overflow-x: auto;
+  white-space: pre;
+  tab-size: 2;
+  -webkit-user-select: text;
+  -moz-user-select: text;
+  user-select: text;
+}

@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;700;800&family=Poppins:ital,wght@0,400;0,600;0,700;1,400&display=swap"
+    />
+    <link rel="preload" href="../src/img/logo.png" as="image" />
+    <link rel="preload" href="../src/img/mcbp-title.svg" as="image" />
+    <link rel="stylesheet" href="../src/css/main.css" />
+    <link rel="stylesheet" href="../src/css/content.css" />
+    <link rel="stylesheet" href="../src/css/banner.css" />
+    <link rel="stylesheet" href="../src/css/docs.css" />
+    <link rel="stylesheet" href="../src/css/resize.css" />
+    <link rel="stylesheet" href="../src/css/hover.css" />
+    <script>
+      document.documentElement.classList.add("is-booting");
+      // Failsafe: never keep the loader up if main.js fails to load
+      setTimeout(function () {
+        document.documentElement.classList.remove("is-booting");
+      }, 4000);
+    </script>
+    <link rel="stylesheet" href="../src/css/loader.css" />
+    <script src="../src/js/main.js" defer></script>
+    <link rel="shortcut icon" href="../src/img/logo.png" type="image/png" />
+    <title>MCBP - Documentation</title>
+    <meta name="theme-color" content="#6b4ce6" />
+  </head>
+  <body>
+    <div id="loader" role="status" aria-live="polite">
+      <div class="loader-stage">
+        <div class="loader-card">
+          <img class="loader-logo" src="../src/img/logo.png" alt="" />
+          <div class="loader-shadow" aria-hidden="true"></div>
+          <div class="loader-bar" aria-hidden="true"><span></span></div>
+          <p class="loader-text">Loading MCBP…</p>
+        </div>
+      </div>
+    </div>
+
+    <section id="banner">
+      <a href="../" id="banner-logo" aria-label="Back to home">
+        <img src="../src/img/mcbp-title.svg" alt="MCBP" />
+      </a>
+      <a
+        href="https://github.com/ancym0n/Minecraft-Bot-Panel/releases"
+        target="_blank"
+        rel="noopener"
+        id="version"
+        aria-label="Latest GitHub release"
+      ></a>
+    </section>
+
+    <section id="content">
+      <h1>Download now!</h1>
+      <div id="stats" hidden>
+        <span id="total-downloads" class="stat-item" hidden></span>
+        <a
+          id="github-stars"
+          class="stat-item"
+          href="https://github.com/ancym0n/Minecraft-Bot-Panel/stargazers"
+          target="_blank"
+          rel="noopener"
+          hidden
+        ></a>
+        <a
+          id="mc-versions"
+          class="stat-item"
+          href="https://github.com/PrismarineJS/mineflayer"
+          target="_blank"
+          rel="noopener"
+          hidden
+        ></a>
+      </div>
+      <div>
+        <a
+          href="https://github.com/ancym0n/Minecraft-Bot-Panel/releases"
+          target="_blank"
+          rel="noopener"
+          >Latest Version</a
+        >
+        <a
+          href="https://github.com/ancym0n/Minecraft-Bot-Panel"
+          target="_blank"
+          rel="noopener"
+          >Source Code</a
+        >
+      </div>
+    </section>
+
+    <section id="docs">
+      <h1>Documentation</h1>
+
+      <div>
+        <h2>1. Installation</h2>
+        <p>
+          The easiest way to get started is to grab a ready-made build from the
+          releases page:
+          <code>MCBPv&lt;version&gt;-win.x64-setup.exe</code> (Windows
+          installer), <code>MCBPv&lt;version&gt;-win.x64.zip</code>,
+          <code>Minecraft-Bot-Panel-&lt;version&gt;-x86_64.AppImage</code>, or
+          <code>MCBPv&lt;version&gt;-linux.x64.zip</code>.
+        </p>
+        <p>
+          You do <strong>not</strong> need Node.js installed to run the prebuilt
+          packages. On launch, the app automatically keeps its
+          <i>mineflayer</i>, <i>minecraft-data</i>, and
+          <i>mineflayer-pathfinder</i> packages synced in its local data folder,
+          so new Minecraft versions work out of the box without waiting for a
+          new app build.
+        </p>
+        <h3>Running from source</h3>
+        <p>
+          If you want to run or build MCBP from source, install Node.js and run:
+        </p>
+        <div class="code-box">
+          <div class="code-box-header">
+            <span>Terminal</span>
+            <button type="button" class="copy-btn">Copy</button>
+          </div>
+          <pre><code>npm install
+npm start
+# Build installers into dist/
+npm run make</code></pre>
+        </div>
+      </div>
+
+      <div>
+        <h2>2. Usage &amp; Connecting</h2>
+        <ul>
+          <li>
+            <strong>1. Pick a login mode:</strong> Choose
+            <strong>Microsoft</strong> for premium accounts or
+            <strong>Offline</strong> to join with any username up to 16
+            characters. For Microsoft login, enter your email and leave the
+            password blank to sign in with a Microsoft device code.
+          </li>
+          <li>
+            <strong>2. Enter the server address:</strong> Type the target server
+            address as <code>host</code> or <code>host:port</code> (defaults to
+            port <code>25565</code>). Leave <strong>Version</strong> set to
+            <code>Auto</code> to detect the server's version automatically, or
+            pick a specific Minecraft version from the list.
+          </li>
+          <li>
+            <strong>3. Spawn the bot:</strong> Click <strong>Connect</strong>.
+            If you are using a Microsoft account, look at the
+            <strong>Logs</strong> panel for the
+            <i>microsoft.com/link</i> verification URL and one-time code. You
+            can also click <strong>Sync Versions</strong> at any time to check
+            npm for newer Mineflayer protocol updates.
+          </li>
+          <li>
+            <strong>4. Control &amp; chat:</strong> Set your options in the
+            <strong>Scripts</strong> grid and click a script's top header bar to
+            toggle it on or off. Use the <strong>Chat</strong> panel to read
+            live server chat and send messages or <code>/commands</code> as the
+            bot.
+          </li>
+        </ul>
+      </div>
+
+      <div>
+        <h2>3. Default Scripts</h2>
+        <p>
+          MCBP comes with six built-in scripts. Fill in a script's options
+          first, then click its top title bar to turn it on (green) or off. You
+          can click the headers below to preview how they toggle in the app:
+        </p>
+
+        <div class="scripts-grid">
+          <div class="script-card">
+            <button type="button" class="script-card-title script-name-active">
+              AntiAFK
+            </button>
+            <div class="script-card-body">
+              <p>
+                Stops the server from kicking the bot for idling by performing
+                your checked actions at random every <i>1200ms</i>.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Jump</code>, <code>Move</code>,
+                <code>Rotate</code>, <code>Sneak</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">ClearInv</button>
+            <div class="script-card-body">
+              <p>
+                Drops every item stack from the bot's inventory onto the ground.
+                With <i>Repeat</i> checked, checks again every <i>1000ms</i>.
+              </p>
+              <p class="script-options-list">Options: <code>Repeat</code></p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">Follow</button>
+            <div class="script-card-body">
+              <p>
+                Finds a nearby player and continuously paths to their
+                coordinates using <i>mineflayer-pathfinder</i>.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Repeat</code>, <code>Player Name</code>,
+                <code>Delay</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">GoTo</button>
+            <div class="script-card-body">
+              <p>
+                Walks to the given world coordinates. Uses the bot's current Y
+                level if <i>Y</i> is left empty.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Repeat</code>, <code>X</code>, <code>Y</code>,
+                <code>Z</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">Mine</button>
+            <div class="script-card-body">
+              <p>
+                Finds nearby blocks matching the block ID (such as
+                <code>oak_log</code> or <code>stone</code>), walks to them, and
+                digs.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Repeat</code>, <code>Block ID</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">Spam</button>
+            <div class="script-card-body">
+              <p>
+                Sends chat messages on a custom interval. Checking
+                <i>AntiKick</i> adds a random 5-character tag to the end.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Repeat</code>, <code>AntiKick</code>,
+                <code>Message</code>, <code>Delay</code>
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <h2>4. Writing Custom Scripts</h2>
+        <p>
+          Click <strong>Custom Folder</strong> in the Scripts card (or open
+          <code>custom/scripts/</code>) and drop in a <code>.js</code> file that
+          exports <code>info</code> and <code>script</code>:
+        </p>
+
+        <div class="code-box">
+          <div class="code-box-header">
+            <span>custom/scripts/hellobot.js</span>
+            <button type="button" class="copy-btn">Copy</button>
+          </div>
+          <pre><code>const info = {
+  name: "HelloBot",
+  default: { interval: 3000 },
+  options: [
+    { type: "checkbox", label: "Repeat", id: "repeat" },
+    { type: "input", label: "Greeting", id: "greeting" },
+  ],
+};
+
+async function script(bot, log, clearLog, getOption, scriptRepeater) {
+  if (!bot) return log("HelloBot: Connect a bot first");
+  const [repeat, greeting] = await Promise.all([
+    getOption("repeat", info.name),
+    getOption("greeting", info.name),
+  ]);
+
+  const sendGreeting = () => bot.chat(greeting || "Hello!");
+  sendGreeting();
+  if (repeat === "on") {
+    await scriptRepeater(sendGreeting, info.default.interval);
+  }
+}
+
+module.exports = { info, script };</code></pre>
+        </div>
+
+        <ul>
+          <li>
+            <strong>info:</strong> Sets the card's <code>name</code>, optional
+            <code>default</code> settings, and the list of
+            <code>options</code> (either <code>type: "checkbox"</code> or
+            <code>type: "input"</code>).
+          </li>
+          <li>
+            <strong>bot:</strong> The active Mineflayer bot instance (or
+            <code>null</code> if not connected). <code>bot.pathfinder</code> is
+            already loaded on spawn.
+          </li>
+          <li>
+            <strong>log(text) &amp; clearLog(match):</strong>
+            <code>log</code> prints a timestamped line in the
+            <strong>Logs</strong> panel, while <code>clearLog</code> deletes any
+            previous log lines containing <code>match</code> so status updates
+            don't spam the log.
+          </li>
+          <li>
+            <strong>await getOption(id, info.name):</strong> Reads the current
+            value of a checkbox (<code>"on"</code> / <code>"off"</code>) or text
+            input (<code>string</code>) from the card.
+          </li>
+          <li>
+            <strong>await scriptRepeater(fn, intervalMs):</strong> Runs
+            <code>fn()</code> every <code>intervalMs</code> (minimum
+            <code>50ms</code>) while the script is toggled on, and stops
+            automatically when you toggle the script off or disconnect.
+          </li>
+        </ul>
+      </div>
+
+      <div>
+        <h2>5. Custom Theme (CSS)</h2>
+        <p>
+          You can change the look of the entire app by editing
+          <code>custom/theme.css</code>. Any CSS rules or variable overrides in
+          that file are loaded automatically across every screen:
+        </p>
+
+        <div class="code-box">
+          <div class="code-box-header">
+            <span>custom/theme.css</span>
+            <button type="button" class="copy-btn">Copy</button>
+          </div>
+          <pre><code>:root {
+  --bg-dark: #16131f;
+  --panel-bg: #1e1a2b;
+  --background-color: #9171f8;
+  --dark-main-color: #6b4ce6;
+  --main-color: #b197fc;
+  --light-main-color: #d3c2ff;
+  --title-color: #f2edff;
+  --accent-dark-bg: #2b2342;
+  --accent-dark-hover: #362c54;
+  --accent-border: #a488ff;
+}</code></pre>
+        </div>
+      </div>
+
+      <a href="../" id="back-home">Back to Home</a>
+    </section>
+
+    <footer id="credit">
+      Made by
+      <a href="https://github.com/ancym0n" target="_blank" rel="noopener"
+        >ancymon</a
+      >
+      <span class="credit-sep">·</span>
+      <a
+        href="https://github.com/ancym0n/Minecraft-Bot-Panel/issues"
+        target="_blank"
+        rel="noopener"
+        class="report-link"
+        >Report a bug</a
+      >
+    </footer>
+  </body>
+</html>
