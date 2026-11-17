@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;700;800&family=Poppins:ital,wght@0,400;0,600;0,700;1,400&display=swap"
+    />
+    <link rel="preload" href="../src/img/logo.png" as="image" />
+    <link rel="preload" href="../src/img/mcbp-title.svg" as="image" />
+    <link rel="stylesheet" href="../src/css/main.css" />
+    <link rel="stylesheet" href="../src/css/content.css" />
+    <link rel="stylesheet" href="../src/css/banner.css" />
+    <link rel="stylesheet" href="../src/css/privacy.css" />
+    <link rel="stylesheet" href="../src/css/resize.css" />
+    <link rel="stylesheet" href="../src/css/hover.css" />
+    <script>
+      document.documentElement.classList.add("is-booting");
+      // Failsafe: never keep the loader up if main.js fails to load
+      setTimeout(function () {
+        document.documentElement.classList.remove("is-booting");
+      }, 4000);
+    </script>
+    <link rel="stylesheet" href="../src/css/loader.css" />
+    <script src="../src/js/main.js" defer></script>
+    <link rel="shortcut icon" href="../src/img/logo.png" type="image/png" />
+    <title>MCBP - Privacy Policy</title>
+    <meta name="theme-color" content="#6b4ce6" />
+  </head>
+  <body>
+    <div id="loader" role="status" aria-live="polite">
+      <div class="loader-stage">
+        <div class="loader-card">
+          <img class="loader-logo" src="../src/img/logo.png" alt="" />
+          <div class="loader-shadow" aria-hidden="true"></div>
+          <div class="loader-bar" aria-hidden="true"><span></span></div>
+          <p class="loader-text">Loading MCBP…</p>
+        </div>
+      </div>
+    </div>
+
+    <section id="banner">
+      <a href="../" id="banner-logo" aria-label="Back to home">
+        <img src="../src/img/mcbp-title.svg" alt="MCBP" />
+      </a>
+      <a
+        href="https://github.com/ancym0n/Minecraft-Bot-Panel/releases"
+        target="_blank"
+        rel="noopener"
+        id="version"
+        aria-label="Latest GitHub release"
+      ></a>
+    </section>
+
+    <section id="content">
+      <h1>Download now!</h1>
+      <div id="stats" hidden>
+        <span id="total-downloads" class="stat-item" hidden></span>
+        <a
+          id="github-stars"
+          class="stat-item"
+          href="https://github.com/ancym0n/Minecraft-Bot-Panel/stargazers"
+          target="_blank"
+          rel="noopener"
+          hidden
+        ></a>
+        <a
+          id="mc-versions"
+          class="stat-item"
+          href="https://github.com/PrismarineJS/mineflayer"
+          target="_blank"
+          rel="noopener"
+          hidden
+        ></a>
+      </div>
+      <div>
+        <a
+          href="https://github.com/ancym0n/Minecraft-Bot-Panel/releases"
+          target="_blank"
+          rel="noopener"
+          >Latest Version</a
+        >
+        <a href="../docs/" class="secondary">Documentation</a>
+        <a
+          href="https://github.com/ancym0n/Minecraft-Bot-Panel"
+          target="_blank"
+          rel="noopener"
+          >Source Code</a
+        >
+      </div>
+    </section>
+
+    <section id="privacy">
+      <h1>Privacy Policy</h1>
+      <p id="last-updated" aria-busy="true">
+        Last updated:
+        <a
+          id="last-updated-date"
+          data-fallback="2026-11-17T11:17:00+01:00"
+          href="https://github.com/ancym0n/Minecraft-Bot-Panel/commits/page"
+          target="_blank"
+          rel="noopener"
+          ><span class="date-skeleton" aria-hidden="true"></span
+        ></a>
+      </p>
+
+      <div>
+        <h2>1. How MCBP Handles Your Data</h2>
+        <p>
+          MCBP is a desktop app that runs on your own computer. It has no
+          servers, no user accounts, and no analytics. It does not send any
+          information to the developer, and nothing you enter in the app ever
+          leaves your device except for the connections described below.
+        </p>
+      </div>
+
+      <div>
+        <h2>2. What Is Stored on Your Device</h2>
+        <p>
+          The username or email you log in with is kept in memory while the app
+          is open. When you sign in with a Microsoft account, Mineflayer's login
+          library caches your authentication tokens on your computer so you do
+          not have to enter a device code every time you connect. If you click
+          <strong>Later</strong> on an update prompt, that skipped version
+          number is saved in the app window's local storage. Any scripts or
+          styles you add to <i>custom/scripts/</i> and <i>custom/theme.css</i>
+          stay in local files on your computer.
+        </p>
+      </div>
+
+      <div>
+        <h2>3. Network Connections</h2>
+        <p>
+          When you click <strong>Connect</strong>, the app connects directly to
+          the Minecraft server address you entered. If you use Microsoft mode,
+          it also talks to official Microsoft and Xbox Live login servers to
+          authenticate your account. The app window loads the <i>Nunito</i> and
+          <i>Poppins</i> fonts from Google Fonts, so Google can see your IP
+          address when it opens.
+        </p>
+        <p>
+          On launch and when you click <strong>Sync Versions</strong>, MCBP
+          checks <i>registry.npmjs.org</i> and downloads newer releases of
+          <i>mineflayer</i>, <i>minecraft-data</i>, and
+          <i>mineflayer-pathfinder</i> into its local
+          <i>mineflayer-runtime</i> folder. It also checks GitHub Releases to
+          let you know when a new version of MCBP is out (updates are never
+          forced).
+        </p>
+      </div>
+
+      <div>
+        <h2>4. Custom Scripts</h2>
+        <p>
+          Scripts placed inside <i>custom/scripts/</i> run locally on your
+          computer with Node.js access. Only add custom scripts that you wrote
+          yourself or that come from a source you trust and have checked first.
+        </p>
+      </div>
+
+      <div>
+        <h2>5. This Website</h2>
+        <p>
+          This site does not use cookies or analytics. Your browser loads fonts
+          from Google Fonts, and the page asks the GitHub API, shields.io, and
+          raw GitHub content for the latest release, download count, star count,
+          and supported Minecraft version range, so those services can see your
+          IP address. The last updated date is cached in your browser's session
+          storage until you close the tab.
+        </p>
+      </div>
+
+      <div>
+        <h2>6. Summary</h2>
+        <p>In short, MCBP guarantees the following:</p>
+        <ul>
+          <li>
+            <strong>No Data Collection or Sale:</strong> Nothing from the app is
+            collected, sold, or shared with third parties.
+          </li>
+          <li>
+            <strong>No Tracking:</strong> The app has no analytics, advertising,
+            or background tracking.
+          </li>
+          <li>
+            <strong>You Stay in Control:</strong> All saved data is in files on
+            your device, and the full source code is open on GitHub.
+          </li>
+        </ul>
+      </div>
+
+      <div>
+        <h2>7. Changes to This Policy</h2>
+        <p>
+          This Privacy Policy may be updated if the app changes how it handles
+          data. Any updates will be published on this page.
+        </p>
+      </div>
+
+      <a href="../" id="back-home">Back to Home</a>
+    </section>
+
+    <footer id="credit">
+      Made by
+      <a href="https://github.com/ancym0n" target="_blank" rel="noopener"
+        >ancymon</a
+      >
+      <span class="credit-sep">·</span>
+      <a
+        href="https://github.com/ancym0n/Minecraft-Bot-Panel/issues"
+        target="_blank"
+        rel="noopener"
+        class="report-link"
+        >Report a bug</a
+      >
+    </footer>
+  </body>
+</html>
