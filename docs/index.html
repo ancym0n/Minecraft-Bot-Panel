@@ -1,0 +1,860 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;700;800&family=Poppins:ital,wght@0,400;0,600;0,700;1,400&display=swap"
+    />
+    <link rel="preload" href="../src/img/logo.png" as="image" />
+    <link rel="preload" href="../src/img/mcbp-title.svg" as="image" />
+    <link rel="stylesheet" href="../src/css/main.css" />
+    <link rel="stylesheet" href="../src/css/content.css" />
+    <link rel="stylesheet" href="../src/css/banner.css" />
+    <link rel="stylesheet" href="../src/css/docs.css" />
+    <link rel="stylesheet" href="../src/css/download.css" />
+    <link rel="stylesheet" href="../src/css/resize.css" />
+    <link rel="stylesheet" href="../src/css/hover.css" />
+    <script>
+      document.documentElement.classList.add("is-booting");
+      // Failsafe: never keep the loader up if main.js fails to load
+      setTimeout(function () {
+        document.documentElement.classList.remove("is-booting");
+      }, 4000);
+    </script>
+    <link rel="stylesheet" href="../src/css/loader.css" />
+    <script src="../src/js/main.js" defer></script>
+    <link rel="shortcut icon" href="../src/img/logo.png" type="image/png" />
+    <title>MCBP - Documentation</title>
+    <meta
+      name="description"
+      content="How to install and use Minecraft Bot Panel: logging in, the 26 built-in scripts, the local AI, Script Studio, custom scripts and themes."
+    />
+    <meta name="theme-color" content="#6b4ce6" />
+  </head>
+  <body>
+    <div id="loader" role="status" aria-live="polite">
+      <div class="loader-stage">
+        <div class="loader-card">
+          <img class="loader-logo" src="../src/img/logo.png" alt="" />
+          <div class="loader-shadow" aria-hidden="true"></div>
+          <div class="loader-bar" aria-hidden="true"><span></span></div>
+          <p class="loader-text">Loading MCBP…</p>
+        </div>
+      </div>
+    </div>
+
+    <section id="banner">
+      <a href="../" id="banner-logo" aria-label="Back to home">
+        <img src="../src/img/mcbp-title.svg" alt="MCBP" />
+      </a>
+      <a
+        href="https://github.com/ancym0n/Minecraft-Bot-Panel/releases"
+        target="_blank"
+        rel="noopener"
+        id="version"
+        aria-label="Latest GitHub release"
+      ></a>
+    </section>
+
+    <section id="content">
+      <h1>Download now!</h1>
+      <div id="stats" hidden>
+        <span id="total-downloads" class="stat-item" hidden></span>
+        <a
+          id="github-stars"
+          class="stat-item"
+          href="https://github.com/ancym0n/Minecraft-Bot-Panel/stargazers"
+          target="_blank"
+          rel="noopener"
+          hidden
+        ></a>
+        <a
+          id="mc-versions"
+          class="stat-item"
+          href="https://github.com/PrismarineJS/mineflayer"
+          target="_blank"
+          rel="noopener"
+          hidden
+        ></a>
+      </div>
+      <div>
+        <a
+          id="download-btn"
+          href="https://github.com/ancym0n/Minecraft-Bot-Panel/releases/latest"
+          target="_blank"
+          rel="noopener"
+          aria-haspopup="dialog"
+          aria-controls="download-modal"
+        >
+          <svg
+            class="btn-icon"
+            viewBox="0 0 24 24"
+            width="18"
+            height="18"
+            aria-hidden="true"
+          >
+            <path
+              d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 19h14"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.9"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+          <span id="download-btn-text">Download</span>
+        </a>
+        <a
+          href="https://github.com/ancym0n/Minecraft-Bot-Panel"
+          target="_blank"
+          rel="noopener"
+          >Source Code</a
+        >
+      </div>
+    </section>
+
+    <section id="docs">
+      <h1>Documentation</h1>
+
+      <div>
+        <h2>1. Installation</h2>
+        <p>
+          Hit <strong>Download</strong> up top. It figures out what system
+          you're on and points you at the right file, but here's the full list
+          if you'd rather pick yourself:
+        </p>
+        <ul>
+          <li>
+            <strong>Windows:</strong>
+            <code>MCBPv&lt;version&gt;-win.x64-setup.exe</code> (installer) or
+            the <code>.zip</code> if you don't want to install anything.
+          </li>
+          <li>
+            <strong>Ubuntu, Debian, Mint, Pop!_OS:</strong>
+            <code>MCBPv&lt;version&gt;-linux.amd64.deb</code>
+          </li>
+          <li>
+            <strong>Fedora, openSUSE, RHEL:</strong>
+            <code>MCBPv&lt;version&gt;-linux.x86_64.rpm</code>
+          </li>
+          <li>
+            <strong>Arch, Manjaro, EndeavourOS:</strong>
+            <code>MCBPv&lt;version&gt;-linux.x64.pacman</code>, install it with
+            <code>sudo pacman -U &lt;file&gt;</code>
+          </li>
+          <li>
+            <strong>Any other distro:</strong> the <code>.AppImage</code> or the
+            <code>.tar.gz</code>
+          </li>
+          <li>
+            <strong>macOS</strong> (Intel and Apple Silicon):
+            <code>MCBPv&lt;version&gt;-mac.&lt;arch&gt;.dmg</code>. It isn't
+            notarized, so the first time you open it right-click the app and
+            pick <strong>Open</strong> (on newer macOS go to System Settings →
+            Privacy &amp; Security → <strong>Open Anyway</strong>).
+          </li>
+        </ul>
+        <p>
+          You don't need Node.js for any of these. Mineflayer, Ollama and the
+          Mineflayer docs all get downloaded by the app when it needs them, so
+          new Minecraft versions usually work without waiting for a new MCBP
+          release.
+        </p>
+        <p>
+          Updates are optional and the app always asks first. The Windows
+          installer, AppImage, deb, rpm and pacman builds update themselves
+          (Linux packages ask for your password once). On macOS and the zip /
+          tar.gz builds it just downloads the new version or opens the release
+          page for you.
+        </p>
+        <h3>Running from source</h3>
+        <p>Grab Node.js (v20 or newer) and run:</p>
+        <div class="code-box">
+          <div class="code-box-header">
+            <span>Terminal</span>
+            <button type="button" class="copy-btn">Copy</button>
+          </div>
+          <pre><code>npm install
+npm start
+
+# build packages into dist/
+npm run make        # everything your OS can build
+npm run make:linux  # AppImage, deb, rpm, pacman, tar.gz
+npm run make:win    # setup.exe + zip
+npm run make:mac    # dmg + zip, needs a Mac</code></pre>
+        </div>
+      </div>
+
+      <div>
+        <h2>2. Connecting &amp; Using the Panel</h2>
+        <ul>
+          <li>
+            <strong>1. Log in:</strong> pick <strong>Microsoft</strong> for a
+            premium account or <strong>Offline</strong> to join cracked servers
+            with any name (up to 16 characters). Microsoft login works through
+            an in-app window or your browser with an Xbox Live device code,
+            which gets copied to your clipboard for you. Accounts you've used
+            before are remembered, so next time it's one click.
+          </li>
+          <li>
+            <strong>2. Pick a server:</strong> type <code>host</code> or
+            <code>host:port</code> (port defaults to <code>25565</code>). Leave
+            <strong>Version</strong> on <code>Auto</code> and it'll detect the
+            server version, or pick one from the list.
+          </li>
+          <li>
+            <strong>3. Control &amp; Radar:</strong> drive the bot with
+            <code>WASD</code>, <code>Space</code>, <code>Shift</code>,
+            <code>Ctrl</code> and the arrow keys, or the on-screen pad. You get
+            live HP, hunger, coordinates and held item, plus lists of nearby
+            <strong>Players</strong>, <strong>Mobs</strong> and
+            <strong>Signs</strong>. Signs show their text and have
+            <strong>Click</strong>, <strong>Hit</strong> and
+            <strong>Go</strong> buttons, which is handy for joining minigames on
+            lobby servers.
+          </li>
+          <li>
+            <strong>4. Inventory:</strong> see all 46 slots (armor, off-hand,
+            inventory, hotbar) with counts and durability. Double-click to
+            equip, drop items, or hit <strong>Auto-Gear</strong>. When the
+            server opens a chest, shop or menu it shows up too, and you can
+            left, right or shift-click its slots.
+          </li>
+          <li>
+            <strong>5. Scripts, AI &amp; Studio:</strong> toggle any of the 26
+            built-in scripts in the <strong>Scripts</strong> tab, set up the
+            local AI in the <strong>AI</strong> tab, and write your own scripts
+            in the <strong>Studio</strong> tab. More on those below.
+          </li>
+          <li>
+            <strong>6. Chat &amp; console:</strong> server chat shows up with
+            all its colors and formatting. Type normally to chat, use
+            <code>/commands</code> for the server (arrow keys go through your
+            history), or start with <code>!</code> for bot commands:
+            <code>!help</code>, <code>!pos</code>, <code>!hp</code>,
+            <code>!gear</code>, <code>!gearup [tier]</code>,
+            <code>!signs</code>, <code>!sign &lt;text&gt;</code>,
+            <code>!ai &lt;msg&gt;</code>, <code>!logs</code>,
+            <code>!close</code>, <code>!weapon</code>,
+            <code>!tool &lt;block&gt;</code>,
+            <code>!goto &lt;x&gt; &lt;y&gt; &lt;z&gt;</code>,
+            <code>!follow &lt;player&gt;</code>,
+            <code>!guard &lt;player&gt;</code>,
+            <code>!hunt &lt;player&gt;</code>, <code>!stop</code>,
+            <code>!dropall</code>, <code>!respawn</code>.
+          </li>
+        </ul>
+      </div>
+
+      <div>
+        <h2>3. Built-in Scripts</h2>
+        <p>
+          MCBP ships with 26 scripts. Fill in the options first, then click the
+          title bar to turn it on (green) or off. Your settings are saved
+          between sessions. Click the titles below to see how it looks:
+        </p>
+
+        <div class="scripts-grid">
+          <div class="script-card">
+            <button type="button" class="script-card-title">AIAgent</button>
+            <div class="script-card-body">
+              <p>
+                Lets players ask the bot to do things in chat (come here, follow
+                me, mine some logs, turn on a script). Needs the local AI set up
+                first.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Reply to All Chat</code>,
+                <code>Actions Model</code>, <code>Allowed Players</code>,
+                <code>Allow Code</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title script-name-active">
+              AntiAFK
+            </button>
+            <div class="script-card-body">
+              <p>Stops idle kicks by doing your checked actions at random.</p>
+              <p class="script-options-list">
+                Options: <code>Jump</code>, <code>Move</code>,
+                <code>Rotate</code>, <code>Sneak</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">AutoArmor</button>
+            <div class="script-card-body">
+              <p>
+                Puts on the best armor it has and keeps a totem or shield in the
+                off-hand.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Repeat</code>, <code>Offhand Shield/Totem</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">AutoBuild</button>
+            <div class="script-card-body">
+              <p>
+                Builds a platform, wall, bunker, tower or bridge, or a
+                <i>.json</i> schematic you give it.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Template / File</code>,
+                <code>Size [blocks]</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">AutoEat</button>
+            <div class="script-card-body">
+              <p>
+                Eats when hungry, and goes for golden apples when health gets
+                low. Pauses combat while eating.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Repeat</code>, <code>Eat on Low HP</code>,
+                <code>Min Food [1-20]</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">AutoFarm</button>
+            <div class="script-card-body">
+              <p>
+                Harvests grown crops, replants, uses bone meal and picks up the
+                drops.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Replant Seeds</code>, <code>Use Bone Meal</code>,
+                <code>Collect Drops</code>, <code>Radius [blocks]</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">AutoFish</button>
+            <div class="script-card-body">
+              <p>Casts toward water and reels in catches on its own.</p>
+              <p class="script-options-list">
+                Options: <code>Auto Equip Rod</code>,
+                <code>Anti-AFK Glance</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">
+              AutoReconnect
+            </button>
+            <div class="script-card-body">
+              <p>
+                Rejoins after a kick or disconnect and turns your scripts back
+                on.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Resume Scripts</code>, <code>Delay [sec]</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">AutoRespawn</button>
+            <div class="script-card-body">
+              <p>
+                Respawns after death and walks back to the work area or where it
+                died.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Return to Area</code>,
+                <code>Work Area [X Y Z]</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">AutoTool</button>
+            <div class="script-card-body">
+              <p>
+                Swaps to the fastest tool when digging and the best weapon when
+                fighting.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Mine Tools</code>, <code>Combat Weapon</code>,
+                <code>Save Durability</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">AutoTotem</button>
+            <div class="script-card-body">
+              <p>
+                Keeps a Totem of Undying in the off-hand and can log out when HP
+                gets too low.
+              </p>
+              <p class="script-options-list">
+                Options: <code>AutoLog Low HP</code>, <code>Min HP [1-20]</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">ChatAI</button>
+            <div class="script-card-body">
+              <p>
+                Talks back to players with your local Ollama model, paced so
+                anti-spam plugins don't kick it.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Reply to All Chat</code>,
+                <code>Game State Context</code>,
+                <code>Split Long Replies</code>, <code>Model</code>,
+                <code>Cooldown [sec]</code>, <code>Message Gap [sec]</code>,
+                <code>Persona / Prompt</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">
+              ChestStealer
+            </button>
+            <div class="script-card-body">
+              <p>
+                Takes supplies out of nearby chests, barrels and shulkers, or
+                dumps mined stuff into them.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Steal Supplies</code>,
+                <code>Deposit Mined</code>, <code>Repeat</code>,
+                <code>Filter (optional)</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">ClearInv</button>
+            <div class="script-card-body">
+              <p>Drops everything in the inventory on the ground.</p>
+              <p class="script-options-list">Options: <code>Repeat</code></p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">Excavator</button>
+            <div class="script-card-body">
+              <p>
+                Digs a straight tunnel or clears out a quarry layer by layer.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Tunnel Mode</code>, <code>Auto Tool</code>,
+                <code>Size / Width</code>, <code>Length / Depth</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">Follow</button>
+            <div class="script-card-body">
+              <p>
+                Keeps walking after a player, sprint-jumping and bridging or
+                pillaring when it has to.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Repeat</code>, <code>Sprint Jump</code>,
+                <code>Pillar / Bridge</code>, <code>Player Name</code>,
+                <code>Delay (optional)</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">GearUp</button>
+            <div class="script-card-body">
+              <p>
+                Goes from punching trees all the way to iron or diamond tools
+                and armor, crafting and smelting on the way.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Tools &amp; Sword</code>,
+                <code>Full Armor</code>, <code>Craft Shield</code>,
+                <code>Tier [wood/stone/iron/diamond]</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">GoTo</button>
+            <div class="script-card-body">
+              <p>
+                Walks to coordinates. Can dig through stuff in the way and
+                bridge or pillar. Leave Y empty to keep the current height.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Repeat</code>, <code>Dig Obstacles</code>,
+                <code>Pillar / Bridge</code>, <code>X</code>,
+                <code>Y (optional)</code>, <code>Z</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">Guard</button>
+            <div class="script-card-body">
+              <p>
+                Sticks with a player and fights off mobs or anyone attacking
+                them.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Hostile Mobs</code>, <code>Defend PvP</code>,
+                <code>Auto Weapon</code>, <code>Protect Player</code>,
+                <code>Radius [blocks]</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">Hunt</button>
+            <div class="script-card-body">
+              <p>
+                Chases a player down and fights them with sprint-jumps and
+                crits, eating when it needs to.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Auto Weapon</code>, <code>Sprint Jump</code>,
+                <code>Criticals</code>, <code>Target Player</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">InvManager</button>
+            <div class="script-card-body">
+              <p>
+                Drops junk blocks when the inventory fills up, but keeps ores
+                and gear.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Drop Junk</code>, <code>Sort &amp; Equip</code>,
+                <code>Keep Free Slots</code>, <code>Extra Junk</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">KillAura</button>
+            <div class="script-card-body">
+              <p>
+                Attacks whatever target types you pick within range, with jump
+                crits.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Hostile Mobs</code>, <code>Players</code>,
+                <code>Passive Mobs</code>, <code>Auto Weapon</code>,
+                <code>Criticals</code>, <code>Range [blocks]</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">Mine</button>
+            <div class="script-card-body">
+              <p>
+                Finds blocks by ID (like <code>oak_log</code> or
+                <code>stone</code>), walks over and mines them.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Repeat</code>, <code>Auto Tool</code>,
+                <code>Block ID</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">SafeWalk</button>
+            <div class="script-card-body">
+              <p>
+                Sneaks at edges so it doesn't fall off, and stays away from lava
+                and fire.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Sneak at Edges</code>,
+                <code>Avoid Lava/Fire</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">Spam</button>
+            <div class="script-card-body">
+              <p>
+                Sends a chat message every few seconds. AntiKick adds a random
+                tag at the end.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Repeat</code>, <code>AntiKick</code>,
+                <code>Message</code>, <code>Delay [ms]</code>
+              </p>
+            </div>
+          </div>
+
+          <div class="script-card">
+            <button type="button" class="script-card-title">Survival</button>
+            <div class="script-card-body">
+              <p>
+                Just plays on its own: swims, eats, gears up, deals with
+                creepers, fights back and loots.
+              </p>
+              <p class="script-options-list">
+                Options: <code>Self Defense</code>,
+                <code>Auto Gear &amp; Eat</code>, <code>Collect Drops</code>,
+                <code>Look Around</code>
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <h2>4. Local AI (ChatAI &amp; AIAgent)</h2>
+        <p>
+          The AI runs on your own PC through
+          <strong>Ollama</strong>. No API keys, nothing sent to the cloud. Open
+          the <strong>AI</strong> tab and hit <strong>Auto-Setup</strong>: it
+          downloads Ollama if you don't have it and pulls a model that fits your
+          hardware (Qwen 3, Gemma 3, Llama 3, Phi-4 Mini and a few others).
+        </p>
+        <ul>
+          <li>
+            <strong>Chat AI:</strong> the bot replies in chat like a normal
+            player. You choose whether it answers everyone or only when its name
+            is mentioned, give it a persona, and set cooldowns and a
+            replies-per-minute limit. Long replies get split into a few messages
+            with small random gaps so anti-spam plugins don't notice.
+          </li>
+          <li>
+            <strong>Actions (AIAgent):</strong> players can just ask the bot to
+            do stuff, like "come here", "follow me", "mine 10 oak logs" or "turn
+            on autoeat". If it gets stuck it tries jumping, re-pathing, digging
+            or bridging, and if a task fails it tries a different way. You can
+            limit it to certain players, and if you really trust them you can
+            let it write and run its own Mineflayer code (<strong
+              >Allow Code</strong
+            >).
+          </li>
+          <li>
+            The AI tab and the ChatAI / AIAgent script cards share the same
+            settings, so changing one updates the other.
+          </li>
+          <li>
+            Type <code>!ai</code> in the console to check the status, or
+            <code>!ai &lt;message&gt;</code> to make it reply to something.
+          </li>
+        </ul>
+      </div>
+
+      <div>
+        <h2>5. Script Studio &amp; Custom Scripts</h2>
+        <p>
+          The <strong>Studio</strong> tab is the easiest way to make your own
+          script. Start from a template (chat commands, announcer, welcome
+          messages, look at players, collect blocks, health alert, auto
+          sleep...), read the Mineflayer docs right next to the editor (they
+          download for your version, and there's an offline copy built in), or
+          describe what you want and let your local AI write it. It checks the
+          code for errors, and <strong>Save &amp; Load</strong> drops it
+          straight into the Scripts tab.
+        </p>
+        <p>
+          You can also write them by hand. Click <strong>Folder</strong> in the
+          Scripts tab (or open <code>custom/scripts/</code>) and add a
+          <code>.js</code> file that exports <code>info</code> and
+          <code>script</code>:
+        </p>
+
+        <div class="code-box">
+          <div class="code-box-header">
+            <span>custom/scripts/hellobot.js</span>
+            <button type="button" class="copy-btn">Copy</button>
+          </div>
+          <pre><code>const info = {
+  name: "HelloBot",
+  default: { interval: 3000 },
+  options: [
+    { type: "checkbox", label: "Repeat", id: "repeat" },
+    { type: "input", label: "Greeting", id: "greeting" },
+  ],
+};
+
+async function script(bot, log, clearLog, getOption, scriptRepeater) {
+  if (!bot) return log("HelloBot: Connect a bot first");
+
+  async function sendGreeting() {
+    const greeting = await getOption("greeting", info.name);
+    bot.chat(greeting || "Hello!");
+  }
+
+  await sendGreeting();
+  if ((await getOption("repeat", info.name)) === "on") {
+    await scriptRepeater(sendGreeting, info.default.interval);
+  }
+}
+
+module.exports = { info, script };</code></pre>
+        </div>
+
+        <ul>
+          <li>
+            <strong>info:</strong> the card's <code>name</code>, optional
+            <code>default</code> values and the <code>options</code> list.
+            Options can be <code>"checkbox"</code>, <code>"input"</code> (with
+            an optional <code>placeholder</code>) or <code>"select"</code> with
+            <code>choices: ["a", "b"]</code> or <code>[{ value, label }]</code>.
+          </li>
+          <li>
+            <strong>bot:</strong> the Mineflayer bot, or <code>null</code> if
+            you're not connected. <code>bot.pathfinder</code> is already loaded.
+          </li>
+          <li>
+            <strong>log(text) &amp; clearLog(match):</strong>
+            <code>log</code> adds a line to the console (start it with
+            <code>Name: ...</code> to get a colored badge),
+            <code>clearLog</code> removes old lines containing
+            <code>match</code> so status updates don't flood it.
+          </li>
+          <li>
+            <strong>await getOption(id, info.name):</strong> reads an option.
+            Checkboxes give <code>"on"</code> / <code>"off"</code>, inputs give
+            a string.
+          </li>
+          <li>
+            <strong>await scriptRepeater(fn, intervalMs):</strong> runs
+            <code>fn()</code> on a loop while the script is on, and returns when
+            you turn it off or disconnect.
+          </li>
+          <li>
+            <strong>libs</strong> (6th argument):
+            <code>{ goals, Movements, Vec3, mcData }</code>, so you don't have
+            to <code>require</code> anything.
+          </li>
+        </ul>
+        <p>
+          Scripts can do anything Node.js can, so only run ones you wrote
+          yourself or got from someone you trust.
+        </p>
+      </div>
+
+      <div>
+        <h2>6. Custom Theme (CSS)</h2>
+        <p>
+          Don't like purple? Edit <code>custom/theme.css</code>. Anything in
+          there gets loaded on every screen, so you can override the colors or
+          restyle whatever you want:
+        </p>
+
+        <div class="code-box">
+          <div class="code-box-header">
+            <span>custom/theme.css</span>
+            <button type="button" class="copy-btn">Copy</button>
+          </div>
+          <pre><code>:root {
+  --bg-dark: #16131f;
+  --panel-bg: #1e1a2b;
+  --background-color: #9171f8;
+  --dark-main-color: #6b4ce6;
+  --main-color: #b197fc;
+  --light-main-color: #d3c2ff;
+  --title-color: #f2edff;
+  --accent-dark-bg: #2b2342;
+  --accent-dark-hover: #362c54;
+  --accent-border: #a488ff;
+}</code></pre>
+        </div>
+      </div>
+
+      <a href="../" id="back-home">Back to Home</a>
+    </section>
+
+    <div
+      id="download-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="dm-title"
+      aria-hidden="true"
+      hidden
+    >
+      <div id="dm-backdrop" aria-hidden="true"></div>
+      <div id="dm-window" role="document">
+        <button
+          id="dm-close"
+          type="button"
+          class="dm-icon-btn"
+          title="Close"
+          aria-label="Close"
+        >
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+            <path
+              d="M6 6l12 12M18 6L6 18"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="3"
+              stroke-linecap="round"
+            />
+          </svg>
+        </button>
+
+        <h1 id="dm-title">Download</h1>
+
+        <div id="dm-os-tabs" role="tablist" aria-label="Operating system"></div>
+
+        <div id="dm-asset-list" role="list"></div>
+
+        <footer id="dm-footer">
+          <a
+            id="dm-version-pill"
+            href="https://github.com/ancym0n/Minecraft-Bot-Panel/releases/latest"
+            target="_blank"
+            rel="noopener"
+            hidden
+          ></a>
+          <span class="credit-sep" id="dm-footer-sep" hidden>·</span>
+          <a
+            id="dm-release-link"
+            href="https://github.com/ancym0n/Minecraft-Bot-Panel/releases"
+            target="_blank"
+            rel="noopener"
+            class="report-link"
+            >All Releases</a
+          >
+        </footer>
+      </div>
+    </div>
+
+    <footer id="credit">
+      Made by
+      <a href="https://github.com/ancym0n" target="_blank" rel="noopener"
+        >ancymon</a
+      >
+      <span class="credit-sep">·</span>
+      <a
+        href="https://github.com/ancym0n/Minecraft-Bot-Panel/issues"
+        target="_blank"
+        rel="noopener"
+        class="report-link"
+        >Report a bug</a
+      >
+    </footer>
+  </body>
+</html>

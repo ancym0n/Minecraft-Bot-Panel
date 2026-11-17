@@ -1,112 +1,315 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="stylesheet" href="src/css/main.css" />
-    <script src="src/js/main.js" defer></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Poppins:ital,wght@0,300;0,400;1,300&display=swap"
       rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;700;800&family=Poppins:ital,wght@0,400;0,600;0,700;1,400&display=swap"
     />
-    <title>MCBP</title>
+    <link rel="preload" href="src/img/logo.png" as="image" />
+    <link rel="preload" href="src/img/mcbp-title.svg" as="image" />
+    <link rel="stylesheet" href="src/css/main.css" />
+    <link rel="stylesheet" href="src/css/content.css" />
+    <link rel="stylesheet" href="src/css/banner.css" />
+    <link rel="stylesheet" href="src/css/faq.css" />
+    <link rel="stylesheet" href="src/css/download.css" />
+    <link rel="stylesheet" href="src/css/resize.css" />
+    <link rel="stylesheet" href="src/css/hover.css" />
+    <script>
+      document.documentElement.classList.add("is-booting");
+      // Failsafe: never keep the loader up if main.js fails to load
+      setTimeout(function () {
+        document.documentElement.classList.remove("is-booting");
+      }, 4000);
+    </script>
+    <link rel="stylesheet" href="src/css/loader.css" />
+    <script src="src/js/main.js" defer></script>
+    <link rel="shortcut icon" href="src/img/logo.png" type="image/png" />
+    <title>MCBP - Minecraft Bot Panel</title>
+    <meta
+      name="description"
+      content="Free desktop app for running Minecraft bots. 26 built-in scripts, local AI that chats and takes orders, a script studio, and Windows, Linux and macOS builds."
+    />
+    <meta name="theme-color" content="#6b4ce6" />
+    <meta property="og:type" content="website" />
+    <meta
+      property="og:url"
+      content="https://ancymon.dev/Minecraft-Bot-Panel/"
+    />
+    <meta property="og:title" content="MCBP" />
+    <meta
+      property="og:description"
+      content="Free desktop app for running Minecraft bots. 26 built-in scripts, local AI that chats and takes orders, a script studio, and Windows, Linux and macOS builds."
+    />
+    <meta
+      property="og:image"
+      content="https://ancymon.dev/Minecraft-Bot-Panel/src/img/logo.png"
+    />
+    <meta name="twitter:card" content="summary" />
   </head>
-  <body id="home">
-    <nav>
-      <a href="#home">Home</a>
-      <a href="#documentation">Docs</a>
-      <a href="#custom">Customize</a>
-    </nav>
-    <section id="loading">
-      <img src="src/img/loading.svg" alt="" />
-      <p id="randomText"></p>
-    </section>
-    <section id="banner">
-      <div class="title">
-        <h1>Minecraft Bot Panel</h1>
-        <p>Unleash the Power of Automation</p>
+  <body>
+    <div id="loader" role="status" aria-live="polite">
+      <div class="loader-stage">
+        <div class="loader-card">
+          <img class="loader-logo" src="src/img/logo.png" alt="" />
+          <div class="loader-shadow" aria-hidden="true"></div>
+          <div class="loader-bar" aria-hidden="true"><span></span></div>
+          <p class="loader-text">Loading MCBP…</p>
+        </div>
+      </div>
+    </div>
+
+    <div id="hero">
+      <div class="hero-main">
+        <section id="banner">
+          <img src="src/img/mcbp-title.svg" alt="MCBP" />
+          <a
+            href="https://github.com/ancym0n/Minecraft-Bot-Panel/releases"
+            target="_blank"
+            rel="noopener"
+            id="version"
+            aria-label="Latest GitHub release"
+          ></a>
+        </section>
+
+        <section id="content">
+          <h1>Download now!</h1>
+          <div id="stats" class="is-loading" aria-busy="true">
+            <div class="stat-skeletons" aria-hidden="true">
+              <span class="stat-skeleton" style="--w: 6.4rem"></span>
+              <span class="stat-skeleton" style="--w: 5.2rem"></span>
+              <span class="stat-skeleton" style="--w: 5.8rem"></span>
+            </div>
+            <span id="total-downloads" class="stat-item" hidden></span>
+            <a
+              id="github-stars"
+              class="stat-item"
+              href="https://github.com/ancym0n/Minecraft-Bot-Panel/stargazers"
+              target="_blank"
+              rel="noopener"
+              hidden
+            ></a>
+            <a
+              id="mc-versions"
+              class="stat-item"
+              href="https://github.com/PrismarineJS/mineflayer"
+              target="_blank"
+              rel="noopener"
+              hidden
+            ></a>
+          </div>
+          <div>
+            <a
+              id="download-btn"
+              href="https://github.com/ancym0n/Minecraft-Bot-Panel/releases/latest"
+              target="_blank"
+              rel="noopener"
+              aria-haspopup="dialog"
+              aria-controls="download-modal"
+            >
+              <svg
+                class="btn-icon"
+                viewBox="0 0 24 24"
+                width="18"
+                height="18"
+                aria-hidden="true"
+              >
+                <path
+                  d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 19h14"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.9"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+              <span id="download-btn-text">Download</span>
+            </a>
+            <a href="docs" class="secondary">Documentation</a>
+            <a
+              href="https://github.com/ancym0n/Minecraft-Bot-Panel"
+              target="_blank"
+              rel="noopener"
+              >Source Code</a
+            >
+          </div>
+        </section>
       </div>
 
-      <video
-        id="background-video"
-        src="src/img/background.mp4"
-        loop
-        autoplay
-        muted
-      ></video>
-    </section>
-    <section class="info">
-      <div class="txt">
-        <h2>Manage Bot through UI</h2>
+      <div id="scroll-cue-wrap">
+        <a href="#faq" id="scroll-cue" aria-label="Scroll down to FAQ">
+          <span>FAQ</span>
+          <svg
+            class="scroll-cue-arrow"
+            viewBox="0 0 24 24"
+            width="18"
+            height="18"
+            aria-hidden="true"
+          >
+            <path
+              d="M6 9l6 6 6-6"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="3.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </a>
+      </div>
+    </div>
+
+    <section id="faq">
+      <h1>FAQ</h1>
+
+      <div>
+        <h2>1. What is MCBP?</h2>
         <p>
-          Easily control and customize your Minecraft bot using an intuitive
-          graphical interface designed for efficiency and simplicity.
+          MCBP is short for <i>Minecraft Bot Panel</i>. It's a desktop app that
+          lets you run a Minecraft Java Edition bot without writing any code.
+          Log in, join a server, and then drive it yourself, flip on one of the
+          built-in scripts, or just tell it what to do in chat.
         </p>
-        <a
-          href="https://github.com/ancym0n/Minecraft-Bot-Panel/releases"
-          class="a-button"
-          >Download</a
+      </div>
+
+      <div>
+        <h2>2. What can it actually do?</h2>
+        <p>
+          Quite a lot. You get <strong>Microsoft</strong> and
+          <strong>Offline</strong> login, <strong>WASD</strong> control with a
+          live radar of nearby players, mobs and signs, and a
+          <strong>46-slot inventory</strong> that also shows chests, shops and
+          server menus you can click through. On top of that there are
+          <strong>26 built-in scripts</strong>: farming, fishing, mining,
+          tunneling, building, chest looting, auto-eat, auto-armor, KillAura,
+          Guard, Follow, AutoReconnect, a full <strong>GearUp</strong> from wood
+          to diamond, a <strong>Survival</strong> mode that just plays on its
+          own, and more. Chat comes with all its colors, plus
+          <code>!</code> commands for the bot.
+        </p>
+      </div>
+
+      <div>
+        <h2>3. Does it have AI?</h2>
+        <p>
+          Yep, and it runs on your own PC, no API keys or subscriptions. Click
+          <strong>Auto-Setup</strong> in the AI tab and it grabs
+          <strong>Ollama</strong> and a model that fits your hardware. The bot
+          can then chat like a normal player (paced so anti-spam plugins leave
+          it alone), and with <strong>Actions</strong> on, players can ask it to
+          "follow me" or "mine 10 oak logs" and it'll actually do it. You decide
+          who's allowed to give it orders.
+        </p>
+      </div>
+
+      <div>
+        <h2>4. Can I make my own scripts?</h2>
+        <p>
+          Sure. The <strong>Studio</strong> tab has templates, the Mineflayer
+          docs built right in, and can write a script for you from a plain
+          description using your local AI. Or drop your own <i>.js</i> files
+          into <i>custom/scripts/</i>. Want different colors? Edit
+          <i>custom/theme.css</i>.
+        </p>
+        <a href="docs">View Documentation</a>
+      </div>
+
+      <div>
+        <h2>5. Which systems and Minecraft versions work?</h2>
+        <p>
+          <strong>Windows</strong>, <strong>Linux</strong> (deb, rpm, pacman,
+          AppImage or tar.gz) and <strong>macOS</strong> (Intel and Apple
+          Silicon). You don't need Node.js. The Download button picks the right
+          file for you. Minecraft Java Edition works from
+          <strong>1.8</strong> up to the newest version Mineflayer supports, and
+          the app keeps Mineflayer updated on its own, so new versions usually
+          work without an MCBP update. Leave the version on
+          <strong>Auto</strong> and it'll detect it.
+        </p>
+      </div>
+
+      <div>
+        <h2>6. Is it free? What about my data?</h2>
+        <p>
+          It's free and open source (GPL-3.0). There's no analytics and nothing
+          gets sent to me. Your logins, settings, scripts, chat logs and AI
+          models all stay on your computer.
+        </p>
+        <a href="privacy">View Privacy Policy</a>
+      </div>
+    </section>
+
+    <div
+      id="download-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="dm-title"
+      aria-hidden="true"
+      hidden
+    >
+      <div id="dm-backdrop" aria-hidden="true"></div>
+      <div id="dm-window" role="document">
+        <button
+          id="dm-close"
+          type="button"
+          class="dm-icon-btn"
+          title="Close"
+          aria-label="Close"
         >
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+            <path
+              d="M6 6l12 12M18 6L6 18"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="3"
+              stroke-linecap="round"
+            />
+          </svg>
+        </button>
+
+        <h1 id="dm-title">Download</h1>
+
+        <div id="dm-os-tabs" role="tablist" aria-label="Operating system"></div>
+
+        <div id="dm-asset-list" role="list"></div>
+
+        <footer id="dm-footer">
+          <a
+            id="dm-version-pill"
+            href="https://github.com/ancym0n/Minecraft-Bot-Panel/releases/latest"
+            target="_blank"
+            rel="noopener"
+            hidden
+          ></a>
+          <span class="credit-sep" id="dm-footer-sep" hidden>·</span>
+          <a
+            id="dm-release-link"
+            href="https://github.com/ancym0n/Minecraft-Bot-Panel/releases"
+            target="_blank"
+            rel="noopener"
+            class="report-link"
+            >All Releases</a
+          >
+        </footer>
       </div>
-      <img src="src/img/all.svg" alt="" loop />
-    </section>
-    <hr />
-    <section class="info">
-      <img src="src/img/mining.svg" alt="" loop />
-      <div class="txt">
-        <h2>Automate boring tasks</h2>
-        <p>
-          Automate repetitive and time-consuming tasks with ease, freeing up
-          your time to focus on the more important aspects of your Minecraft
-          gameplay. Let the bot handle the mundane, so you can enjoy the
-          adventure.
-        </p>
-        <a
-          href="https://github.com/ancym0n/Minecraft-Bot-Panel/releases"
-          class="a-button"
-          >Download</a
-        >
-      </div>
-    </section>
-    <hr />
-    <section id="documentation" class="info">
-      <div class="txt">
-        <h2>Create own scripts</h2>
-        <p>
-          Develop your own custom scripts to give your bot unique abilities and
-          actions. Tailor the experience to match your gameplay style, making
-          your Minecraft bot an extension of your creativity.
-        </p>
-        <a
-          href="https://github.com/ancym0n/Minecraft-Bot-Panel/wiki/Custom-Scripts#injecting-custom-scripts"
-          class="a-button"
-          >Documentation</a
-        >
-      </div>
-      <img src="src/img/vsc.svg" alt="" loop />
-    </section>
-    <hr />
-    <section id="custom" class="info">
-      <div class="txt">
-        <h2>
-          Customize your app with CSS
-          <small>(Soon)</small>
-        </h2>
-        <p>
-          Customize your app's appearance to perfectly match your style or brand
-          using the power of CSS. With full control over the interface, you can
-          easily modify colors, layouts, and fonts, or create unique visual
-          effects. Whether you prefer a sleek modern design or a more playful
-          look, CSS empowers you to transform the Minecraft Bot Panel into a
-          truly personalized tool.
-        </p>
-      </div>
-    </section>
-    <p id="lic">
-      © 2024 Minecraft Bot Panel. This project is licensed under the
-      <a class="license" href="https://www.gnu.org/licenses/gpl-3.0.en.html"
-        >GNU General Public License v3.0</a
-      >.
-    </p>
+    </div>
+
+    <footer id="credit">
+      Made by
+      <a href="https://github.com/ancym0n" target="_blank" rel="noopener"
+        >ancymon</a
+      >
+      <span class="credit-sep">·</span>
+      <a
+        href="https://github.com/ancym0n/Minecraft-Bot-Panel/issues"
+        target="_blank"
+        rel="noopener"
+        class="report-link"
+        >Report a bug</a
+      >
+    </footer>
   </body>
 </html>

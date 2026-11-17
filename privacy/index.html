@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;700;800&family=Poppins:ital,wght@0,400;0,600;0,700;1,400&display=swap"
+    />
+    <link rel="preload" href="../src/img/logo.png" as="image" />
+    <link rel="preload" href="../src/img/mcbp-title.svg" as="image" />
+    <link rel="stylesheet" href="../src/css/main.css" />
+    <link rel="stylesheet" href="../src/css/content.css" />
+    <link rel="stylesheet" href="../src/css/banner.css" />
+    <link rel="stylesheet" href="../src/css/privacy.css" />
+    <link rel="stylesheet" href="../src/css/download.css" />
+    <link rel="stylesheet" href="../src/css/resize.css" />
+    <link rel="stylesheet" href="../src/css/hover.css" />
+    <script>
+      document.documentElement.classList.add("is-booting");
+      // Failsafe: never keep the loader up if main.js fails to load
+      setTimeout(function () {
+        document.documentElement.classList.remove("is-booting");
+      }, 4000);
+    </script>
+    <link rel="stylesheet" href="../src/css/loader.css" />
+    <script src="../src/js/main.js" defer></script>
+    <link rel="shortcut icon" href="../src/img/logo.png" type="image/png" />
+    <title>MCBP - Privacy Policy</title>
+    <meta name="theme-color" content="#6b4ce6" />
+  </head>
+  <body>
+    <div id="loader" role="status" aria-live="polite">
+      <div class="loader-stage">
+        <div class="loader-card">
+          <img class="loader-logo" src="../src/img/logo.png" alt="" />
+          <div class="loader-shadow" aria-hidden="true"></div>
+          <div class="loader-bar" aria-hidden="true"><span></span></div>
+          <p class="loader-text">Loading MCBP…</p>
+        </div>
+      </div>
+    </div>
+
+    <section id="banner">
+      <a href="../" id="banner-logo" aria-label="Back to home">
+        <img src="../src/img/mcbp-title.svg" alt="MCBP" />
+      </a>
+      <a
+        href="https://github.com/ancym0n/Minecraft-Bot-Panel/releases"
+        target="_blank"
+        rel="noopener"
+        id="version"
+        aria-label="Latest GitHub release"
+      ></a>
+    </section>
+
+    <section id="content">
+      <h1>Download now!</h1>
+      <div id="stats" hidden>
+        <span id="total-downloads" class="stat-item" hidden></span>
+        <a
+          id="github-stars"
+          class="stat-item"
+          href="https://github.com/ancym0n/Minecraft-Bot-Panel/stargazers"
+          target="_blank"
+          rel="noopener"
+          hidden
+        ></a>
+        <a
+          id="mc-versions"
+          class="stat-item"
+          href="https://github.com/PrismarineJS/mineflayer"
+          target="_blank"
+          rel="noopener"
+          hidden
+        ></a>
+      </div>
+      <div>
+        <a
+          id="download-btn"
+          href="https://github.com/ancym0n/Minecraft-Bot-Panel/releases/latest"
+          target="_blank"
+          rel="noopener"
+          aria-haspopup="dialog"
+          aria-controls="download-modal"
+        >
+          <svg
+            class="btn-icon"
+            viewBox="0 0 24 24"
+            width="18"
+            height="18"
+            aria-hidden="true"
+          >
+            <path
+              d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 19h14"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.9"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+          <span id="download-btn-text">Download</span>
+        </a>
+        <a href="../docs/" class="secondary">Documentation</a>
+        <a
+          href="https://github.com/ancym0n/Minecraft-Bot-Panel"
+          target="_blank"
+          rel="noopener"
+          >Source Code</a
+        >
+      </div>
+    </section>
+
+    <section id="privacy">
+      <h1>Privacy Policy</h1>
+      <p id="last-updated" aria-busy="true">
+        Last updated:
+        <a
+          id="last-updated-date"
+          data-fallback="2026-11-18T12:00:00+01:00"
+          href="https://github.com/ancym0n/Minecraft-Bot-Panel/commits/page"
+          target="_blank"
+          rel="noopener"
+          ><span class="date-skeleton" aria-hidden="true"></span
+        ></a>
+      </p>
+
+      <div>
+        <h2>1. The Short Version</h2>
+        <p>
+          MCBP runs on your computer. There are no MCBP servers, no accounts, no
+          analytics, and nothing gets sent to me. The only things that go over
+          the internet are the connections listed below, and they're all things
+          the app needs to actually work.
+        </p>
+      </div>
+
+      <div>
+        <h2>2. What Gets Saved on Your Computer</h2>
+        <ul>
+          <li>
+            <strong>Microsoft logins:</strong> when you sign in, Mineflayer's
+            login library caches your tokens so you don't need a new device code
+            every time. MCBP also keeps a small list of accounts you've used
+            (email or name, Minecraft name, UUID) so you can pick them again.
+            You can remove an account from the login screen and its cached
+            tokens go with it.
+          </li>
+          <li>
+            <strong>Settings:</strong> the last Minecraft version you picked,
+            your script options, AI settings, and any update you chose to skip.
+          </li>
+          <li>
+            <strong>Session logs:</strong> each session writes a Markdown log
+            (what you clicked, chat, game events) into the app's
+            <i>logs</i> folder, so you can look back at what happened or attach
+            it to a bug report. They never leave your computer unless you send
+            them yourself.
+          </li>
+          <li>
+            <strong>Downloads:</strong> the Mineflayer runtime, the Mineflayer
+            docs for Script Studio, and, if you set up the AI, Ollama and its
+            models.
+          </li>
+          <li>
+            <strong>Your files:</strong> anything in <i>custom/scripts/</i> and
+            <i>custom/theme.css</i>.
+          </li>
+        </ul>
+      </div>
+
+      <div>
+        <h2>3. Network Connections</h2>
+        <ul>
+          <li>
+            <strong>Minecraft servers:</strong> when you click
+            <strong>Connect</strong>, the bot connects straight to the server
+            you typed in.
+          </li>
+          <li>
+            <strong>Microsoft &amp; Xbox Live:</strong> only in Microsoft mode,
+            to log you in.
+          </li>
+          <li>
+            <strong>npm</strong> (<i>registry.npmjs.org</i>): on launch and when
+            you click Sync, to check for and download newer <i>mineflayer</i>,
+            <i>minecraft-data</i> and <i>mineflayer-pathfinder</i> versions.
+          </li>
+          <li>
+            <strong>GitHub:</strong> to check for new MCBP releases (updates are
+            never forced) and to download the Mineflayer docs used in Script
+            Studio.
+          </li>
+          <li>
+            <strong>Ollama:</strong> only if you use the AI. Setup downloads
+            Ollama and the model you pick from Ollama's servers.
+          </li>
+          <li>
+            <strong>Google Fonts:</strong> the app loads the <i>Nunito</i> and
+            <i>Poppins</i> fonts, so Google sees your IP address when it opens.
+          </li>
+        </ul>
+      </div>
+
+      <div>
+        <h2>4. The AI Stays Local</h2>
+        <p>
+          ChatAI, AIAgent and the Script Studio generator all talk to Ollama
+          running on your own machine (<i>127.0.0.1</i>). Chat messages, game
+          info and prompts are not sent to any cloud AI service. Keep in mind
+          that whatever the bot says in chat is, of course, seen by the
+          Minecraft server and the players on it.
+        </p>
+      </div>
+
+      <div>
+        <h2>5. Custom Scripts</h2>
+        <p>
+          Scripts in <i>custom/scripts/</i> (including ones made in Studio) run
+          on your computer with full Node.js access. Same goes for code the
+          AIAgent writes if you turn on <strong>Allow Code</strong>. Only run
+          scripts you wrote yourself or got from someone you trust, and only
+          give Allow Code to players you trust.
+        </p>
+      </div>
+
+      <div>
+        <h2>6. This Website</h2>
+        <p>
+          No cookies, no analytics. Your browser loads fonts from Google Fonts,
+          and the page asks the GitHub API, shields.io and raw GitHub content
+          for the latest release files, download and star counts, and the
+          supported Minecraft versions, so those services can see your IP
+          address. The Download Manager caches release info in your browser's
+          local storage, and the "last updated" date above is cached in session
+          storage until you close the tab.
+        </p>
+      </div>
+
+      <div>
+        <h2>7. In Short</h2>
+        <ul>
+          <li>
+            <strong>Nothing collected or sold:</strong> no data from the app is
+            collected, sold or shared with anyone.
+          </li>
+          <li>
+            <strong>No tracking:</strong> no analytics, no ads, nothing running
+            in the background phoning home.
+          </li>
+          <li>
+            <strong>You're in control:</strong> everything is stored in files on
+            your device, and the full source code is on GitHub.
+          </li>
+        </ul>
+      </div>
+
+      <div>
+        <h2>8. Changes to This Policy</h2>
+        <p>
+          If the app starts handling data differently, this page gets updated.
+          The date at the top shows when it last changed.
+        </p>
+      </div>
+
+      <a href="../" id="back-home">Back to Home</a>
+    </section>
+
+    <div
+      id="download-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="dm-title"
+      aria-hidden="true"
+      hidden
+    >
+      <div id="dm-backdrop" aria-hidden="true"></div>
+      <div id="dm-window" role="document">
+        <button
+          id="dm-close"
+          type="button"
+          class="dm-icon-btn"
+          title="Close"
+          aria-label="Close"
+        >
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+            <path
+              d="M6 6l12 12M18 6L6 18"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="3"
+              stroke-linecap="round"
+            />
+          </svg>
+        </button>
+
+        <h1 id="dm-title">Download</h1>
+
+        <div id="dm-os-tabs" role="tablist" aria-label="Operating system"></div>
+
+        <div id="dm-asset-list" role="list"></div>
+
+        <footer id="dm-footer">
+          <a
+            id="dm-version-pill"
+            href="https://github.com/ancym0n/Minecraft-Bot-Panel/releases/latest"
+            target="_blank"
+            rel="noopener"
+            hidden
+          ></a>
+          <span class="credit-sep" id="dm-footer-sep" hidden>·</span>
+          <a
+            id="dm-release-link"
+            href="https://github.com/ancym0n/Minecraft-Bot-Panel/releases"
+            target="_blank"
+            rel="noopener"
+            class="report-link"
+            >All Releases</a
+          >
+        </footer>
+      </div>
+    </div>
+
+    <footer id="credit">
+      Made by
+      <a href="https://github.com/ancym0n" target="_blank" rel="noopener"
+        >ancymon</a
+      >
+      <span class="credit-sep">·</span>
+      <a
+        href="https://github.com/ancym0n/Minecraft-Bot-Panel/issues"
+        target="_blank"
+        rel="noopener"
+        class="report-link"
+        >Report a bug</a
+      >
+    </footer>
+  </body>
+</html>

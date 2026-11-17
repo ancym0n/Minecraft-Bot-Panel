@@ -1,0 +1,70 @@
+#faq {
+  width: 95%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+  align-items: center;
+  gap: 1.1rem;
+  padding: 0.5rem 0;
+  scroll-margin-top: 1.75rem;
+  text-align: center;
+}
+
+#faq h1 {
+  margin-bottom: 0.35rem;
+  opacity: 0;
+  animation: mcbpLoadIn 0.45s var(--spring-ease) 0.18s forwards;
+}
+
+#faq h2 {
+  margin-bottom: 0.55rem;
+  color: var(--title-color);
+}
+
+#faq > div {
+  width: 100%;
+  min-width: 0;
+  background-color: var(--panel-bg);
+  border: 2px solid var(--dark-main-color);
+  border-radius: 16px;
+  box-shadow: 0 0.38rem 0 0 var(--dark-main-color);
+  padding: 1.35rem 1.65rem 1.5rem;
+  text-align: center;
+  overflow-wrap: break-word;
+  opacity: 0;
+  animation: mcbpLoadIn 0.45s var(--spring-ease) forwards;
+  transition:
+    transform 0.3s var(--spring-ease),
+    box-shadow 0.3s var(--spring-ease);
+}
+
+#faq > div:nth-of-type(1) {
+  animation-delay: 0.22s;
+}
+
+#faq > div:nth-of-type(2) {
+  animation-delay: 0.28s;
+}
+
+#faq > div:nth-of-type(3) {
+  animation-delay: 0.34s;
+}
+
+#faq > div:nth-of-type(4) {
+  animation-delay: 0.4s;
+}
+
+#faq > div:nth-of-type(5) {
+  animation-delay: 0.46s;
+}
+
+#faq > div:nth-of-type(6) {
+  animation-delay: 0.52s;
+}
+
+#faq a {
+  display: inline-flex;
+  max-width: 16rem;
+  margin-top: 0.9rem;
+}

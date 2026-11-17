@@ -1,0 +1,134 @@
+a:hover {
+  background-color: #a084ff;
+  transform: translateY(-2px);
+  box-shadow: 0 calc(0.42rem + 2px) 0 0 var(--dark-main-color);
+  color: #ffffff;
+}
+
+a:active {
+  transform: translateY(3px);
+  box-shadow: 0 0.16rem 0 0 var(--dark-main-color);
+}
+
+a.secondary:hover {
+  background-color: var(--accent-dark-hover);
+  color: #ffffff;
+  box-shadow:
+    0 calc(0.42rem + 2px) 0 0 var(--dark-main-color),
+    0 0 14px 2px rgba(145, 113, 248, 0.48);
+}
+
+a.secondary:active {
+  transform: translateY(3px);
+  box-shadow: 0 0.16rem 0 0 var(--dark-main-color);
+}
+
+a.stat-item:hover,
+a.stat-item:active {
+  background: none;
+  box-shadow: none;
+  transform: none;
+  color: var(--title-color);
+  text-decoration: underline;
+}
+
+#banner-logo:hover,
+#banner-logo:active {
+  background: none;
+  box-shadow: none;
+  transform: scale(1.02);
+}
+
+#banner:hover img {
+  filter: drop-shadow(0 0 16px rgba(177, 151, 252, 0.65))
+    drop-shadow(0 0.32rem 0 rgba(10, 8, 16, 0.65));
+}
+
+#version:hover,
+#version:active {
+  background: none;
+  box-shadow: none;
+  transform: translateY(-1px);
+  color: var(--title-color);
+}
+
+#scroll-cue:hover {
+  background-color: var(--accent-dark-bg);
+  border-color: var(--accent-border);
+  color: var(--title-color);
+  transform: none;
+  translate: 0 -2px;
+  box-shadow: 0 calc(0.34rem + 2px) 0 0 var(--dark-main-color);
+}
+
+#scroll-cue:active {
+  transform: none;
+  translate: 0 2px;
+  box-shadow: 0 0.14rem 0 0 var(--dark-main-color);
+}
+
+#credit a:hover,
+#credit a:active,
+#dm-footer a:hover,
+#dm-footer a:active {
+  background: none;
+  box-shadow: none;
+  transform: none;
+  color: var(--title-color);
+  opacity: 1;
+  text-decoration: underline;
+}
+
+.script-card:hover {
+  border-color: var(--accent-border);
+  transform: translateY(-2px);
+  box-shadow: 0 calc(0.3rem + 2px) 0 0 var(--dark-main-color);
+}
+
+.script-card-title:hover {
+  background-color: var(--accent-dark-hover);
+  color: #ffffff;
+}
+
+.copy-btn:hover {
+  background-color: var(--accent-dark-hover);
+  color: #ffffff;
+  transform: translateY(-1px);
+}
+
+.copy-btn:active {
+  transform: translateY(1px);
+  box-shadow: 0 0.08rem 0 0 var(--dark-main-color);
+}
+
+#faq > div:hover,
+#docs > div:hover,
+#privacy > div:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 calc(0.38rem + 2px) 0 0 var(--dark-main-color);
+}
+
+#download-btn:hover .btn-icon,
+#download-modal a.dm-card:hover .dm-dl-arrow {
+  transform: translateY(1.5px);
+}
+
+.dm-icon-btn:hover {
+  background-color: var(--background-color);
+  color: #ffffff;
+  transform: translateY(-2px);
+  box-shadow: 0 calc(0.24rem + 2px) 0 0 var(--dark-main-color);
+}
+
+.dm-icon-btn:active {
+  transform: translateY(2px);
+  box-shadow: 0 0.1rem 0 0 var(--dark-main-color);
+}
+
+.dm-os-tab:hover:not(.is-active) {
+  color: var(--title-color);
+}
+
+.dm-os-tab:active {
+  transform: translateY(1px);
+}
