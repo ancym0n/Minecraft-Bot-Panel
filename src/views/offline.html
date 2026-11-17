@@ -1,87 +1,88 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="stylesheet" href="../css/main.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Poppins:ital,wght@0,300;0,400;1,300&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;700;800&family=Poppins:ital,wght@0,300;0,400;0,600;0,700;1,300&display=swap"
       rel="stylesheet"
     />
-    <title></title>
+    <link rel="stylesheet" href="../css/default.css" />
+    <link rel="stylesheet" href="../css/auth.css" />
+    <link rel="stylesheet" href="../css/resize.css" />
+    <link rel="shortcut icon" href="../img/logo.png" type="image/png" />
+    <script src="../js/main.js" defer></script>
+    <script src="../js/auth.js" defer></script>
+    <title>MCBP &gt; Login &gt; Offline</title>
   </head>
-  <body>
-    <div class="centerLogin">
-      <img id="img-mcbp" src="../img/mcbp.svg" alt="MCBP Logo" />
-      <div class="loginField">
-        <form>
-          <label for="username">username:</label>
-          <input
-            type="text"
-            id="username"
-            spellcheck="false"
-            maxlength="16"
-            required
-          />
-        </form>
-      </div>
-      <p id="continue" class="mButton">Continue</p>
-    </div>
-    <style>
-      #mcbp {
-        margin-top: 85px;
-      }
-      label {
-        font-size: 31px;
-      }
-      .mButton {
-        font-size: 25px;
-      }
-      form {
-        width: 460px;
-        height: 100px;
-        position: relative;
-        margin-top: 40px;
-        margin-bottom: 20px;
-        display: flex;
-        align-items: center;
-      }
-      input {
-        border: none;
-        border-bottom: 2px solid var(--font-main-color);
-        background-color: var(--background-color);
-        color: var(--font-user-color);
-        font-size: 25px;
-        font-weight: lighter;
-        border-radius: 3px;
-        width: 100%;
-        margin-left: 10px;
-      }
+  <body data-page="offline">
+    <main class="centerLogin">
+      <section id="banner-logo">
+        <img id="img-mcbp" src="../img/mcbp-title.svg" alt="MCBP Logo" />
+      </section>
 
-      input:focus {
-        outline: none;
-        background-color: var(--button-background-color);
-      }
-    </style>
-    <script defer>
-      function submit(event) {
-        event.preventDefault();
-        const username = document.getElementById("username").value;
-        window.api.sendFormData({ username });
-      }
-      document
-        .querySelector("form")
-        .addEventListener("submit", (event) => submit(event));
+      <section class="auth-card">
+        <div>
+          <h1 id="h1-welcome">Offline Login</h1>
+          <p class="auth-subtitle">
+            Choose a bot username (up to 16 characters)
+          </p>
+        </div>
 
-      document
-        .querySelector(".mButton")
-        .addEventListener("click", (event) => submit(event));
+        <div class="loginField">
+          <form id="offlineForm">
+            <label for="username">Username</label>
+            <input
+              type="text"
+              id="username"
+              placeholder="e.g. MCBP_Bot"
+              spellcheck="false"
+              maxlength="16"
+              required
+            />
+          </form>
+        </div>
 
-      window.api.onSetVersion((version) => {
-        document.querySelector(
-          "title"
-        ).innerHTML = `MCBP v${version} > Login > Offline`;
-      });
-    </script>
+        <div class="auth-actions">
+          <div id="back-btn" class="back-button">← Back</div>
+          <p id="continue" class="mButton">Continue</p>
+        </div>
+      </section>
+    </main>
+
+    <aside id="update-toast" role="status" hidden>
+      <span id="update-text"></span>
+      <button id="update-install" type="button">Update</button>
+      <button id="update-later" type="button" class="ghost">Later</button>
+    </aside>
+
+    <footer id="credit" class="selfpromo">
+      <span>Made by</span>
+      <a href="https://github.com/ancym0n" target="_blank" rel="noopener"
+        >ancymon</a
+      >
+      <span class="credit-sep">·</span>
+      <a
+        class="github"
+        href="https://github.com/ancym0n/Minecraft-Bot-Panel"
+        target="_blank"
+        rel="noopener"
+      >
+        <img src="../img/github-mark-white.svg" alt="" />
+        <span>Source Code</span>
+      </a>
+      <span class="credit-sep">·</span>
+      <a
+        href="https://github.com/ancym0n/Minecraft-Bot-Panel/issues"
+        target="_blank"
+        rel="noopener"
+        class="report-link"
+        >Report a bug</a
+      >
+      <span class="credit-sep">·</span>
+      <span id="version">v1.0.0</span>
+    </footer>
   </body>
 </html>

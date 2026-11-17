@@ -1,46 +1,180 @@
 {
   "name": "minecraft-bot-panel",
-  "version": "0.1.0",
-  "description": "Minecraft Bot Panel",
+  "desktopName": "minecraft-bot-panel.desktop",
+  "version": "0.2.0",
   "main": "index.js",
-  "author": "ancym0n",
   "scripts": {
-    "start": "electron-forge start",
-    "package": "electron-forge package",
-    "make": "electron-forge make"
+    "start": "electron .",
+    "make": "node build/make.js",
+    "make:linux": "node build/make.js linux",
+    "make:win": "node build/make.js win",
+    "update:mineflayer": "node src/js/syncVersions.js",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "make:mac": "node build/make.js mac"
   },
   "keywords": [],
-  "license": "GPL-3.0-only",
-  "dependencies": {
-    "electron-squirrel-startup": "^1.0.1",
-    "minecraft-data": "^3.68.0",
-    "mineflayer": "^4.20.1",
-    "mineflayer-pathfinder": "^2.4.5"
+  "author": {
+    "name": "ancymon",
+    "email": "ancym0n@users.noreply.github.com"
   },
-  "build": {
-    "appId": "com.ancymon.mcbp",
-    "productName": "MCBP",
-    "directories": {
-      "buildResources": "assets/icons"
-    },
-    "win": {
-      "icon": "src/icons/icon.ico"
-    },
-    "linux": {
-      "icon": "src/icons/icon.png"
-    }
+  "license": "GPL-3.0-only",
+  "description": "GUI-based Minecraft bot manager with custom script creation",
+  "dependencies": {
+    "fzstd": "^0.1.1",
+    "minecraft-data": "^3.119.0",
+    "mineflayer": "^4.39.0",
+    "mineflayer-pathfinder": "^2.4.5",
+    "npm": "^10.9.10",
+    "tar": "^7.5.23"
   },
   "devDependencies": {
-    "@electron-forge/cli": "^7.4.0",
-    "@electron-forge/maker-deb": "^7.4.0",
-    "@electron-forge/maker-rpm": "^7.4.0",
-    "@electron-forge/maker-squirrel": "^7.4.0",
-    "@electron-forge/maker-zip": "^7.4.0",
-    "@electron-forge/plugin-auto-unpack-natives": "^7.4.0",
-    "@electron-forge/plugin-fuses": "^7.4.0",
-    "@electron/fuses": "^1.8.0",
-    "@electron/packager": "^18.3.4",
-    "@electron/rebuild": "^3.6.0",
-    "electron": "^32.0.1"
+    "electron": "^34.0.2",
+    "electron-builder": "^26.18.0",
+    "prettier": "3.10.1"
+  },
+  "homepage": "https://github.com/ancym0n/Minecraft-Bot-Panel",
+  "build": {
+    "appId": "com.ancymon.minecraft-bot-panel",
+    "productName": "Minecraft Bot Panel",
+    "copyright": "Copyright \u00a9 ancymon",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "artifactName": "MCBPv${version}-${os}.${arch}.${ext}",
+    "files": [
+      "index.js",
+      "package.json",
+      "src/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "custom",
+        "to": "custom",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "asar": true,
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb",
+        "rpm",
+        "pacman",
+        "tar.gz"
+      ],
+      "icon": "build/logo.png",
+      "category": "Utility",
+      "maintainer": "ancymon <ancym0n@users.noreply.github.com>",
+      "vendor": "ancymon",
+      "synopsis": "Minecraft bot manager with scripts and local AI",
+      "description": "GUI-based Minecraft bot manager with custom script creation",
+      "syncDesktopName": true,
+      "executableName": "minecraft-bot-panel",
+      "executableArgs": [
+        "--no-sandbox"
+      ]
+    },
+    "appImage": {
+      "artifactName": "Minecraft-Bot-Panel-${version}-x86_64.AppImage",
+      "compression": "gzip"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ],
+      "icon": "build/logo.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Minecraft Bot Panel",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "MCBPv${version}-win.x64-setup.exe",
+      "installerIcon": "build/logo.ico",
+      "uninstallerIcon": "build/logo.ico",
+      "installerHeaderIcon": "build/logo.ico",
+      "installerSidebar": "build/installer/sidebar.bmp",
+      "uninstallerSidebar": "build/installer/uninstallerSidebar.bmp",
+      "installerHeader": "build/installer/header.bmp",
+      "include": "build/installer.nsh"
+    },
+    "electronLanguages": [
+      "en-US"
+    ],
+    "compression": "normal",
+    "deb": {
+      "depends": [
+        "libgtk-3-0 | libgtk-3-0t64",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0 | libatspi2.0-0t64",
+        "libuuid1",
+        "libsecret-1-0",
+        "libasound2 | libasound2t64",
+        "libgbm1"
+      ],
+      "priority": "optional"
+    },
+    "rpm": {
+      "depends": [
+        "(gtk3 or libgtk-3-0)",
+        "(nss or mozilla-nss)",
+        "xdg-utils"
+      ],
+      "fpm": [
+        "--rpm-rpmbuild-define=_build_id_links none"
+      ]
+    },
+    "pacman": {
+      "depends": [
+        "gtk3",
+        "nss",
+        "libxss",
+        "libxtst",
+        "xdg-utils",
+        "at-spi2-core",
+        "alsa-lib",
+        "libsecret"
+      ]
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "build/logo.png",
+      "category": "public.app-category.utilities",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "artifactName": "MCBPv${version}-mac.${arch}.${ext}"
+    },
+    "publish": null
   }
 }

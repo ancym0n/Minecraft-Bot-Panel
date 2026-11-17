@@ -1,36 +1,74 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="stylesheet" href="../css/main.css" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Poppins:ital,wght@0,300;0,400;1,300&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;700;800&family=Poppins:ital,wght@0,300;0,400;0,600;0,700;1,300&display=swap"
       rel="stylesheet"
     />
-    <title></title>
+    <link rel="stylesheet" href="../css/default.css" />
+    <link rel="stylesheet" href="../css/auth.css" />
+    <link rel="stylesheet" href="../css/resize.css" />
+    <link rel="shortcut icon" href="../img/logo.png" type="image/png" />
+    <script src="../js/main.js" defer></script>
+    <script src="../js/auth.js" defer></script>
+    <title>MCBP &gt; Login</title>
   </head>
-  <body>
-    <div class="centerLogin">
-      <img id="img-mcbp" src="../img/mcbp.svg" alt="MCBP Logo" />
-      <h1 id="h1-welcome">Welcome!<br />Choose login type</h1>
-      <div class="div-buttons">
-        <p id="microsoft" class="mButton p-welcome-button">Microsoft</p>
-        <p id="offline" class="mButton p-welcome-button">Offline</p>
-      </div>
-    </div>
-    <script>
-      ["microsoft", "offline"].forEach((e) => {
-        document.getElementById(e).addEventListener("click", () => {
-          window.api.send("login" + e);
-        });
-      });
+  <body data-page="welcome">
+    <main class="centerLogin">
+      <section id="banner-logo">
+        <img id="img-mcbp" src="../img/mcbp-title.svg" alt="MCBP Logo" />
+      </section>
 
-      window.api.onSetVersion((version) => {
-        document.querySelector("title").innerHTML = `MCBP v${version} > Login`;
-      });
-    </script>
+      <section class="auth-card">
+        <div>
+          <h1 id="h1-welcome">Welcome! Choose login type</h1>
+          <p class="auth-subtitle">
+            Connect with a Microsoft account or join in Offline mode
+          </p>
+        </div>
+
+        <div class="div-buttons">
+          <p id="microsoft" class="mButton p-welcome-button">Microsoft</p>
+          <p id="offline" class="mButton secondary p-welcome-button">Offline</p>
+        </div>
+      </section>
+    </main>
+
+    <aside id="update-toast" role="status" hidden>
+      <span id="update-text"></span>
+      <button id="update-install" type="button">Update</button>
+      <button id="update-later" type="button" class="ghost">Later</button>
+    </aside>
+
+    <footer id="credit" class="selfpromo">
+      <span>Made by</span>
+      <a href="https://github.com/ancym0n" target="_blank" rel="noopener"
+        >ancymon</a
+      >
+      <span class="credit-sep">·</span>
+      <a
+        class="github"
+        href="https://github.com/ancym0n/Minecraft-Bot-Panel"
+        target="_blank"
+        rel="noopener"
+      >
+        <img src="../img/github-mark-white.svg" alt="" />
+        <span>Source Code</span>
+      </a>
+      <span class="credit-sep">·</span>
+      <a
+        href="https://github.com/ancym0n/Minecraft-Bot-Panel/issues"
+        target="_blank"
+        rel="noopener"
+        class="report-link"
+        >Report a bug</a
+      >
+      <span class="credit-sep">·</span>
+      <span id="version">v1.0.0</span>
+    </footer>
   </body>
 </html>

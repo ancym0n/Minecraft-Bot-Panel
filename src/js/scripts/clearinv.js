@@ -1,6 +1,6 @@
-let info = {
+const info = {
   name: "ClearInv",
-  default: { interval: 200 },
+  default: { interval: 1000 },
   options: [
     {
       type: "checkbox",
@@ -10,41 +10,51 @@ let info = {
   ],
 };
 
-function script(bot, log, clearLog, getOption, scriptRepeater) {
-  getOption("repeat", info.name).then((r) => {
-    function dropAllItems() {
-      const items = bot.inventory.items();
+async function script(bot, log, clearLog, getOption, scriptRepeater) {
+  if (!bot || !bot.inventory) {
+    clearLog("ClearInv:");
+    log("ClearInv: Connect a bot first");
+    return;
+  }
 
-      if (items.length === 0) {
-        clearLog("No items to drop");
-        log("No items to drop");
-        return;
-      }
+  const repeat = await getOption("repeat", info.name);
+  let isDropping = false;
 
-      let i = 0;
-      function dropNext() {
-        if (i >= items.length) {
-          clearLog("Dropped all items (Total: ");
-          log("Dropped all items (Total: " + items.length + ")");
-          return;
-        }
+  function dropAllItems() {
+    if (!bot || !bot.inventory || isDropping) return;
+    const items = bot.inventory.items();
 
-        const item = items[i];
-        bot.tossStack(item, (err) => {
-          i++;
-          dropNext();
-        });
-      }
-
-      dropNext();
+    if (items.length === 0) {
+      clearLog("No items to drop");
+      log("No items to drop");
+      return;
     }
 
-    if (r === "on") {
-      scriptRepeater(dropAllItems, info.default.interval).then(() => {
+    isDropping = true;
+    let i = 0;
+
+    function dropNext() {
+      if (!bot || !bot.inventory || i >= items.length) {
+        isDropping = false;
+        clearLog("Dropped all items (Total: ");
+        log(`Dropped all items (Total: ${items.length})`);
         return;
+      }
+
+      const item = items[i];
+      bot.tossStack(item, () => {
+        i++;
+        dropNext();
       });
-    } else dropAllItems();
-  });
+    }
+
+    dropNext();
+  }
+
+  dropAllItems();
+  if (repeat === "on") {
+    await scriptRepeater(dropAllItems, info.default.interval);
+  }
 }
 
 module.exports = {

@@ -1,248 +1,3737 @@
-const { app, BrowserWindow, ipcMain } = require("electron");
-let version = require("./package.json").version;
-const path = require("path");
-const fs = require("fs");
-const mineflayer = require("mineflayer");
-const { pathfinder, Movements, goals } = require("mineflayer-pathfinder");
-if (require("electron-squirrel-startup")) return app.quit();
-
-function checkForPort(serverAdress) {
-  a = serverAdress.split(":");
-  if (a[1])
-    return {
-      ip: a[0],
-      port: a[1],
-    };
-  else
-    return {
-      ip: a[0],
-      port: "",
-    };
+const bufferModule = require("buffer");
+if (!bufferModule.SlowBuffer) {
+  bufferModule.SlowBuffer = bufferModule.Buffer;
 }
 
-function createMainWindow() {
-  let scriptFunctions = [];
-  let activeScripts = [];
-  let bot;
-  function log(text) {
-    mainWindow.webContents.send("log", text);
+const { app, BrowserWindow, ipcMain, shell, clipboard } = require("electron");
+const { spawn } = require("child_process");
+const crypto = require("crypto");
+const path = require("path");
+const fs = require("fs");
+const {
+  loadLibraries,
+  ensureMineflayer,
+  syncLatestMineflayer,
+  getRuntimeInfo,
+} = require("./src/js/runtime");
+const {
+  equipBestWeapon,
+  equipBestArmor,
+  equipBestToolForBlock,
+  consumeFoodSafely,
+  performPvpAttack,
+  setDynamicFollowGoal,
+  clearPathfinderGoal,
+  configureSmartMovements,
+  scanNearbySigns,
+  attachSmartMovement,
+} = require("./src/js/botUtils");
+const { ollamaManager } = require("./src/js/ollamaManager");
+const { ChatQueue } = require("./src/js/chatQueue");
+const { createAiTools } = require("./src/js/aiTools");
+const scriptStudio = require("./src/js/scriptStudio");
+const { sessionLogger } = require("./src/js/sessionLogger");
+const updater = require("./src/js/updater");
+
+if (process.platform === "linux" && process.env.APPDIR) {
+  const schemaDir = `${process.env.APPDIR}/usr/share/glib-2.0/schemas`;
+  if (
+    process.env.GSETTINGS_SCHEMA_DIR &&
+    !fs.existsSync(path.join(schemaDir, "gschemas.compiled"))
+  ) {
+    const cleaned = process.env.GSETTINGS_SCHEMA_DIR.split(path.delimiter)
+      .filter((p) => p && p !== schemaDir)
+      .join(path.delimiter);
+    if (cleaned) process.env.GSETTINGS_SCHEMA_DIR = cleaned;
+    else delete process.env.GSETTINGS_SCHEMA_DIR;
   }
-  function clearLog(text) {
-    mainWindow.webContents.send("clear-log", text);
+}
+
+const ICON_PNG = path.join(__dirname, "src", "img", "logo.png");
+const ICON_ICO = path.join(__dirname, "build", "logo.ico");
+
+const ARMOR_TIERS = {
+  head: [
+    "netherite_helmet",
+    "diamond_helmet",
+    "turtle_helmet",
+    "iron_helmet",
+    "chainmail_helmet",
+    "golden_helmet",
+    "leather_helmet",
+  ],
+  torso: [
+    "netherite_chestplate",
+    "diamond_chestplate",
+    "iron_chestplate",
+    "chainmail_chestplate",
+    "golden_chestplate",
+    "leather_chestplate",
+    "elytra",
+  ],
+  legs: [
+    "netherite_leggings",
+    "diamond_leggings",
+    "iron_leggings",
+    "chainmail_leggings",
+    "golden_leggings",
+    "leather_leggings",
+  ],
+  feet: [
+    "netherite_boots",
+    "diamond_boots",
+    "iron_boots",
+    "chainmail_boots",
+    "golden_boots",
+    "leather_boots",
+  ],
+};
+
+const WEAPON_TIERS = [
+  "netherite_sword",
+  "diamond_sword",
+  "iron_sword",
+  "netherite_axe",
+  "diamond_axe",
+  "stone_sword",
+  "golden_sword",
+  "iron_axe",
+  "wooden_sword",
+  "trident",
+  "mace",
+];
+
+function parseServerAddress(rawAddress) {
+  const cleaned = String(rawAddress || "").trim();
+  if (!cleaned) return { ip: "", port: 25565 };
+  const parts = cleaned.split(":");
+  const ip = parts[0].trim();
+  const parsedPort = parts[1] ? parseInt(parts[1].trim(), 10) : 25565;
+  return {
+    ip,
+    port:
+      Number.isFinite(parsedPort) && parsedPort > 0 && parsedPort <= 65535
+        ? parsedPort
+        : 25565,
+  };
+}
+
+function isDirWritable(dirPath) {
+  try {
+    if (!fs.existsSync(dirPath)) return false;
+    fs.accessSync(dirPath, fs.constants.W_OK);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function seedCustomDir(srcDir, destDir) {
+  try {
+    fs.mkdirSync(path.join(destDir, "scripts"), { recursive: true });
+    const readmeSrc = path.join(srcDir, "scripts", "readme");
+    const readmeDest = path.join(destDir, "scripts", "readme");
+    if (fs.existsSync(readmeSrc) && !fs.existsSync(readmeDest)) {
+      fs.copyFileSync(readmeSrc, readmeDest);
+    }
+    const themeSrc = path.join(srcDir, "theme.css");
+    const themeDest = path.join(destDir, "theme.css");
+    if (!fs.existsSync(themeDest)) {
+      if (fs.existsSync(themeSrc)) {
+        fs.copyFileSync(themeSrc, themeDest);
+      } else {
+        fs.writeFileSync(themeDest, "");
+      }
+    }
+  } catch (_) {}
+}
+
+function resolveCustomPath(...segments) {
+  if (!app.isPackaged) {
+    return path.join(__dirname, "custom", ...segments);
   }
 
-  function getOption(option, scriptName) {
-    return new Promise((resolve, reject) => {
-      mainWindow.webContents
-        .executeJavaScript(
-          `window.api.getOptionValue("${option}", "${scriptName}")`
-        )
-        .then((value) => {
-          resolve(value);
-        })
-        .catch((err) => {
-          reject(err);
-        });
-    });
+  const extraRes = path.join(process.resourcesPath || "", "custom");
+  const unpacked = path.join(
+    process.resourcesPath || "",
+    "app.asar.unpacked",
+    "custom",
+  );
+  const bundledCustom = fs.existsSync(extraRes)
+    ? extraRes
+    : fs.existsSync(unpacked)
+      ? unpacked
+      : extraRes;
+
+  if (!process.env.APPIMAGE && isDirWritable(bundledCustom)) {
+    return path.join(bundledCustom, ...segments);
   }
 
-  function loadScripts(directory, type) {
-    let fullDirectory;
-    if (type != "custom") fullDirectory = path.join(__dirname, directory);
-    else
-      fullDirectory = path.join(
-        process.resourcesPath,
-        "app.asar.unpacked",
-        directory
-      );
-    fs.readdir(fullDirectory, (err, files) => {
-      let scriptAmount = 0;
-      files.forEach((file) => {
-        if (file.includes(".js")) {
-          scriptAmount += 1;
-          let scriptDetails = require(path.join(fullDirectory, file));
-          let scriptName = scriptDetails.info.name;
-          let formattedHTML = `<div class="${scriptName}-script script-container"><p class="${scriptName}-name script-name">${scriptName}</p><form class="script-options">`;
-          for (var i = 0; scriptDetails.info.options.length > i; i++) {
-            let option = scriptDetails.info.options[i];
-            if (option.type === "checkbox") {
-              formattedHTML += `<div></div><input type="checkbox" id="${option.id}-${scriptName}" value="off" onclick="checkbox('${option.id}-${scriptName}')"/><label for="${option.id}-${scriptName}">${option.label}</label>`;
-            } else if (option.type === "input") {
-              formattedHTML += `<label for="${scriptName}-${scriptName}" style="display:block">${option.label}</label><input type="text" id="${option.id}-${scriptName}" class="script-text-input" spellcheck="false"/>`;
-            }
-          }
-          formattedHTML += "</form></div>";
-          mainWindow.webContents.send("on-script", formattedHTML, scriptName);
+  const userCustom = path.join(app.getPath("userData"), "custom");
+  seedCustomDir(bundledCustom, userCustom);
+  return path.join(userCustom, ...segments);
+}
 
-          scriptFunctions.push([
-            scriptName,
-            (gO) => {
-              scriptDetails.script(
-                bot,
-                log,
-                clearLog,
-                getOption,
-                (func, intervalNum) => {
-                  return new Promise((resolve, reject) => {
-                    let tI = setInterval(() => {
-                      if (!activeScripts.includes(scriptName)) {
-                        clearInterval(tI);
-                        resolve(true);
-                      } else {
-                        func();
-                      }
-                    }, intervalNum);
-                  });
-                }
-              );
-            },
-          ]);
-        }
+function openWithCleanEnv(target) {
+  if (process.platform === "linux" && process.env.APPDIR) {
+    const cleanEnv = { ...process.env };
+    delete cleanEnv.LD_LIBRARY_PATH;
+    delete cleanEnv.GSETTINGS_SCHEMA_DIR;
+    try {
+      const child = spawn("xdg-open", [target], {
+        detached: true,
+        stdio: "ignore",
+        env: cleanEnv,
       });
-      log(`Loaded ${type} (${scriptAmount}) scripts`);
+      child.on("error", () => {
+        if (/^https?:\/\//.test(target)) shell.openExternal(target);
+        else shell.openPath(target);
+      });
+      child.unref();
       return;
+    } catch (_) {}
+  }
+  if (/^https?:\/\//.test(target)) {
+    shell.openExternal(target);
+  } else {
+    shell.openPath(target);
+  }
+}
+
+function escapeAttr(str) {
+  return String(str || "")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function formatKickReason(reason) {
+  if (!reason) return "Unknown reason";
+  if (typeof reason === "string") {
+    try {
+      const parsed = JSON.parse(reason);
+      if (parsed && typeof parsed === "object") {
+        return parsed.text || parsed.translate || JSON.stringify(parsed);
+      }
+    } catch (_) {}
+    return reason;
+  }
+  if (typeof reason === "object") {
+    if (typeof reason.toMotd === "function") return reason.toMotd();
+    if (typeof reason.text === "string" && reason.text) return reason.text;
+    if (Array.isArray(reason.extra)) {
+      return reason.extra.map((e) => e.text || "").join("");
+    }
+    return JSON.stringify(reason);
+  }
+  return String(reason);
+}
+
+function extractChatPayload(jsonMsg) {
+  if (!jsonMsg) return { text: "", motd: "", segments: [] };
+  if (typeof jsonMsg === "string") {
+    return { text: jsonMsg, motd: jsonMsg, segments: [] };
+  }
+
+  const text =
+    typeof jsonMsg.toString === "function"
+      ? jsonMsg.toString()
+      : String(jsonMsg.text || "");
+  const motd = typeof jsonMsg.toMotd === "function" ? jsonMsg.toMotd() : text;
+  const segments = [];
+
+  function walk(node, inherited = {}) {
+    if (!node) return;
+    if (typeof node === "string") {
+      if (node) segments.push({ text: node, ...inherited });
+      return;
+    }
+
+    const currentStyle = {
+      color: node.color || inherited.color || null,
+      bold:
+        typeof node.bold === "boolean" ? node.bold : Boolean(inherited.bold),
+      italic:
+        typeof node.italic === "boolean"
+          ? node.italic
+          : Boolean(inherited.italic),
+      underlined:
+        typeof node.underlined === "boolean"
+          ? node.underlined
+          : Boolean(inherited.underlined),
+      strikethrough:
+        typeof node.strikethrough === "boolean"
+          ? node.strikethrough
+          : Boolean(inherited.strikethrough),
+      obfuscated:
+        typeof node.obfuscated === "boolean"
+          ? node.obfuscated
+          : Boolean(inherited.obfuscated),
+    };
+
+    if (typeof node.text === "string" && node.text.length > 0) {
+      segments.push({ text: node.text, ...currentStyle });
+    }
+
+    if (Array.isArray(node.extra)) {
+      for (const child of node.extra) {
+        walk(child, currentStyle);
+      }
+    }
+    if (Array.isArray(node.unsigned)) {
+      for (const child of node.unsigned) {
+        walk(child, currentStyle);
+      }
+    }
+  }
+
+  try {
+    walk(jsonMsg.json || jsonMsg, {});
+  } catch (_) {}
+
+  return { text, motd, segments };
+}
+
+// --- Microsoft Account Storage & Auth Helpers ---
+function getMsaProfilesDir() {
+  const dir = path.join(app.getPath("userData"), "msa-profiles");
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch (_) {}
+  return dir;
+}
+
+function getMsaAccountsPath() {
+  return path.join(app.getPath("userData"), "msa-accounts.json");
+}
+
+function loadSavedMsaAccounts() {
+  try {
+    const p = getMsaAccountsPath();
+    if (!fs.existsSync(p)) return [];
+    const parsed = JSON.parse(fs.readFileSync(p, "utf8"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function saveMsaAccount(entry) {
+  if (!entry || !entry.id) return loadSavedMsaAccounts();
+  const accounts = loadSavedMsaAccounts();
+  const cleanId = String(entry.id).trim();
+  const mcName = String(entry.mcName || cleanId).trim();
+  const uuid = String(entry.uuid || "").trim();
+  const idx = accounts.findIndex(
+    (a) =>
+      a.id.toLowerCase() === cleanId.toLowerCase() || (uuid && a.uuid === uuid),
+  );
+  const record = {
+    id: cleanId,
+    mcName,
+    uuid,
+    lastUsed: Date.now(),
+  };
+  if (idx !== -1) {
+    accounts[idx] = { ...accounts[idx], ...record };
+  } else {
+    accounts.unshift(record);
+  }
+  accounts.sort((a, b) => (b.lastUsed || 0) - (a.lastUsed || 0));
+  try {
+    fs.writeFileSync(getMsaAccountsPath(), JSON.stringify(accounts, null, 2));
+  } catch (_) {}
+  return accounts;
+}
+
+function removeMsaAccount(accountId) {
+  const cleanId = String(accountId || "").trim();
+  const accounts = loadSavedMsaAccounts().filter(
+    (a) => a.id.toLowerCase() !== cleanId.toLowerCase(),
+  );
+  try {
+    fs.writeFileSync(getMsaAccountsPath(), JSON.stringify(accounts, null, 2));
+  } catch (_) {}
+
+  try {
+    const hash = crypto
+      .createHash("sha1")
+      .update(cleanId, "binary")
+      .digest("hex")
+      .substr(0, 6);
+    const profilesDir = getMsaProfilesDir();
+    if (fs.existsSync(profilesDir)) {
+      for (const f of fs.readdirSync(profilesDir)) {
+        if (f.startsWith(`${hash}_`)) {
+          fs.rmSync(path.join(profilesDir, f), { force: true });
+        }
+      }
+    }
+  } catch (_) {}
+  return accounts;
+}
+
+let mainWindow = null;
+let msaPopupWindow = null;
+let activeMsaRunId = 0;
+let bot = null;
+let telemetryTimer = null;
+let reconnectTimer = null;
+let lastConnectServer = null;
+let manualDisconnect = false;
+let cachedSigns = [];
+let lastSignsScanTime = 0;
+let lastTelemetryJson = "";
+let lastInventoryJson = "";
+
+const scriptFunctions = new Map();
+const activeScripts = new Set();
+
+// Code execution needs the opt-in AND an explicit allowed-players list.
+function aiCanRunCode(sender) {
+  return (
+    Boolean(ollamaManager.config.agentAllowCode) &&
+    String(ollamaManager.config.agentAllowedPlayers || "").trim() !== "" &&
+    ollamaManager.canCommand(sender)
+  );
+}
+
+const aiChatQueue = new ChatQueue({
+  getBot: () => bot,
+  getConfig: () => ollamaManager.config,
+  log: (text) => log(text),
+});
+
+const aiTools = createAiTools({
+  getBot: () => bot,
+  loadLibraries,
+  log: (text) => log(text),
+  onTaskDone: (evt) => handleAiTaskDone(evt),
+  canRunCode: (sender) => aiCanRunCode(sender),
+  scripts: {
+    list: () => Array.from(scriptFunctions.keys()),
+    active: () => Array.from(activeScripts),
+    start: (name) => startScriptByName(name),
+    stop: (name) => stopScriptByName(name),
+  },
+});
+const activeControlStates = {
+  forward: false,
+  back: false,
+  left: false,
+  right: false,
+  jump: false,
+  sprint: false,
+  sneak: false,
+};
+let activeRadarTarget = {
+  subAction: "",
+  username: "",
+  entityId: null,
+};
+
+let sessionState = {
+  onlineMode: false,
+  username: "",
+  email: "",
+  mcName: "",
+  uuid: "",
+};
+
+function closeMsaPopup() {
+  if (msaPopupWindow && !msaPopupWindow.isDestroyed()) {
+    try {
+      msaPopupWindow.close();
+    } catch (_) {}
+  }
+  msaPopupWindow = null;
+}
+
+function openMsaLoginPopup(verificationUri, userCode) {
+  const url = String(verificationUri || "https://www.microsoft.com/link");
+  const code = String(userCode || "").trim();
+  if (code) {
+    try {
+      clipboard.writeText(code);
+    } catch (_) {}
+  }
+
+  if (msaPopupWindow && !msaPopupWindow.isDestroyed()) {
+    msaPopupWindow.focus();
+    msaPopupWindow.loadURL(url).catch(() => {});
+    return;
+  }
+
+  const iconPath =
+    process.platform === "win32" && fs.existsSync(ICON_ICO)
+      ? ICON_ICO
+      : ICON_PNG;
+
+  msaPopupWindow = new BrowserWindow({
+    width: 520,
+    height: 680,
+    minWidth: 380,
+    minHeight: 500,
+    parent: mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined,
+    autoHideMenuBar: true,
+    backgroundColor: "#16131f",
+    icon: iconPath,
+    title: code
+      ? `Microsoft Sign-In — Code: ${code} (Copied to Clipboard)`
+      : "Microsoft Sign-In",
+    webPreferences: {
+      contextIsolation: true,
+      sandbox: false,
+      nodeIntegration: false,
+    },
+  });
+
+  msaPopupWindow.setMenuBarVisibility(false);
+  msaPopupWindow.loadURL(url).catch(() => {});
+
+  if (code) {
+    msaPopupWindow.webContents.on("did-finish-load", () => {
+      if (!msaPopupWindow || msaPopupWindow.isDestroyed()) return;
+      const safeCode = JSON.stringify(code);
+      msaPopupWindow.webContents
+        .executeJavaScript(
+          `(() => {
+            try {
+              const input = document.querySelector('input[name="otc"], input#otc, input[type="tel"], input[maxlength="8"]');
+              if (input && !input.value) {
+                input.focus();
+                input.value = ${safeCode};
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+              }
+            } catch (_) {}
+          })()`,
+        )
+        .catch(() => {});
     });
   }
-  function loadAllScripts() {
-    let defaultLoading = "Loading default scripts...";
-    let customLoading = "Loading custom scripts...";
-    log(defaultLoading);
-    loadScripts("./src/js/scripts", "default");
-    clearLog(defaultLoading);
-    log(customLoading);
-    loadScripts(`./custom/scripts`, "custom");
-    clearLog(customLoading);
+
+  msaPopupWindow.on("closed", () => {
+    msaPopupWindow = null;
+  });
+}
+
+function resolveLogsDir() {
+  if (!app.isPackaged && !process.env.APPIMAGE) {
+    const localLogs = path.join(__dirname, "logs");
+    try {
+      fs.mkdirSync(localLogs, { recursive: true });
+      if (isDirWritable(localLogs)) return localLogs;
+    } catch (_) {}
   }
-  const mainWindow = new BrowserWindow({
-    title: "MCBT v" + version,
-    width: 800,
-    height: 600,
-    resizable: false,
-    fullscreenable: false,
+  const userLogs = path.join(app.getPath("userData"), "logs");
+  try {
+    fs.mkdirSync(userLogs, { recursive: true });
+  } catch (_) {}
+  return userLogs;
+}
+
+let lastSessionLogText = "";
+let lastSessionLogTime = 0;
+
+function pushSessionLogStatus() {
+  sendToRenderer("session-log-status", sessionLogger.getStatus());
+}
+
+function parseChatSenderAndMessage(plainText, botUsername = "") {
+  const text = String(plainText || "")
+    .replace(/§#[0-9a-fA-F]{6}|§[0-9a-fk-or]/gi, "")
+    .trim();
+  if (!text) return null;
+
+  // 1. Vanilla <Player> message
+  const vanillaMatch = text.match(/^<([A-Za-z0-9_.\-]{2,24})>\s+(.+)$/);
+  if (vanillaMatch) {
+    return { sender: vanillaMatch[1], content: vanillaMatch[2].trim() };
+  }
+
+  // 2. Server formatted: [Rank] Player: message OR Player » message
+  const sepMatch = text.match(/^([^:»>•]{2,48}?)\s*(?::|»|›|->)\s+(.+)$/);
+  if (sepMatch) {
+    const rawLeft = sepMatch[1]
+      .replace(/\[[^\]]*\]/g, " ")
+      .replace(/\([^)]*\)/g, " ")
+      .trim();
+    const tokens = rawLeft.split(/\s+/).filter(Boolean);
+    const candidate = tokens[tokens.length - 1] || "";
+    if (
+      /^[A-Za-z0-9_.\-]{2,24}$/.test(candidate) &&
+      !["server", "system", "info", "queue", "warning", "console"].includes(
+        candidate.toLowerCase(),
+      )
+    ) {
+      return { sender: candidate, content: sepMatch[2].trim() };
+    }
+  }
+
+  // 3. Fallback if botUsername is mentioned in a general line
+  if (botUsername && text.toLowerCase().includes(botUsername.toLowerCase())) {
+    return { sender: "Player", content: text };
+  }
+
+  return null;
+}
+
+function buildLiveBotAiContext() {
+  if (!bot || !bot.entity) return null;
+  const pos = bot.entity.position;
+  const nearbyPlayers = [];
+  if (bot.players) {
+    for (const p of Object.values(bot.players)) {
+      if (p?.username && p.username !== bot.username && p.entity) {
+        nearbyPlayers.push(p.username);
+      }
+    }
+  }
+  return {
+    username: bot.username,
+    health: Math.round(bot.health ?? 20),
+    food: Math.round(bot.food ?? 20),
+    position: pos
+      ? { x: Math.floor(pos.x), y: Math.floor(pos.y), z: Math.floor(pos.z) }
+      : null,
+    dimension: String(bot.game?.dimension || "overworld").replace(
+      /^minecraft:/,
+      "",
+    ),
+    heldItem: bot.heldItem
+      ? `${bot.heldItem.displayName || bot.heldItem.name} x${bot.heldItem.count}`
+      : "Empty hand",
+    nearbyPlayers: nearbyPlayers.slice(0, 6),
+    activeScripts: Array.from(activeScripts),
+  };
+}
+
+// Chat reply, or a tool-using agent run when AIAgent is on and the
+// sender is allowed to give commands.
+function runAiReply({
+  sender,
+  message,
+  overrideModel = "",
+  bypassCooldown = false,
+  forceAgent = null,
+}) {
+  const useAgent = forceAgent ?? Boolean(ollamaManager.config.agentEnabled);
+  const botContext = buildLiveBotAiContext();
+  if (useAgent && bot && bot.entity && ollamaManager.canCommand(sender)) {
+    return ollamaManager.runAgent({
+      sender,
+      message,
+      botContext,
+      tools: aiTools.schemasFor(sender),
+      executeTool: aiTools.executeTool,
+      overrideModel,
+      bypassCooldown,
+    });
+  }
+  return ollamaManager.generateChatReply({
+    sender,
+    message,
+    botContext,
+    overrideModel,
+    bypassCooldown,
+  });
+}
+
+function logAiResult(res, target) {
+  const tag = res.actions?.length ? "AIAgent" : "ChatAI";
+  const parts = res.parts?.length || 1;
+  log(
+    `${tag}: [${res.model} · ${res.latencyMs}ms${parts > 1 ? ` · ${parts} msgs` : ""}] ➙ ${target}: ${res.reply}`,
+  );
+  if (res.note) log(`${tag}: ${res.note}`);
+  sessionLogger.record(
+    "AI Reply",
+    `Replied to ${target} (${res.model})`,
+    `Reply: "${res.reply}"${res.actions?.length ? ` · Actions: ${res.actions.map((a) => a.name).join(", ")}` : ""} (${res.latencyMs}ms)`,
+  );
+  pushSessionLogStatus();
+}
+
+// When a background task fails (stuck, no path, mob survived...), let the
+// agent try to fix it, at most twice per player within 90 seconds.
+const aiFixAttempts = new Map();
+
+async function handleAiTaskDone(evt) {
+  if (!evt || evt.ok || !ollamaManager.config.agentEnabled) return;
+  const currentBot = bot;
+  if (!currentBot || !currentBot.entity) return;
+  const sender = evt.sender || "Player";
+  const now = Date.now();
+  const prev = aiFixAttempts.get(sender);
+  const count = prev && now - prev.at < 90000 ? prev.count : 0;
+  if (count >= 2) {
+    log(`AIAgent: Giving up on ${evt.name} for ${sender}`);
+    return;
+  }
+  aiFixAttempts.set(sender, { count: count + 1, at: now });
+
+  for (let i = 0; i < 60 && ollamaManager.isGenerating; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  if (bot !== currentBot) return;
+  const lastTry = count + 1 >= 2;
+  log(
+    `AIAgent: ${evt.name} failed, ${lastTry ? "telling" : "trying to fix it for"} ${sender}`,
+  );
+  const res = await ollamaManager.runAgent({
+    sender,
+    message: `[Task report, not a chat message] Your ${evt.name} task failed: ${evt.result}. ${
+      lastTry
+        ? `Do not retry. Tell ${sender} in one short sentence what went wrong.`
+        : `Fix it now with a different approach (another tool, another target or position${aiCanRunCode(sender) ? ", or run_code" : ""}). Never repeat the same call with the same arguments. If it is impossible, tell ${sender} briefly.`
+    }`,
+    botContext: buildLiveBotAiContext(),
+    tools: aiTools.schemasFor(sender),
+    executeTool: aiTools.executeTool,
+    bypassCooldown: true,
+    remember: false,
+  });
+  if (bot !== currentBot || !res.ok) return;
+  logAiResult(res, sender);
+  aiChatQueue.send(res.parts?.length ? res.parts : [res.reply]);
+}
+
+async function handleAiChat(currentBot, text) {
+  const parsed = parseChatSenderAndMessage(text, currentBot.username);
+  if (!parsed || aiChatQueue.isBusy()) return;
+  if (
+    !ollamaManager.shouldRespondToChat({
+      sender: parsed.sender,
+      message: parsed.content,
+      botUsername: currentBot.username,
+    })
+  ) {
+    return;
+  }
+  const res = await runAiReply({
+    sender: parsed.sender,
+    message: parsed.content,
+  });
+  if (bot !== currentBot) return;
+  if (!res.ok) {
+    if (res.error && !res.silent) log(`ChatAI error: ${res.error}`);
+    return;
+  }
+  logAiResult(res, parsed.sender);
+  await aiChatQueue.send(res.parts?.length ? res.parts : [res.reply]);
+}
+
+function sendToRenderer(channel, ...args) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, ...args);
+  }
+}
+
+function log(text) {
+  const str = String(text);
+  sendToRenderer("log", str);
+  const now = Date.now();
+  if (str !== lastSessionLogText || now - lastSessionLogTime > 2000) {
+    lastSessionLogText = str;
+    lastSessionLogTime = now;
+    sessionLogger.record("Console", "Log Entry", str);
+    pushSessionLogStatus();
+  }
+}
+
+function clearLog(text) {
+  sendToRenderer("clear-log", String(text));
+}
+
+function applyCustomTheme() {
+  try {
+    const themePath = resolveCustomPath("theme.css");
+    if (fs.existsSync(themePath)) {
+      const css = fs.readFileSync(themePath, "utf8").trim();
+      if (css) {
+        sendToRenderer("custom-theme", css);
+      }
+    }
+  } catch (_) {}
+}
+
+function getOption(option, scriptName) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return Promise.resolve("");
+  }
+  const safeOpt = JSON.stringify(String(option));
+  const safeScript = JSON.stringify(String(scriptName));
+  return mainWindow.webContents
+    .executeJavaScript(`window.api.getOptionValue(${safeOpt}, ${safeScript})`)
+    .catch(() => "");
+}
+
+// --- Live Telemetry & Inventory Snapshot Helpers ---
+function detectItemTier(name) {
+  const n = String(name || "").toLowerCase();
+  if (n.includes("netherite")) return "netherite";
+  if (n.includes("diamond")) return "diamond";
+  if (n.includes("emerald")) return "emerald";
+  if (n.includes("gold") || n.includes("golden")) return "gold";
+  if (n.includes("iron") || n.includes("chainmail")) return "iron";
+  if (n.includes("copper")) return "copper";
+  if (n.includes("amethyst") || n.includes("ender") || n.includes("chorus"))
+    return "amethyst";
+  if (n.includes("redstone")) return "redstone";
+  if (n.includes("lapis")) return "lapis";
+  if (n.includes("stone") || n.includes("cobble") || n.includes("deepslate"))
+    return "stone";
+  if (
+    n.includes("wood") ||
+    n.includes("oak") ||
+    n.includes("spruce") ||
+    n.includes("birch") ||
+    n.includes("jungle") ||
+    n.includes("acacia") ||
+    n.includes("cherry") ||
+    n.includes("mangrove") ||
+    n.includes("bamboo") ||
+    n.includes("leather")
+  ) {
+    return "wood";
+  }
+  return "";
+}
+
+function categorizeItem(name) {
+  const n = String(name || "")
+    .toLowerCase()
+    .replace(/^minecraft:/, "");
+  if (!n) return "empty";
+
+  // Weapons & Ranged
+  if (n === "mace") return "mace";
+  if (n === "trident") return "trident";
+  if (n.endsWith("_sword")) return "sword";
+  if (n.endsWith("_axe")) return "axe";
+  if (n === "bow" || n === "crossbow") return "ranged";
+  if (
+    n === "arrow" ||
+    n.endsWith("_arrow") ||
+    n === "firework_rocket" ||
+    n === "wind_charge"
+  ) {
+    return "ammo";
+  }
+
+  // Tools
+  if (n.endsWith("_pickaxe")) return "pickaxe";
+  if (n.endsWith("_shovel")) return "shovel";
+  if (n.endsWith("_hoe")) return "hoe";
+  if (n.includes("fishing_rod")) return "fishing";
+  if (
+    n === "shears" ||
+    n === "flint_and_steel" ||
+    n === "brush" ||
+    n === "spyglass" ||
+    n === "lead" ||
+    n === "name_tag" ||
+    n === "saddle" ||
+    n === "goat_horn"
+  ) {
+    return "tool";
+  }
+
+  // Armor & Offhand
+  if (n === "totem_of_undying") return "totem";
+  if (n === "shield") return "shield";
+  if (n === "elytra") return "elytra";
+  if (
+    n.endsWith("_helmet") ||
+    n === "turtle_helmet" ||
+    n === "carved_pumpkin"
+  ) {
+    return "helmet";
+  }
+  if (
+    n.endsWith("_chestplate") ||
+    n.endsWith("_horse_armor") ||
+    n === "wolf_armor"
+  ) {
+    return "chestplate";
+  }
+  if (n.endsWith("_leggings")) return "leggings";
+  if (n.endsWith("_boots")) return "boots";
+
+  // Potions, Bottles & Brews
+  if (
+    n.includes("potion") ||
+    n === "dragon_breath" ||
+    n === "experience_bottle" ||
+    n === "honey_bottle" ||
+    n === "ominous_bottle" ||
+    n === "glass_bottle"
+  ) {
+    return "potion";
+  }
+
+  // Buckets
+  if (n.endsWith("_bucket") || n === "bucket") return "bucket";
+
+  // Food & Consumables
+  if (n.includes("golden_apple") || n === "enchanted_golden_apple") {
+    return "gapple";
+  }
+  if (
+    n.includes("apple") ||
+    n.includes("cooked") ||
+    n.includes("bread") ||
+    n.includes("carrot") ||
+    n.includes("potato") ||
+    n.includes("stew") ||
+    n.includes("soup") ||
+    n.includes("steak") ||
+    n.includes("beef") ||
+    n.includes("porkchop") ||
+    n.includes("mutton") ||
+    n.includes("chicken") ||
+    n.includes("rabbit") ||
+    n.includes("cod") ||
+    n.includes("salmon") ||
+    n.includes("tropical_fish") ||
+    n.includes("pufferfish") ||
+    n.includes("pie") ||
+    n.includes("berries") ||
+    n.includes("melon") ||
+    n.includes("cookie") ||
+    n.includes("cake") ||
+    n === "dried_kelp" ||
+    n === "chorus_fruit" ||
+    n === "rotten_flesh"
+  ) {
+    return "food";
+  }
+
+  // Navigation, Teleport & Server GUI Selectors
+  if (n.includes("compass") || n === "clock" || n.includes("map")) {
+    return "compass";
+  }
+  if (
+    n === "ender_pearl" ||
+    n === "ender_eye" ||
+    n === "nether_star" ||
+    n === "heart_of_the_sea" ||
+    n === "beacon"
+  ) {
+    return "pearl";
+  }
+  if (n.includes("book") || n === "paper" || n.endsWith("_banner_pattern")) {
+    return "book";
+  }
+  if (n.endsWith("_bed")) return "bed";
+  if (n.includes("key")) return "key";
+  if (n.includes("music_disc") || n.startsWith("disc_fragment")) return "disc";
+  if (n.endsWith("_head") || n.endsWith("_skull")) return "skull";
+
+  // Explosives & Fire
+  if (
+    n === "tnt" ||
+    n === "tnt_minecart" ||
+    n === "end_crystal" ||
+    n === "fire_charge" ||
+    n === "gunpowder" ||
+    n === "blaze_rod" ||
+    n === "blaze_powder" ||
+    n === "breeze_rod"
+  ) {
+    return "explosive";
+  }
+
+  // Containers, Boats & Minecarts
+  if (
+    n.includes("chest") ||
+    n.includes("shulker_box") ||
+    n === "barrel" ||
+    n.includes("bundle")
+  ) {
+    return "container";
+  }
+  if (n.endsWith("_boat") || n.endsWith("_raft")) return "boat";
+  if (n.includes("minecart")) return "minecart";
+
+  // Minerals, Gems & Ingots
+  if (n.endsWith("_ore") || n === "ancient_debris" || n.startsWith("raw_")) {
+    return "ore";
+  }
+  if (
+    n === "diamond" ||
+    n === "emerald" ||
+    n === "amethyst_shard" ||
+    n === "quartz" ||
+    n === "prismarine_shard" ||
+    n === "prismarine_crystals" ||
+    n === "echo_shard"
+  ) {
+    return "gem";
+  }
+  if (
+    n.endsWith("_ingot") ||
+    n.endsWith("_nugget") ||
+    n === "netherite_scrap" ||
+    n === "coal" ||
+    n === "charcoal" ||
+    n === "lapis_lazuli" ||
+    n === "redstone" ||
+    n === "glowstone_dust"
+  ) {
+    return "mineral";
+  }
+
+  // Redstone & Mechanisms
+  if (
+    n.includes("piston") ||
+    n === "observer" ||
+    n === "dispenser" ||
+    n === "dropper" ||
+    n === "hopper" ||
+    n === "repeater" ||
+    n === "comparator" ||
+    n === "lever" ||
+    n.endsWith("_button") ||
+    n.endsWith("_pressure_plate") ||
+    n === "target" ||
+    n === "daylight_detector" ||
+    n === "redstone_lamp" ||
+    n === "redstone_torch" ||
+    n.includes("rail")
+  ) {
+    return "redstone";
+  }
+
+  // Workstations & Utility Blocks
+  if (
+    n === "crafting_table" ||
+    n === "crafter" ||
+    n.includes("furnace") ||
+    n === "smoker" ||
+    n.includes("anvil") ||
+    n === "grindstone" ||
+    n === "smithing_table" ||
+    n === "stonecutter" ||
+    n === "loom" ||
+    n === "cartography_table" ||
+    n === "fletching_table" ||
+    n === "brewing_stand" ||
+    n === "enchanting_table" ||
+    n === "cauldron" ||
+    n === "lectern" ||
+    n === "jukebox" ||
+    n === "note_block" ||
+    n === "bell" ||
+    n === "respawn_anchor" ||
+    n === "lodestone"
+  ) {
+    return "workstation";
+  }
+
+  // Lighting, Signs, Doors
+  if (
+    n.includes("torch") ||
+    n.includes("lantern") ||
+    n === "glowstone" ||
+    n === "shroomlight" ||
+    n.endsWith("_froglight") ||
+    n.endsWith("_candle") ||
+    n === "candle" ||
+    n === "end_rod" ||
+    n.includes("campfire")
+  ) {
+    return "light";
+  }
+  if (n.includes("sign") || n.endsWith("_banner")) return "sign";
+  if (n.endsWith("_door") || n.endsWith("_trapdoor") || n.endsWith("_gate")) {
+    return "door";
+  }
+
+  // Crops, Seeds, Plants & Nature
+  if (
+    n.includes("seeds") ||
+    n === "wheat" ||
+    n === "sugar_cane" ||
+    n === "bamboo" ||
+    n === "cocoa_beans" ||
+    n === "nether_wart" ||
+    n === "kelp" ||
+    n === "cactus" ||
+    n.endsWith("_sapling") ||
+    n === "propagule" ||
+    n === "bone_meal" ||
+    n === "bone"
+  ) {
+    return "crop";
+  }
+  if (
+    n.endsWith("_leaves") ||
+    n.includes("flower") ||
+    n.includes("tulip") ||
+    n === "dandelion" ||
+    n === "poppy" ||
+    n === "blue_orchid" ||
+    n === "allium" ||
+    n === "azure_bluet" ||
+    n === "oxeye_daisy" ||
+    n === "cornflower" ||
+    n === "lily_of_the_valley" ||
+    n === "wither_rose" ||
+    n === "sunflower" ||
+    n === "lilac" ||
+    n === "rose_bush" ||
+    n === "peony" ||
+    n === "torchflower" ||
+    n === "pitcher_plant" ||
+    n.includes("mushroom") ||
+    n.includes("fungus") ||
+    n.includes("fern") ||
+    n.includes("azalea") ||
+    n.includes("vine") ||
+    n.includes("moss") ||
+    n === "lily_pad"
+  ) {
+    return "plant";
+  }
+
+  // Mob Drops, Spawn Eggs & Misc Items
+  if (
+    n.endsWith("_spawn_egg") ||
+    n === "egg" ||
+    n === "turtle_egg" ||
+    n === "sniffer_egg"
+  ) {
+    return "egg";
+  }
+  if (
+    n === "stick" ||
+    n === "string" ||
+    n === "feather" ||
+    n === "leather" ||
+    n === "rabbit_hide" ||
+    n === "slime_ball" ||
+    n === "magma_cream" ||
+    n === "ghast_tear" ||
+    n === "phantom_membrane" ||
+    n === "spider_eye" ||
+    n === "fermented_spider_eye" ||
+    n === "ender_EYE" ||
+    n === "shulker_shell" ||
+    n === "nautilus_shell" ||
+    n.includes("scute") ||
+    n === "ink_sac" ||
+    n === "glow_ink_sac" ||
+    n.endsWith("_dye") ||
+    n === "clay_ball" ||
+    n === "brick" ||
+    n === "nether_brick" ||
+    n === "resin_brick" ||
+    n === "flint" ||
+    n === "bowl" ||
+    n === "sugar" ||
+    n.endsWith("_pottery_sherd") ||
+    n.endsWith("_smithing_template")
+  ) {
+    return "material";
+  }
+
+  // Wood, Logs & Planks
+  if (
+    n.endsWith("_log") ||
+    n.endsWith("_wood") ||
+    n.endsWith("_stem") ||
+    n.endsWith("_hyphae") ||
+    n.endsWith("_planks") ||
+    n === "bamboo_block"
+  ) {
+    return "wood";
+  }
+
+  // Glass, Wool & Decorative Blocks
+  if (n.includes("glass")) return "glass";
+  if (
+    n.endsWith("_wool") ||
+    n.endsWith("_carpet") ||
+    n.endsWith("_concrete") ||
+    n.endsWith("_concrete_powder") ||
+    n.endsWith("_terracotta")
+  ) {
+    return "decor";
+  }
+
+  return "block";
+}
+
+function parseRichComponentText(raw) {
+  if (!raw) return "";
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (
+      (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+      (trimmed.startsWith("[") && trimmed.endsWith("]")) ||
+      (trimmed.startsWith('"') && trimmed.endsWith('"'))
+    ) {
+      try {
+        return parseRichComponentText(JSON.parse(trimmed));
+      } catch (_) {}
+    }
+    return raw;
+  }
+  if (Array.isArray(raw)) {
+    return raw.map(parseRichComponentText).join("");
+  }
+  if (typeof raw === "object") {
+    if (typeof raw.toMotd === "function") return raw.toMotd();
+    if ("value" in raw && Object.keys(raw).length <= 2 && "type" in raw) {
+      return parseRichComponentText(raw.value);
+    }
+    const colorMap = {
+      black: "§0",
+      dark_blue: "§1",
+      dark_green: "§2",
+      dark_aqua: "§3",
+      dark_red: "§4",
+      dark_purple: "§5",
+      gold: "§6",
+      gray: "§7",
+      dark_gray: "§8",
+      blue: "§9",
+      green: "§a",
+      aqua: "§b",
+      red: "§c",
+      light_purple: "§d",
+      yellow: "§e",
+      white: "§f",
+    };
+    let prefix = "";
+    const c = raw.color?.value || raw.color;
+    if (typeof c === "string") {
+      if (colorMap[c.toLowerCase()]) prefix += colorMap[c.toLowerCase()];
+      else if (/^#[0-9a-f]{6}$/i.test(c)) prefix += `§${c}`;
+    }
+    if (raw.bold === true || raw.bold?.value === 1) prefix += "§l";
+    if (raw.italic === true || raw.italic?.value === 1) prefix += "§o";
+    if (raw.underlined === true || raw.underlined?.value === 1) prefix += "§n";
+    if (raw.strikethrough === true || raw.strikethrough?.value === 1) {
+      prefix += "§m";
+    }
+    let body = "";
+    if (typeof raw.text === "string") body += raw.text;
+    else if (typeof raw.text?.value === "string") body += raw.text.value;
+    else if (typeof raw.translate === "string") body += raw.translate;
+    let extraStr = "";
+    const extraArr = Array.isArray(raw.extra)
+      ? raw.extra
+      : Array.isArray(raw.extra?.value?.value)
+        ? raw.extra.value.value
+        : null;
+    if (extraArr) {
+      extraStr = extraArr.map(parseRichComponentText).join("");
+    }
+    return `${prefix}${body}${extraStr}`;
+  }
+  return String(raw);
+}
+
+function extractItemCustomMeta(item) {
+  if (!item) return { customName: "", lore: [] };
+  let customName = "";
+  const lore = [];
+
+  try {
+    if (item.customName) {
+      customName = parseRichComponentText(item.customName);
+    } else if (item.nbt?.value?.display?.value?.Name?.value) {
+      customName = parseRichComponentText(
+        item.nbt.value.display.value.Name.value,
+      );
+    }
+  } catch (_) {}
+
+  try {
+    const rawLore =
+      item.customLore || item.nbt?.value?.display?.value?.Lore?.value?.value;
+    if (Array.isArray(rawLore)) {
+      for (const line of rawLore) {
+        const parsed = parseRichComponentText(line).trim();
+        if (parsed) lore.push(parsed);
+      }
+    }
+  } catch (_) {}
+
+  return { customName, lore };
+}
+
+function serializeItem(item, fallbackSlot = null) {
+  if (!item) return null;
+  const maxDurability = item.maxDurability || 0;
+  const durabilityUsed = item.durabilityUsed || 0;
+  const durabilityLeft =
+    maxDurability > 0 ? Math.max(0, maxDurability - durabilityUsed) : null;
+  const durabilityPct =
+    maxDurability > 0
+      ? Math.max(
+          0,
+          Math.min(100, Math.round((durabilityLeft / maxDurability) * 100)),
+        )
+      : null;
+
+  const { customName, lore } = extractItemCustomMeta(item);
+  const plainCustom = customName
+    .replace(/§#[0-9a-fA-F]{6}|§[0-9a-fk-or]/gi, "")
+    .trim();
+
+  return {
+    slot: typeof item.slot === "number" ? item.slot : fallbackSlot,
+    name: item.name,
+    displayName: plainCustom || item.displayName || item.name,
+    customName: customName || item.displayName || item.name,
+    lore,
+    count: item.count || 1,
+    type: item.type,
+    category: categorizeItem(item.name),
+    tier: detectItemTier(item.name),
+    maxDurability,
+    durabilityLeft,
+    durabilityPct,
+  };
+}
+
+const BOSS_ENTITIES = new Set([
+  "ender_dragon",
+  "wither",
+  "warden",
+  "elder_guardian",
+]);
+
+const HOSTILE_ENTITIES = new Set([
+  "zombie",
+  "zombie_villager",
+  "husk",
+  "drowned",
+  "skeleton",
+  "stray",
+  "bogged",
+  "wither_skeleton",
+  "creeper",
+  "witch",
+  "slime",
+  "magma_cube",
+  "phantom",
+  "blaze",
+  "ghast",
+  "hoglin",
+  "zoglin",
+  "piglin_brute",
+  "pillager",
+  "vindicator",
+  "evoker",
+  "ravager",
+  "vex",
+  "illusioner",
+  "guardian",
+  "shulker",
+  "silverfish",
+  "endermite",
+  "breeze",
+  "creaking",
+]);
+
+const NEUTRAL_ENTITIES = new Set([
+  "enderman",
+  "spider",
+  "cave_spider",
+  "piglin",
+  "zombified_piglin",
+  "zombie_pigman",
+  "wolf",
+  "iron_golem",
+  "snow_golem",
+  "bee",
+  "polar_bear",
+  "panda",
+  "llama",
+  "trader_llama",
+  "goat",
+  "dolphin",
+  "pufferfish",
+]);
+
+const NPC_ENTITIES = new Set(["villager", "wandering_trader", "npc", "allay"]);
+
+const VEHICLE_ENTITIES = new Set([
+  "boat",
+  "chest_boat",
+  "oak_boat",
+  "spruce_boat",
+  "birch_boat",
+  "jungle_boat",
+  "acacia_boat",
+  "cherry_boat",
+  "dark_oak_boat",
+  "mangrove_boat",
+  "bamboo_raft",
+  "oak_chest_boat",
+  "spruce_chest_boat",
+  "birch_chest_boat",
+  "jungle_chest_boat",
+  "acacia_chest_boat",
+  "cherry_chest_boat",
+  "dark_oak_chest_boat",
+  "mangrove_chest_boat",
+  "bamboo_chest_raft",
+  "minecart",
+  "chest_minecart",
+  "hopper_minecart",
+  "tnt_minecart",
+  "furnace_minecart",
+  "command_block_minecart",
+  "end_crystal",
+]);
+
+const IGNORED_OBJECT_ENTITIES = new Set([
+  "item",
+  "experience_orb",
+  "xp_orb",
+  "arrow",
+  "spectral_arrow",
+  "trident",
+  "snowball",
+  "egg",
+  "ender_pearl",
+  "eye_of_ender",
+  "potion",
+  "experience_bottle",
+  "fishing_bobber",
+  "fireball",
+  "small_fireball",
+  "dragon_fireball",
+  "wither_skull",
+  "wind_charge",
+  "breeze_wind_charge",
+  "shulker_bullet",
+  "llama_spit",
+  "evoker_fangs",
+  "area_effect_cloud",
+  "lightning_bolt",
+  "falling_block",
+  "tnt",
+  "firework_rocket",
+  "leash_knot",
+  "item_frame",
+  "glow_item_frame",
+  "painting",
+  "marker",
+  "interaction",
+  "text_display",
+  "block_display",
+  "item_display",
+]);
+
+function humanizeEntityName(rawName) {
+  const clean = String(rawName || "entity")
+    .replace(/^minecraft:/i, "")
+    .replace(/_/g, " ")
+    .trim();
+  if (!clean) return "Entity";
+  return clean.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function classifyEntity(e) {
+  const name = String(e.name || e.username || "")
+    .toLowerCase()
+    .replace(/^minecraft:/, "");
+  const kind = String(e.kind || "").toLowerCase();
+  const type = String(e.type || "").toLowerCase();
+
+  if (
+    type === "player" ||
+    type === "orb" ||
+    IGNORED_OBJECT_ENTITIES.has(name)
+  ) {
+    return null;
+  }
+
+  let customLabel = "";
+  if (typeof e.customName === "string" && e.customName.trim()) {
+    customLabel = parseRichComponentText(e.customName)
+      .replace(/§#[0-9a-fA-F]{6}|§[0-9a-fk-or]/gi, "")
+      .trim();
+  } else if (Array.isArray(e.metadata)) {
+    const rawMetaName = e.metadata[2];
+    if (rawMetaName && typeof rawMetaName === "string") {
+      customLabel = parseRichComponentText(rawMetaName)
+        .replace(/§#[0-9a-fA-F]{6}|§[0-9a-fk-or]/gi, "")
+        .trim();
+    }
+  }
+
+  if (name === "armor_stand") {
+    if (!customLabel) return null;
+    return {
+      category: "npc",
+      hostile: false,
+      displayName: customLabel,
+    };
+  }
+
+  if (
+    VEHICLE_ENTITIES.has(name) ||
+    name.endsWith("_boat") ||
+    name.endsWith("_raft") ||
+    name.endsWith("_minecart")
+  ) {
+    return {
+      category: "vehicle",
+      hostile: false,
+      displayName: customLabel || humanizeEntityName(name),
+    };
+  }
+
+  if (
+    type === "object" &&
+    !HOSTILE_ENTITIES.has(name) &&
+    !BOSS_ENTITIES.has(name)
+  ) {
+    return null;
+  }
+
+  let category = "passive";
+  let hostile = false;
+
+  if (BOSS_ENTITIES.has(name)) {
+    category = "boss";
+    hostile = true;
+  } else if (HOSTILE_ENTITIES.has(name) || kind.includes("hostile")) {
+    category = "hostile";
+    hostile = true;
+  } else if (NEUTRAL_ENTITIES.has(name)) {
+    category = "neutral";
+    hostile = false;
+  } else if (NPC_ENTITIES.has(name) || type === "villager") {
+    category = "npc";
+    hostile = false;
+  }
+
+  const rawDisp =
+    e.displayName &&
+    !["mob", "object", "other", "living", "animal", "hostile"].includes(
+      String(e.displayName).toLowerCase(),
+    )
+      ? e.displayName
+      : humanizeEntityName(name);
+
+  return {
+    category,
+    hostile,
+    displayName: customLabel ? `${customLabel} (${rawDisp})` : rawDisp,
+  };
+}
+
+function buildInventorySnapshot() {
+  if (!bot || !bot.inventory || !Array.isArray(bot.inventory.slots)) {
+    return {
+      connected: false,
+      container: null,
+      armor: {
+        head: null,
+        torso: null,
+        legs: null,
+        feet: null,
+        offhand: null,
+      },
+      main: Array.from({ length: 27 }, (_, i) => ({
+        slot: i + 9,
+        item: null,
+      })),
+      hotbar: Array.from({ length: 9 }, (_, i) => ({
+        slot: i + 36,
+        hotbarIndex: i,
+        item: null,
+      })),
+      quickBarSlot: 0,
+      heldItem: null,
+      occupiedCount: 0,
+    };
+  }
+
+  let container = null;
+  if (bot.currentWindow && Array.isArray(bot.currentWindow.slots)) {
+    const win = bot.currentWindow;
+    const invStart =
+      typeof win.inventoryStart === "number"
+        ? win.inventoryStart
+        : Math.max(0, win.slots.length - 36);
+    const slotCount = Math.max(0, Math.min(invStart, win.slots.length));
+    const titleStr =
+      parseRichComponentText(win.title).trim() ||
+      String(win.type || "Container");
+    const containerSlots = [];
+    for (let s = 0; s < slotCount; s++) {
+      containerSlots.push({
+        slot: s,
+        item: serializeItem(win.slots[s], s),
+      });
+    }
+    container = {
+      id: win.id,
+      type: String(win.type || "container"),
+      title: titleStr,
+      slotCount,
+      slots: containerSlots,
+    };
+  }
+
+  const slots = bot.inventory.slots;
+  const main = [];
+  let occupiedCount = 0;
+
+  for (let s = 9; s <= 35; s++) {
+    const serialized = serializeItem(slots[s], s);
+    if (serialized) occupiedCount++;
+    main.push({ slot: s, item: serialized });
+  }
+
+  const hotbar = [];
+  for (let s = 36; s <= 44; s++) {
+    const serialized = serializeItem(slots[s], s);
+    if (serialized) occupiedCount++;
+    hotbar.push({
+      slot: s,
+      hotbarIndex: s - 36,
+      item: serialized,
+    });
+  }
+
+  return {
+    connected: true,
+    container,
+    armor: {
+      head: serializeItem(slots[5], 5),
+      torso: serializeItem(slots[6], 6),
+      legs: serializeItem(slots[7], 7),
+      feet: serializeItem(slots[8], 8),
+      offhand: serializeItem(slots[45], 45),
+    },
+    main,
+    hotbar,
+    quickBarSlot: bot.quickBarSlot ?? 0,
+    heldItem: serializeItem(bot.heldItem),
+    occupiedCount,
+  };
+}
+
+function buildTelemetrySnapshot() {
+  if (!bot || !bot.entity) {
+    return {
+      connected: false,
+      username: sessionState.mcName || sessionState.username || "",
+      health: 0,
+      food: 0,
+      saturation: 0,
+      xpLevel: 0,
+      xpProgress: 0,
+      position: null,
+      yaw: 0,
+      pitch: 0,
+      dimension: "—",
+      gameMode: "—",
+      ping: 0,
+      quickBarSlot: 0,
+      heldItem: null,
+      controls: { ...activeControlStates },
+      radarTarget: { ...activeRadarTarget },
+      nearbyPlayers: [],
+      nearbyEntities: [],
+      nearbySigns: [],
+    };
+  }
+
+  const now = Date.now();
+  if (now - lastSignsScanTime > 1200) {
+    lastSignsScanTime = now;
+    cachedSigns = scanNearbySigns(bot, { maxDistance: 24, maxCount: 16 });
+  }
+
+  const pos = bot.entity.position;
+  const nearbyPlayers = [];
+  if (bot.players) {
+    for (const p of Object.values(bot.players)) {
+      if (!p || !p.username || p.username === bot.username) continue;
+      const ent = p.entity;
+      const dist =
+        ent && ent.position
+          ? Math.round(ent.position.distanceTo(pos) * 10) / 10
+          : null;
+      nearbyPlayers.push({
+        username: p.username,
+        ping: p.ping ?? 0,
+        inRange: Boolean(ent),
+        distance: dist,
+        position:
+          ent && ent.position
+            ? {
+                x: Math.floor(ent.position.x),
+                y: Math.floor(ent.position.y),
+                z: Math.floor(ent.position.z),
+              }
+            : null,
+      });
+    }
+    nearbyPlayers.sort((a, b) => {
+      if (a.inRange !== b.inRange) return a.inRange ? -1 : 1;
+      if (a.distance !== null && b.distance !== null) {
+        return a.distance - b.distance;
+      }
+      return a.username.localeCompare(b.username);
+    });
+  }
+
+  const nearbyEntities = [];
+  if (bot.entities) {
+    for (const e of Object.values(bot.entities)) {
+      if (!e || e === bot.entity || !e.position) continue;
+      const dist = Math.round(e.position.distanceTo(pos) * 10) / 10;
+      if (dist > 32) continue;
+      const info = classifyEntity(e);
+      if (!info) continue;
+      nearbyEntities.push({
+        id: e.id,
+        name: e.name || "entity",
+        displayName: info.displayName,
+        category: info.category,
+        hostile: info.hostile,
+        distance: dist,
+        position: {
+          x: Math.floor(e.position.x),
+          y: Math.floor(e.position.y),
+          z: Math.floor(e.position.z),
+        },
+      });
+    }
+    nearbyEntities.sort((a, b) => a.distance - b.distance);
+  }
+
+  return {
+    connected: true,
+    username: bot.username || "",
+    health: Math.round((bot.health ?? 20) * 10) / 10,
+    food: Math.round((bot.food ?? 20) * 10) / 10,
+    saturation: Math.round((bot.foodSaturation ?? 0) * 10) / 10,
+    xpLevel: bot.experience?.level ?? 0,
+    xpProgress: Math.round((bot.experience?.progress ?? 0) * 100),
+    position: {
+      x: Math.floor(pos.x),
+      y: Math.floor(pos.y),
+      z: Math.floor(pos.z),
+    },
+    yaw: Math.round(((bot.entity.yaw * 180) / Math.PI) % 360),
+    pitch: Math.round((bot.entity.pitch * 180) / Math.PI),
+    dimension: String(bot.game?.dimension || "overworld").replace(
+      /^minecraft:/,
+      "",
+    ),
+    gameMode: String(bot.game?.gameMode || "survival"),
+    ping: bot.player?.ping ?? 0,
+    quickBarSlot: bot.quickBarSlot ?? 0,
+    heldItem: serializeItem(bot.heldItem),
+    controls: { ...activeControlStates },
+    radarTarget: { ...activeRadarTarget },
+    nearbyPlayers: nearbyPlayers.slice(0, 14),
+    nearbyEntities: nearbyEntities.slice(0, 14),
+    nearbySigns: cachedSigns.slice(0, 14),
+  };
+}
+
+function pushBotTelemetry(force = false) {
+  const snapshot = buildTelemetrySnapshot();
+  const json = JSON.stringify(snapshot);
+  if (force || json !== lastTelemetryJson) {
+    lastTelemetryJson = json;
+    sendToRenderer("bot-telemetry", snapshot);
+  }
+}
+
+function pushBotInventory(force = false) {
+  const snapshot = buildInventorySnapshot();
+  const json = JSON.stringify(snapshot);
+  if (force || json !== lastInventoryJson) {
+    lastInventoryJson = json;
+    sendToRenderer("bot-inventory", snapshot);
+  }
+}
+
+function startTelemetryLoop() {
+  stopTelemetryLoop();
+  pushBotTelemetry(true);
+  pushBotInventory(true);
+  telemetryTimer = setInterval(() => {
+    pushBotTelemetry(false);
+    pushBotInventory(false);
+  }, 350);
+}
+
+function stopTelemetryLoop() {
+  if (telemetryTimer) {
+    clearInterval(telemetryTimer);
+    telemetryTimer = null;
+  }
+  Object.keys(activeControlStates).forEach((k) => {
+    activeControlStates[k] = false;
+  });
+  activeRadarTarget = { subAction: "", username: "", entityId: null };
+  pushBotTelemetry(true);
+  pushBotInventory(true);
+}
+
+// Scripts whose on/off state mirrors a flag in the AI config.
+const AI_SCRIPT_FLAGS = { ChatAI: "enabled", AIAgent: "agentEnabled" };
+const scriptSources = new Map();
+const scriptRunIds = new Map();
+
+function setAiScriptFlag(scriptName, on) {
+  const flag = AI_SCRIPT_FLAGS[scriptName];
+  if (!flag || Boolean(ollamaManager.config[flag]) === on) return;
+  ollamaManager.saveConfig({ [flag]: on });
+  if (!ollamaManager.isActive()) aiChatQueue.clear();
+  ollamaManager
+    .getStatus()
+    .then((st) => sendToRenderer("ollama-status", st))
+    .catch(() => {});
+}
+
+function renderScriptOptionHtml(option, scriptName) {
+  const fieldId = `${escapeAttr(option.id)}-${escapeAttr(scriptName)}`;
+  const label = escapeAttr(option.label);
+  if (option.type === "checkbox") {
+    return `<label class="script-checkbox-row" for="${fieldId}"><input type="checkbox" id="${fieldId}" value="off" onclick="checkbox('${fieldId}')"/><span>${label}</span></label>`;
+  }
+  if (option.type === "select") {
+    const choices = Array.isArray(option.choices) ? option.choices : [];
+    const opts = choices
+      .map((c) => {
+        const value = typeof c === "object" ? c.value : c;
+        const text = typeof c === "object" ? c.label || c.value : c;
+        return `<option value="${escapeAttr(value)}">${escapeAttr(text)}</option>`;
+      })
+      .join("");
+    return `<div class="script-input-group"><label for="${fieldId}">${label}</label><select id="${fieldId}" class="script-select">${opts}</select></div>`;
+  }
+  if (option.type === "input") {
+    return `<div class="script-input-group"><label for="${fieldId}">${label}</label><input type="text" id="${fieldId}" class="script-text-input" spellcheck="false"${option.placeholder ? ` placeholder="${escapeAttr(option.placeholder)}"` : ""}/></div>`;
+  }
+  return "";
+}
+
+function registerScriptFile(fullPath, type) {
+  delete require.cache[require.resolve(fullPath)];
+  const scriptDetails = require(fullPath);
+  if (!scriptDetails || !scriptDetails.info || !scriptDetails.info.name) {
+    return null;
+  }
+  if (typeof scriptDetails.script !== "function") {
+    throw new Error("missing exported script() function");
+  }
+
+  const scriptName = String(scriptDetails.info.name);
+  const options = Array.isArray(scriptDetails.info.options)
+    ? scriptDetails.info.options
+    : [];
+
+  let formattedHTML = `<div class="${escapeAttr(scriptName)}-script script-container" data-script="${escapeAttr(scriptName)}" data-type="${escapeAttr(type)}"><p class="${escapeAttr(scriptName)}-name script-name" data-script="${escapeAttr(scriptName)}">${escapeAttr(scriptName)}</p><form class="script-options">`;
+  for (const option of options) {
+    formattedHTML += renderScriptOptionHtml(option, scriptName);
+  }
+  formattedHTML += "</form></div>";
+
+  scriptSources.set(scriptName, { type, fullPath });
+  sendToRenderer("on-script", formattedHTML, scriptName, {
+    name: scriptName,
+    type,
+    options,
+    aiSync: Boolean(scriptDetails.info.aiSync),
+  });
+
+  scriptFunctions.set(scriptName, () => {
+    const libs = loadLibraries();
+    const runId = (scriptRunIds.get(scriptName) || 0) + 1;
+    scriptRunIds.set(scriptName, runId);
+    return Promise.resolve()
+      .then(() =>
+        scriptDetails.script(
+          bot,
+          log,
+          clearLog,
+          getOption,
+          (func, intervalNum) => {
+            const safeInterval =
+              Number.isFinite(Number(intervalNum)) && Number(intervalNum) >= 50
+                ? Number(intervalNum)
+                : 1000;
+            return new Promise((resolve) => {
+              const timer = setInterval(async () => {
+                if (!activeScripts.has(scriptName)) {
+                  clearInterval(timer);
+                  resolve(true);
+                } else {
+                  try {
+                    await func();
+                  } catch (err) {
+                    log(`Error in ${scriptName}: ${err.message}`);
+                  }
+                }
+              }, safeInterval);
+            });
+          },
+          libs,
+        ),
+      )
+      .catch((err) => {
+        log(`Error in ${scriptName}: ${err.message || err}`);
+      })
+      .finally(() => {
+        // A newer run (quick off/on toggle) owns the state now.
+        if (scriptRunIds.get(scriptName) !== runId) return;
+        activeScripts.delete(scriptName);
+        setAiScriptFlag(scriptName, false);
+        sendToRenderer("script-state", scriptName, false);
+      });
+  });
+  return scriptName;
+}
+
+function loadScriptsFromDir(fullDirectory, type) {
+  let files = [];
+  try {
+    files = fs.existsSync(fullDirectory)
+      ? fs
+          .readdirSync(fullDirectory)
+          .filter((f) => f.endsWith(".js"))
+          .sort()
+      : [];
+  } catch (_) {}
+
+  let scriptAmount = 0;
+  for (const file of files) {
+    try {
+      if (registerScriptFile(path.join(fullDirectory, file), type)) {
+        scriptAmount += 1;
+      }
+    } catch (err) {
+      log(`Failed to load ${file}: ${err.message}`);
+    }
+  }
+
+  log(`Loaded ${type} (${scriptAmount}) scripts`);
+}
+
+function startScriptByName(id) {
+  const runner = scriptFunctions.get(id);
+  if (!runner || activeScripts.has(id)) return false;
+  activeScripts.add(id);
+  setAiScriptFlag(id, true);
+  sendToRenderer("script-state", id, true);
+  runner();
+  return true;
+}
+
+function stopScriptByName(id) {
+  if (!activeScripts.has(id)) return false;
+  activeScripts.delete(id);
+  setAiScriptFlag(id, false);
+  sendToRenderer("script-state", id, false);
+  return true;
+}
+
+function loadAllScripts() {
+  scriptFunctions.clear();
+  scriptSources.clear();
+  activeScripts.clear();
+  Object.keys(AI_SCRIPT_FLAGS).forEach((id) => setAiScriptFlag(id, false));
+  sendToRenderer("clear-scripts");
+
+  const defaultLoading = "Loading default scripts...";
+  const customLoading = "Loading custom scripts...";
+
+  log(defaultLoading);
+  loadScriptsFromDir(path.join(__dirname, "src", "js", "scripts"), "default");
+  clearLog(defaultLoading);
+
+  log(customLoading);
+  loadScriptsFromDir(resolveCustomPath("scripts"), "custom");
+  clearLog(customLoading);
+}
+
+function disconnectBot(isManual = true) {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  if (isManual) {
+    manualDisconnect = true;
+    activeScripts.clear();
+  }
+  cachedSigns = [];
+  aiChatQueue.clear();
+  aiTools.stopAll();
+  if (bot) {
+    try {
+      bot.end();
+    } catch (_) {}
+    bot = null;
+  }
+  stopTelemetryLoop();
+  sendToRenderer("connection-state", { state: "disconnected" });
+}
+
+function enterPanelWithSession() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow
+    .loadFile(path.join(__dirname, "src", "views", "panel.html"))
+    .then(() => {
+      const runtimeInfo = getRuntimeInfo();
+      log(
+        sessionState.onlineMode
+          ? `Welcome to MCBP! (Microsoft · ${sessionState.mcName || sessionState.email})`
+          : "Welcome to MCBP!",
+      );
+      log(
+        `Mineflayer v${runtimeInfo.mineflayerVersion} (${runtimeInfo.versionRange})`,
+      );
+      if (sessionState.onlineMode) {
+        sendToRenderer(
+          "set-account",
+          sessionState.email,
+          sessionState.mcName || sessionState.email,
+        );
+      } else {
+        sendToRenderer("set-username", sessionState.username);
+      }
+      sendToRenderer("set-version", app.getVersion());
+      sendToRenderer("runtime-info", runtimeInfo);
+      applyCustomTheme();
+      loadAllScripts();
+      pushBotTelemetry(true);
+      pushBotInventory(true);
+      pushSessionLogStatus();
+      ollamaManager
+        .getStatus()
+        .then((st) => sendToRenderer("ollama-status", st))
+        .catch(() => {});
+      try {
+        scriptStudio.setBaseDirs([loadLibraries().baseDir, __dirname]);
+      } catch (_) {}
+      // Keep Mineflayer docs fresh for the Studio tab in the background.
+      scriptStudio
+        .downloadDocs()
+        .then((res) => sendToRenderer("studio-docs-status", res.status))
+        .catch(() => {});
+      syncLatestMineflayer({
+        onLog: log,
+        onUpdated: (updated) => sendToRenderer("runtime-info", updated),
+      });
+    })
+    .catch(() => {});
+}
+
+function createWindow() {
+  const iconPath =
+    process.platform === "win32" && fs.existsSync(ICON_ICO)
+      ? ICON_ICO
+      : ICON_PNG;
+
+  mainWindow = new BrowserWindow({
+    title: `MCBP v${app.getVersion()}`,
+    width: 1100,
+    height: 740,
+    minWidth: 420,
+    minHeight: 520,
+    resizable: true,
+    fullscreenable: true,
     autoHideMenuBar: true,
-    icon: path.join(__dirname, "src/icons/icon.png"),
+    backgroundColor: "#16131f",
+    icon: iconPath,
     webPreferences: {
-      preload: path.join(__dirname, "src/js/preload.js"),
+      preload: path.join(__dirname, "src", "js", "preload.js"),
       contextIsolation: true,
-      enableRemoteModule: false,
+      sandbox: false,
       nodeIntegration: false,
-      devTools: true, // CHANGE TO FALSE
+      devTools: false,
     },
   });
 
   mainWindow
-    .loadFile(path.join(__dirname, `./src/views/welcomeScreen.html`))
+    .loadFile(path.join(__dirname, "src", "views", "welcomeScreen.html"))
     .then(() => {
-      mainWindow.webContents.send("set-version", version);
-    });
-  ["microsoft", "offline"].forEach((e) => {
-    ipcMain.on("login" + e, () => {
-      mainWindow
-        .loadFile(path.join(__dirname, `./src/views/${e}.html`))
-        .then(() => {
-          mainWindow.webContents.send("set-version", version);
-        });
-    });
-  });
-  ipcMain.on("form-submission", (event, data) => {
-    if (data.username) {
-      mainWindow
-        .loadFile(path.join(__dirname, "./src/views/panel.html"))
-        .then(() => {
-          log("Welcome to MCBP!");
-          log("https://github.com/ancym0n");
-          mainWindow.webContents.send("set-username", data.username);
-          mainWindow.webContents.send("set-version", version);
-          loadAllScripts();
-        });
-    } else if (data.email && data.password) {
-      mainWindow
-        .loadFile(path.join(__dirname, "./src/views/panel.html"))
-        .then(() => {
-          mainWindow.webContents.send("set-account", data.email, data.password);
-          mainWindow.webContents.send("set-version", version);
-        });
+      sendToRenderer("set-version", app.getVersion());
+      applyCustomTheme();
+    })
+    .catch(() => {});
+
+  return mainWindow;
+}
+
+function resolveArmorDest(itemName) {
+  const n = String(itemName || "").toLowerCase();
+  if (
+    n.endsWith("_helmet") ||
+    n === "turtle_helmet" ||
+    n === "carved_pumpkin"
+  ) {
+    return "head";
+  }
+  if (n.endsWith("_chestplate") || n === "elytra") return "torso";
+  if (n.endsWith("_leggings")) return "legs";
+  if (n.endsWith("_boots")) return "feet";
+  if (n === "totem_of_undying" || n === "shield") return "off-hand";
+  return "hand";
+}
+
+async function handleInventoryAction(payload = {}) {
+  if (!bot || !bot.inventory) {
+    log("Inventory: Connect a bot first");
+    return;
+  }
+
+  const action = String(payload.action || "");
+  const slot = typeof payload.slot === "number" ? payload.slot : -1;
+  if (action !== "refresh") {
+    sessionLogger.record(
+      "UI Click",
+      `Inventory: ${action}`,
+      slot >= 0 ? `Slot #${slot}` : JSON.stringify(payload),
+    );
+    pushSessionLogStatus();
+  }
+
+  try {
+    if (action === "container-click") {
+      if (!bot.currentWindow) {
+        log("Container: No open container to click");
+        return;
+      }
+      const mouseButton = Number(payload.mouseButton) === 1 ? 1 : 0;
+      const mode = Number.isFinite(Number(payload.mode))
+        ? Number(payload.mode)
+        : 0;
+      const clickedItem = bot.currentWindow.slots?.[slot];
+      const itemLabel = clickedItem
+        ? clickedItem.displayName || clickedItem.name
+        : `slot #${slot}`;
+      await bot.clickWindow(slot, mouseButton, mode).catch(() => {});
+      log(
+        `Container: Clicked ${itemLabel} (slot #${slot}${mode === 1 ? ", shift" : mouseButton === 1 ? ", right-click" : ""})`,
+      );
+    } else if (action === "container-close") {
+      if (bot.currentWindow) {
+        bot.closeWindow(bot.currentWindow);
+        log("Container: Closed opened container");
+      }
+    } else if (action === "select-hotbar") {
+      const idx = Number(payload.index);
+      if (Number.isFinite(idx) && idx >= 0 && idx <= 8) {
+        bot.setQuickBarSlot(idx);
+      }
+    } else if (action === "equip" || action === "equip-offhand") {
+      const item = bot.inventory.slots[slot];
+      if (!item) return;
+      const dest =
+        action === "equip-offhand" ? "off-hand" : resolveArmorDest(item.name);
+      await bot.equip(item, dest);
+      log(`Inventory: Equipped ${item.displayName || item.name} (${dest})`);
+    } else if (action === "unequip") {
+      const dest = String(payload.destination || "");
+      if (dest) {
+        await bot.unequip(dest);
+        log(`Inventory: Unequipped ${dest}`);
+      }
+    } else if (action === "use") {
+      const item = slot >= 0 ? bot.inventory.slots[slot] : bot.heldItem;
+      if (!item) return;
+      if (!bot.heldItem || bot.heldItem.slot !== item.slot) {
+        await bot.equip(item, "hand");
+      }
+      const cat = categorizeItem(item.name);
+      if (cat === "food" || item.name.includes("potion")) {
+        log(`Inventory: Consuming ${item.displayName || item.name}...`);
+        await consumeFoodSafely(bot, item);
+      } else {
+        bot.activateItem();
+        setTimeout(() => {
+          if (bot) bot.deactivateItem();
+        }, 250);
+      }
+    } else if (action === "drop-one") {
+      const item = slot >= 0 ? bot.inventory.slots[slot] : bot.heldItem;
+      if (!item) return;
+      await bot.toss(item.type, item.metadata, 1);
+      log(`Inventory: Dropped 1x ${item.displayName || item.name}`);
+    } else if (action === "drop-stack") {
+      const item = slot >= 0 ? bot.inventory.slots[slot] : bot.heldItem;
+      if (!item) return;
+      await bot.tossStack(item);
+      log(`Inventory: Dropped ${item.count}x ${item.displayName || item.name}`);
+    } else if (action === "auto-gear") {
+      await equipBestArmor(bot, { includeOffhand: true });
+      await equipBestWeapon(bot, { saveLowDurability: true });
+      log("Inventory: Equipped best armor, weapon & off-hand gear");
+    } else if (action === "drop-all") {
+      const items = bot.inventory.items();
+      for (const item of items) {
+        if (!bot) break;
+        await bot.tossStack(item).catch(() => {});
+      }
+      log(`Inventory: Dropped ${items.length} stack(s)`);
     }
-  });
-  ipcMain.on("connect", (event, server) => {
-    let adress = checkForPort(server.ip);
-    log(`Connecting to ${server.ip}`);
-    if (server.auth) {
-      bot = mineflayer.createBot({
-        host: adress.ip,
-        port: parseInt(adress.port),
-        version: server.version,
-        username: server.username,
-        password: server.password,
-        auth: server.auth,
+  } catch (err) {
+    log(`Inventory error: ${err.message || err}`);
+  } finally {
+    pushBotInventory(true);
+    pushBotTelemetry(true);
+  }
+}
+
+async function handleBotControl(payload = {}) {
+  if (!bot || !bot.entity) return;
+
+  const action = String(payload.action || "");
+  if (action !== "look") {
+    sessionLogger.record(
+      "UI Click",
+      `Control: ${action}`,
+      payload.subAction
+        ? `${payload.subAction} (${payload.username || payload.entityId || `${payload.x},${payload.y},${payload.z}`})`
+        : payload.control
+          ? `${payload.control}=${payload.state}`
+          : "",
+    );
+    pushSessionLogStatus();
+  }
+  try {
+    if (action === "move") {
+      const control = String(payload.control || "");
+      const state = Boolean(payload.state);
+      if (Object.prototype.hasOwnProperty.call(activeControlStates, control)) {
+        const opposites = {
+          forward: "back",
+          back: "forward",
+          left: "right",
+          right: "left",
+        };
+        if (
+          state &&
+          ["forward", "back", "left", "right", "jump"].includes(control)
+        ) {
+          clearPathfinderGoal(bot);
+          if (
+            activeRadarTarget.subAction === "follow" ||
+            activeRadarTarget.subAction === "goto"
+          ) {
+            activeRadarTarget = { subAction: "", username: "", entityId: null };
+          }
+        }
+        if (state && opposites[control]) {
+          const opp = opposites[control];
+          activeControlStates[opp] = false;
+          bot.setControlState(opp, false);
+        }
+        activeControlStates[control] = state;
+        bot.setControlState(control, state);
+      }
+    } else if (action === "stop-all") {
+      Object.keys(activeControlStates).forEach((k) => {
+        activeControlStates[k] = false;
       });
-    } else {
-      bot = mineflayer.createBot({
-        host: adress.ip,
-        port: parseInt(adress.port),
-        version: server.version,
-        username: server.username,
-        password: server.password,
-        auth: server.auth,
-      });
+      activeRadarTarget = { subAction: "", username: "", entityId: null };
+      bot.clearControlStates();
+      clearPathfinderGoal(bot);
+      log("Control: Stopped all movement & pathfinding");
+    } else if (action === "look") {
+      const yawDeltaDeg = Number(payload.yawDelta) || 0;
+      const pitchDeltaDeg = Number(payload.pitchDelta) || 0;
+      const newYaw = bot.entity.yaw + (yawDeltaDeg * Math.PI) / 180;
+      const rawPitch = bot.entity.pitch + (pitchDeltaDeg * Math.PI) / 180;
+      const clampedPitch = Math.max(
+        -Math.PI / 2 + 0.05,
+        Math.min(Math.PI / 2 - 0.05, rawPitch),
+      );
+      await bot.look(newYaw, clampedPitch, true);
+    } else if (action === "attack") {
+      let target = null;
+      if (payload.entityId && bot.entities[payload.entityId]) {
+        target = bot.entities[payload.entityId];
+      } else {
+        let bestDist = 4.6;
+        for (const e of Object.values(bot.entities)) {
+          if (!e || e === bot.entity || !e.position) continue;
+          if (e.type === "object" || e.type === "orb") continue;
+          const d = e.position.distanceTo(bot.entity.position);
+          if (d < bestDist) {
+            bestDist = d;
+            target = e;
+          }
+        }
+      }
+      if (target) {
+        await performPvpAttack(bot, target, { useCrits: true, maxRange: 4.6 });
+      } else {
+        bot.swingArm();
+      }
+    } else if (action === "swing") {
+      bot.swingArm();
+    } else if (action === "use-item") {
+      if (bot.heldItem) {
+        const cat = categorizeItem(bot.heldItem.name);
+        if (cat === "food" || bot.heldItem.name.includes("potion")) {
+          await consumeFoodSafely(bot, bot.heldItem);
+        } else {
+          bot.activateItem();
+          setTimeout(() => {
+            if (bot) bot.deactivateItem();
+          }, 300);
+        }
+      } else {
+        bot.activateItem();
+      }
+    } else if (action === "sign-action") {
+      const subAction = String(payload.subAction || "interact");
+      const x = Number(payload.x);
+      const y = Number(payload.y);
+      const z = Number(payload.z);
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+        return;
+      }
+      const { Vec3, goals } = loadLibraries();
+      const signPos = new Vec3(x, y, z);
+      const dist = bot.entity.position.distanceTo(signPos);
+
+      if (subAction === "goto") {
+        if (bot.pathfinder) {
+          bot._mcbpSprintJump = true;
+          bot.pathfinder.setGoal(new goals.GoalNear(x, y, z, 2));
+          log(`Sign: Walking to sign at (${x}, ${y}, ${z})`);
+        }
+        return;
+      }
+
+      if (dist > 3.8 && bot.pathfinder) {
+        log(`Sign: Walking to sign at (${x}, ${y}, ${z})...`);
+        await bot.pathfinder
+          .goto(new goals.GoalNear(x, y, z, 2.5))
+          .catch(() => {});
+      }
+
+      const signBlock = bot.blockAt(signPos);
+      if (!signBlock) {
+        log(`Sign: Block at (${x}, ${y}, ${z}) is not loaded`);
+        return;
+      }
+
+      await bot.lookAt(signPos.offset(0.5, 0.5, 0.5), true);
+      if (subAction === "punch") {
+        if (bot._client && typeof bot._client.write === "function") {
+          bot._client.write("block_dig", {
+            status: 0,
+            location: signBlock.position,
+            face: 1,
+          });
+          bot.swingArm();
+        } else {
+          await bot.dig(signBlock, true).catch(() => {});
+        }
+        log(`Sign: Left-clicked sign at (${x}, ${y}, ${z})`);
+      } else {
+        await bot.activateBlock(signBlock);
+        log(`Sign: Right-clicked sign at (${x}, ${y}, ${z})`);
+      }
+    } else if (action === "drop-held") {
+      if (bot.heldItem) {
+        if (payload.stack) {
+          await bot.tossStack(bot.heldItem);
+        } else {
+          await bot.toss(bot.heldItem.type, bot.heldItem.metadata, 1);
+        }
+      }
+    } else if (action === "swap-offhand") {
+      const held = bot.heldItem;
+      const offhand = bot.inventory?.slots?.[45];
+      if (held) {
+        await bot.equip(held, "off-hand");
+      } else if (offhand) {
+        await bot.equip(offhand, "hand");
+      }
+    } else if (action === "respawn") {
+      bot.respawn();
+      log("Control: Sent respawn request");
+    } else if (action === "set-hotbar") {
+      const idx = Number(payload.index);
+      if (Number.isFinite(idx) && idx >= 0 && idx <= 8) {
+        bot.setQuickBarSlot(idx);
+      }
+    } else if (action === "entity-action") {
+      const subAction = String(payload.subAction || "");
+      const username = String(payload.username || "");
+      const entityId = payload.entityId;
+      const { goals } = loadLibraries();
+
+      let targetEntity = null;
+      if (username && bot.players?.[username]?.entity) {
+        targetEntity = bot.players[username].entity;
+      } else if (entityId && bot.entities?.[entityId]) {
+        targetEntity = bot.entities[entityId];
+      }
+
+      if (subAction === "guard" && username) {
+        const isAlreadyGuarding =
+          activeScripts.has("Guard") &&
+          activeRadarTarget.subAction === "guard" &&
+          activeRadarTarget.username === username;
+
+        if (isAlreadyGuarding) {
+          activeScripts.delete("Guard");
+          activeRadarTarget = { subAction: "", username: "", entityId: null };
+          clearPathfinderGoal(bot);
+          sendToRenderer("script-state", "Guard", false);
+          log(`Guard: Stopped protecting ${username}`);
+          return;
+        }
+
+        if (activeScripts.has("Hunt")) {
+          activeScripts.delete("Hunt");
+          sendToRenderer("script-state", "Hunt", false);
+        }
+
+        activeRadarTarget = { subAction: "guard", username, entityId: null };
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          await mainWindow.webContents
+            .executeJavaScript(
+              `(() => {
+                const inp = document.getElementById("playername-Guard");
+                if (inp) {
+                  inp.value = ${JSON.stringify(username)};
+                  inp.dispatchEvent(new Event("input", { bubbles: true }));
+                }
+              })()`,
+            )
+            .catch(() => {});
+        }
+        if (!activeScripts.has("Guard")) {
+          const runner = scriptFunctions.get("Guard");
+          if (runner) {
+            activeScripts.add("Guard");
+            sendToRenderer("script-state", "Guard", true);
+            runner();
+          }
+        }
+        log(`Guard: Assigned to protect ${username}`);
+        return;
+      }
+
+      if (subAction === "hunt" && username) {
+        const isAlreadyHunting =
+          activeScripts.has("Hunt") &&
+          activeRadarTarget.subAction === "hunt" &&
+          activeRadarTarget.username === username;
+
+        if (isAlreadyHunting) {
+          activeScripts.delete("Hunt");
+          activeRadarTarget = { subAction: "", username: "", entityId: null };
+          clearPathfinderGoal(bot);
+          sendToRenderer("script-state", "Hunt", false);
+          log(`Hunt: Stopped hunting ${username}`);
+          return;
+        }
+
+        if (activeScripts.has("Guard")) {
+          activeScripts.delete("Guard");
+          sendToRenderer("script-state", "Guard", false);
+        }
+
+        activeRadarTarget = { subAction: "hunt", username, entityId: null };
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          await mainWindow.webContents
+            .executeJavaScript(
+              `(() => {
+                const inp = document.getElementById("playername-Hunt");
+                if (inp) {
+                  inp.value = ${JSON.stringify(username)};
+                  inp.dispatchEvent(new Event("input", { bubbles: true }));
+                }
+              })()`,
+            )
+            .catch(() => {});
+        }
+        if (!activeScripts.has("Hunt")) {
+          const runner = scriptFunctions.get("Hunt");
+          if (runner) {
+            activeScripts.add("Hunt");
+            sendToRenderer("script-state", "Hunt", true);
+            runner();
+          }
+        }
+        log(`Hunt: Pursuing ${username}`);
+        return;
+      }
+
+      if (!targetEntity || !targetEntity.position) {
+        log(`Target ${username || "entity"} is not within loaded chunk range`);
+        return;
+      }
+
+      if (subAction === "look") {
+        await bot.lookAt(
+          targetEntity.position.offset(
+            0,
+            (targetEntity.height || 1.6) * 0.85,
+            0,
+          ),
+          true,
+        );
+      } else if (subAction === "follow") {
+        if (bot.pathfinder) {
+          if (
+            activeRadarTarget.subAction === "follow" &&
+            activeRadarTarget.username === username
+          ) {
+            clearPathfinderGoal(bot);
+            activeRadarTarget = { subAction: "", username: "", entityId: null };
+            log(`Control: Stopped following ${username}`);
+          } else {
+            activeRadarTarget = {
+              subAction: "follow",
+              username,
+              entityId: null,
+            };
+            bot._mcbpSprintJump = true;
+            setDynamicFollowGoal(bot, goals, targetEntity, 2);
+            log(
+              `Control: Following ${username || targetEntity.displayName || targetEntity.name}`,
+            );
+          }
+        }
+      } else if (subAction === "goto") {
+        if (bot.pathfinder) {
+          if (
+            activeRadarTarget.subAction === "goto" &&
+            activeRadarTarget.entityId === entityId
+          ) {
+            clearPathfinderGoal(bot);
+            activeRadarTarget = { subAction: "", username: "", entityId: null };
+            log("Control: Stopped pathing to mob");
+          } else {
+            const p = targetEntity.position;
+            activeRadarTarget = {
+              subAction: "goto",
+              username: "",
+              entityId,
+            };
+            bot._mcbpSprintJump = true;
+            bot.pathfinder.setGoal(new goals.GoalNear(p.x, p.y, p.z, 2));
+            log(
+              `Control: Pathing to (${Math.floor(p.x)}, ${Math.floor(p.y)}, ${Math.floor(p.z)})`,
+            );
+          }
+        }
+      } else if (subAction === "attack") {
+        const dist = targetEntity.position.distanceTo(bot.entity.position);
+        if (dist > 3.5 && bot.pathfinder) {
+          bot.pathfinder.setGoal(
+            new goals.GoalFollow(targetEntity, 2.2),
+            false,
+          );
+        }
+        await bot.lookAt(
+          targetEntity.position.offset(
+            0,
+            (targetEntity.height || 1.6) * 0.85,
+            0,
+          ),
+          true,
+        );
+        bot.attack(targetEntity);
+      }
     }
-    bot.loadPlugin(pathfinder);
-    bot.on("spawn", () => {
-      mcData = require("minecraft-data")(bot.version);
-      let movement = new Movements(bot, mcData);
-      bot.pathfinder.setMovements(movement);
-      log(`Connected as ${bot.username}`);
-    });
-    bot.on("messagestr", (message) => {
-      mainWindow.webContents.send("chat", message);
-    });
-    bot.on("end", () => {
-      log(`Bot disconnected`);
-    });
-    bot.on("disconnect", () => {
-      log(`Bot disconnected`);
-    });
-  });
-  ipcMain.on("disconnect", () => {
-    bot.end();
+  } catch (_) {
+  } finally {
+    pushBotTelemetry(false);
+    pushBotInventory(false);
+  }
+}
+
+function registerIpcHandlers() {
+  ipcMain.handle("msa-get-accounts", () => loadSavedMsaAccounts());
+
+  ipcMain.handle("msa-remove-account", (_event, accountId) =>
+    removeMsaAccount(accountId),
+  );
+
+  ipcMain.on("copy-text", (_event, text) => {
+    try {
+      clipboard.writeText(String(text || ""));
+    } catch (_) {}
   });
 
-  ipcMain.on("send-chat-message", (event, chatMessage) => {
-    bot.chat(chatMessage);
+  ipcMain.on("msa-open-popup", (_event, payload = {}) => {
+    openMsaLoginPopup(payload.verificationUri, payload.userCode);
   });
-  ipcMain.on("exec-js", (event, func) => {
-    mainWindow.webContents
-      .executeJavaScript(`eval(${"`" + func + "`"})`)
-      .then((value) => {
-        resolve(value);
-      })
-      .catch((err) => {
-        reject(err);
+
+  ipcMain.on("msa-cancel-login", () => {
+    activeMsaRunId += 1;
+    closeMsaPopup();
+    sendToRenderer("msa-status", {
+      state: "idle",
+      message: "Sign-in cancelled",
+    });
+  });
+
+  ipcMain.on("msa-start-login", async (_event, payload = {}) => {
+    const runId = ++activeMsaRunId;
+    const rawAccount = String(payload.accountId || "").trim();
+    const accountKey = rawAccount || `Microsoft_${Date.now()}`;
+    const openPopup = payload.openPopup !== false;
+
+    sendToRenderer("msa-status", {
+      state: "authenticating",
+      message: "Checking cached Microsoft credentials...",
+    });
+
+    try {
+      const libs = await ensureMineflayer(ICON_PNG, log);
+      const { Authflow, Titles } = libs;
+      if (!Authflow || !Titles) {
+        throw new Error("prismarine-auth is not available in runtime");
+      }
+
+      const profilesDir = getMsaProfilesDir();
+      const authflow = new Authflow(
+        accountKey,
+        profilesDir,
+        {
+          authTitle: Titles.MinecraftNintendoSwitch,
+          deviceType: "Nintendo",
+          flow: "live",
+        },
+        (msaData) => {
+          if (runId !== activeMsaRunId) return;
+          const uri =
+            msaData.verification_uri || "https://www.microsoft.com/link";
+          const code = msaData.user_code || "";
+          if (code) {
+            try {
+              clipboard.writeText(code);
+            } catch (_) {}
+          }
+          sendToRenderer("msa-code", {
+            userCode: code,
+            verificationUri: uri,
+            accountKey,
+            message: msaData.message || `Open ${uri} and enter code ${code}`,
+          });
+          if (openPopup) {
+            openMsaLoginPopup(uri, code);
+          }
+        },
+      );
+
+      const result = await authflow.getMinecraftJavaToken({
+        fetchProfile: true,
       });
-  });
-  ipcMain.on("on-script-toggle-on", (event, scriptId) => {
-    for (var i = 0; i < scriptFunctions.length; i++) {
-      currentScript = scriptFunctions[i];
-      if (currentScript[0] === scriptId) {
-        currentScript[1](getOption);
-        activeScripts.push(scriptId);
-        let tempLogText = "Toggled on ";
-        clearLog(tempLogText);
-        log(tempLogText + scriptId);
-      }
+
+      if (runId !== activeMsaRunId) return;
+      closeMsaPopup();
+
+      const profile = result?.profile || {};
+      const mcName = profile.name || rawAccount || "MinecraftPlayer";
+      const uuid = profile.id || "";
+
+      saveMsaAccount({
+        id: accountKey,
+        mcName,
+        uuid,
+      });
+
+      sessionState = {
+        onlineMode: true,
+        username: mcName,
+        email: accountKey,
+        mcName,
+        uuid,
+      };
+
+      sendToRenderer("msa-status", {
+        state: "success",
+        mcName,
+        uuid,
+        accountKey,
+      });
+
+      enterPanelWithSession();
+    } catch (err) {
+      if (runId !== activeMsaRunId) return;
+      closeMsaPopup();
+      sendToRenderer("msa-status", {
+        state: "error",
+        message: String(err.message || err),
+      });
     }
   });
-  ipcMain.on("on-script-toggle-off", (event, scriptId) => {
-    for (var i = 0; i < activeScripts.length; i++) {
-      currentScript = activeScripts[i];
-      if (currentScript === scriptId) {
-        let tempLogText = "Toggled off ";
-        activeScripts = activeScripts.filter((scr) => scr !== scriptId);
-        clearLog(tempLogText);
-        log(tempLogText + scriptId);
+
+  ["microsoft", "offline"].forEach((mode) => {
+    ipcMain.on("login" + mode, () => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      mainWindow
+        .loadFile(path.join(__dirname, "src", "views", `${mode}.html`))
+        .then(() => {
+          sendToRenderer("set-version", app.getVersion());
+          applyCustomTheme();
+        })
+        .catch(() => {});
+    });
+  });
+
+  ipcMain.on("back-to-welcome", () => {
+    activeMsaRunId += 1;
+    closeMsaPopup();
+    disconnectBot();
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow
+      .loadFile(path.join(__dirname, "src", "views", "welcomeScreen.html"))
+      .then(() => {
+        sendToRenderer("set-version", app.getVersion());
+        applyCustomTheme();
+      })
+      .catch(() => {});
+  });
+
+  ipcMain.on("form-submission", (_event, data = {}) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+
+    if (data.username && !data.email) {
+      sessionState = {
+        onlineMode: false,
+        username: String(data.username).trim(),
+        email: "",
+        mcName: "",
+        uuid: "",
+      };
+      enterPanelWithSession();
+    } else if (data.email) {
+      const accountKey = String(data.email).trim();
+      const mcName = String(data.mcName || accountKey).trim();
+      saveMsaAccount({
+        id: accountKey,
+        mcName,
+        uuid: data.uuid || "",
+      });
+      sessionState = {
+        onlineMode: true,
+        username: mcName,
+        email: accountKey,
+        mcName,
+        uuid: data.uuid || "",
+      };
+      enterPanelWithSession();
+    }
+  });
+
+  async function connectToServerInternal(server = {}, restoredScripts = null) {
+    const address = parseServerAddress(server.ip);
+    if (!address.ip) {
+      log("Enter a valid server address first");
+      return;
+    }
+
+    lastConnectServer = { ...server };
+    manualDisconnect = false;
+    disconnectBot(false);
+
+    try {
+      sendToRenderer("connection-state", {
+        state: "connecting",
+        host: `${address.ip}:${address.port}`,
+      });
+      log(`Connecting to ${address.ip}:${address.port}...`);
+
+      const libs = await ensureMineflayer(ICON_PNG, log);
+      const { mineflayer, mcData, pathfinder, Movements, goals } = libs;
+
+      const rawVersion = String(server.version || "").trim();
+      const normalizedVersion =
+        !rawVersion || /^auto$/i.test(rawVersion) ? false : rawVersion;
+
+      const isMicrosoft = server.auth === "microsoft";
+      const botOptions = {
+        host: address.ip,
+        port: address.port,
+        version: normalizedVersion,
+        username: isMicrosoft
+          ? sessionState.email || server.username || "MCBP_Account"
+          : server.username || sessionState.username || "MCBP_Bot",
+        auth: isMicrosoft ? "microsoft" : "offline",
+      };
+
+      if (isMicrosoft) {
+        botOptions.profilesFolder = getMsaProfilesDir();
+        botOptions.onMsaCode = (msaData) => {
+          const uri =
+            msaData.verification_uri || "https://www.microsoft.com/link";
+          const code = msaData.user_code || "";
+          if (code) {
+            try {
+              clipboard.writeText(code);
+            } catch (_) {}
+          }
+          log(
+            `Microsoft Auth: Code ${code} (copied to clipboard!) — Open ${uri}`,
+          );
+          sendToRenderer("msa-code", {
+            userCode: code,
+            verificationUri: uri,
+            accountKey: botOptions.username,
+            message: `Enter code ${code} at ${uri}`,
+          });
+        };
+      }
+
+      const currentBot = mineflayer.createBot(botOptions);
+      bot = currentBot;
+      currentBot.loadPlugin(pathfinder);
+      currentBot.mcData = mcData;
+      currentBot.Movements = Movements;
+      currentBot.pathfinderGoals = goals;
+
+      currentBot.once("spawn", () => {
+        if (bot !== currentBot) return;
+        closeMsaPopup();
+        sendToRenderer("msa-code", null);
+
+        configureSmartMovements(currentBot, mcData, Movements);
+        attachSmartMovement(currentBot, activeControlStates);
+
+        if (isMicrosoft && currentBot.username) {
+          sessionState.mcName = currentBot.username;
+          saveMsaAccount({
+            id: sessionState.email || currentBot.username,
+            mcName: currentBot.username,
+            uuid: currentBot.player?.uuid || "",
+          });
+          sendToRenderer(
+            "set-account",
+            sessionState.email || currentBot.username,
+            currentBot.username,
+          );
+        }
+
+        log(`Connected as ${currentBot.username} (MC ${currentBot.version})`);
+        sessionLogger.record(
+          "Game Event",
+          "Spawned on server",
+          `${currentBot.username} on ${address.ip}:${address.port} (MC ${currentBot.version})`,
+        );
+        sendToRenderer("connection-state", {
+          state: "connected",
+          username: currentBot.username,
+          host: `${address.ip}:${address.port}`,
+          version: currentBot.version,
+        });
+
+        // Track item collection & inventory additions for session log
+        const getInvTotals = () => {
+          const totals = new Map();
+          if (!currentBot.inventory?.slots) return totals;
+          for (const it of currentBot.inventory.slots) {
+            if (!it || !it.name) continue;
+            const prev = totals.get(it.name) || {
+              count: 0,
+              displayName: it.displayName || it.name,
+            };
+            prev.count += it.count || 1;
+            totals.set(it.name, prev);
+          }
+          return totals;
+        };
+        let prevInvTotals = getInvTotals();
+        let invDiffTimer = null;
+
+        if (
+          currentBot.inventory &&
+          typeof currentBot.inventory.on === "function"
+        ) {
+          currentBot.inventory.on("updateSlot", () => {
+            if (bot !== currentBot) return;
+            if (invDiffTimer) clearTimeout(invDiffTimer);
+            invDiffTimer = setTimeout(() => {
+              if (bot !== currentBot) return;
+              const nextTotals = getInvTotals();
+              for (const [name, info] of nextTotals.entries()) {
+                const oldCount = prevInvTotals.get(name)?.count || 0;
+                if (info.count > oldCount) {
+                  sessionLogger.recordCollected(
+                    name,
+                    info.displayName,
+                    info.count - oldCount,
+                    currentBot.entity?.position,
+                  );
+                  pushSessionLogStatus();
+                }
+              }
+              prevInvTotals = nextTotals;
+            }, 180);
+          });
+        }
+
+        startTelemetryLoop();
+
+        if (restoredScripts && restoredScripts.size > 0) {
+          for (const scriptId of restoredScripts) {
+            startScriptByName(scriptId);
+          }
+          log(
+            `AutoReconnect: Restored ${restoredScripts.size} active script(s)`,
+          );
+        }
+      });
+
+      currentBot.on("windowOpen", (win) => {
+        if (bot !== currentBot) return;
+        const title =
+          parseRichComponentText(win?.title).trim() ||
+          String(win?.type || "Container");
+        log(`Container opened: ${title}`);
+        if (win && typeof win.on === "function") {
+          win.on("updateSlot", () => {
+            if (bot === currentBot) pushBotInventory(false);
+          });
+        }
+        pushBotInventory(true);
+      });
+
+      currentBot.on("windowClose", (win) => {
+        if (bot !== currentBot) return;
+        const title =
+          parseRichComponentText(win?.title).trim() ||
+          String(win?.type || "Container");
+        sessionLogger.record("Container", "Closed container", title);
+        pushBotInventory(true);
+      });
+
+      currentBot.on("death", () => {
+        if (bot !== currentBot) return;
+        const p = currentBot.entity?.position;
+        sessionLogger.record(
+          "Game Event",
+          "Bot died",
+          p
+            ? `At (${Math.floor(p.x)}, ${Math.floor(p.y)}, ${Math.floor(p.z)})`
+            : "Died",
+        );
+        pushSessionLogStatus();
+      });
+
+      currentBot.on("diggingCompleted", (block) => {
+        if (bot !== currentBot || !block) return;
+        const bp = block.position;
+        sessionLogger.record(
+          "Mine",
+          `Mined ${block.displayName || block.name}`,
+          bp
+            ? `Block \`${block.name}\` at (${bp.x}, ${bp.y}, ${bp.z})`
+            : block.name,
+        );
+        pushSessionLogStatus();
+      });
+
+      currentBot.on("health", () => {
+        if (bot !== currentBot) return;
+        pushBotTelemetry(false);
+      });
+
+      currentBot.on("heldItemChanged", () => {
+        if (bot !== currentBot) return;
+        pushBotInventory(false);
+        pushBotTelemetry(false);
+      });
+
+      currentBot.on("playerCollect", () => {
+        if (bot !== currentBot) return;
+        setTimeout(() => {
+          if (bot === currentBot) pushBotInventory(false);
+        }, 120);
+      });
+
+      currentBot.on("message", async (jsonMsg) => {
+        if (bot !== currentBot) return;
+        const payload = extractChatPayload(jsonMsg);
+        if (payload.text || payload.motd) {
+          sendToRenderer("chat", payload);
+          sessionLogger.record(
+            "Chat",
+            "Server Message",
+            payload.text || payload.motd,
+          );
+          pushSessionLogStatus();
+
+          if (ollamaManager.isActive()) {
+            handleAiChat(currentBot, payload.text || payload.motd);
+          }
+        }
+      });
+
+      currentBot.on("kicked", (reason) => {
+        if (bot !== currentBot) return;
+        log(`Kicked: ${formatKickReason(reason)}`);
+      });
+
+      currentBot.on("error", (err) => {
+        if (bot !== currentBot) return;
+        log(`Bot error: ${err.message || err}`);
+      });
+
+      currentBot.on("end", () => {
+        if (bot !== currentBot) return;
+        const autoRecCfg = currentBot._mcbpAutoReconnect;
+        const shouldAutoReconnect =
+          !manualDisconnect &&
+          lastConnectServer &&
+          (activeScripts.has("AutoReconnect") || autoRecCfg?.enabled);
+        const scriptsToRestore =
+          shouldAutoReconnect && autoRecCfg?.resumeScripts !== false
+            ? new Set(activeScripts)
+            : shouldAutoReconnect
+              ? new Set(["AutoReconnect"])
+              : null;
+        const delayMs = autoRecCfg?.delayMs || 5000;
+
+        bot = null;
+        activeScripts.clear();
+        stopTelemetryLoop();
+        sendToRenderer("connection-state", { state: "disconnected" });
+        log("Bot disconnected");
+
+        if (shouldAutoReconnect) {
+          log(
+            `AutoReconnect: Rejoining ${lastConnectServer.ip} in ${Math.round(delayMs / 1000)}s...`,
+          );
+          if (reconnectTimer) clearTimeout(reconnectTimer);
+          reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
+            if (!manualDisconnect && lastConnectServer) {
+              connectToServerInternal(lastConnectServer, scriptsToRestore);
+            }
+          }, delayMs);
+        }
+      });
+    } catch (err) {
+      bot = null;
+      stopTelemetryLoop();
+      sendToRenderer("connection-state", { state: "disconnected" });
+      log(`Failed to connect: ${err.message || err}`);
+    }
+  }
+
+  ipcMain.on("connect", async (_event, server = {}) => {
+    sessionLogger.record(
+      "UI Click",
+      "Clicked Connect",
+      `Server: ${server.ip || ""} (Version: ${server.version || "Auto"}, Mode: ${server.auth || "offline"})`,
+    );
+    pushSessionLogStatus();
+    await connectToServerInternal(server, null);
+  });
+
+  ipcMain.on("disconnect", () => {
+    sessionLogger.record("UI Click", "Clicked Leave / Disconnect", "");
+    pushSessionLogStatus();
+    disconnectBot(true);
+  });
+
+  ipcMain.on("bot-control", (_event, payload) => {
+    handleBotControl(payload);
+  });
+
+  ipcMain.on("inventory-action", (_event, payload) => {
+    handleInventoryAction(payload);
+  });
+
+  ipcMain.on("send-chat-message", async (_event, chatMessage) => {
+    const msg = String(chatMessage || "").trim();
+    if (!msg) return;
+
+    sessionLogger.record(
+      "UI Click",
+      msg.startsWith("!") ? "Console Command" : "Outgoing Chat",
+      msg,
+    );
+    pushSessionLogStatus();
+
+    // Local console commands starting with "!"
+    if (msg.startsWith("!")) {
+      const parts = msg.slice(1).trim().split(/\s+/);
+      const cmd = (parts[0] || "").toLowerCase();
+      const args = parts.slice(1);
+
+      if (cmd === "help") {
+        log(
+          "Console: !pos, !hp, !gear, !gearup [wood|stone|iron|diamond], !signs, !sign <text>, !ai <msg>, !logs, !close, !weapon, !tool <block>, !goto <x> <y> <z>, !follow <player>, !guard <player>, !hunt <player>, !stop, !dropall, !respawn",
+        );
+        return;
+      }
+      if (cmd === "logs" || cmd === "session") {
+        const st = sessionLogger.getStatus();
+        log(`Session Log: ${st.currentFilePath} (${st.eventCount} events)`);
+        if (st.currentFilePath) openWithCleanEnv(st.currentFilePath);
+        return;
+      }
+      if (cmd === "ai") {
+        const promptText = args.join(" ").trim();
+        if (!promptText) {
+          const st = await ollamaManager.getStatus();
+          log(
+            `ChatAI: ${st.serverRunning ? "Online" : "Offline"} | Model: ${st.config.model || st.hardware.recommendedModel} | Auto-reply: ${st.config.enabled ? "ON" : "OFF"} | Agent: ${st.config.agentEnabled ? "ON" : "OFF"}`,
+          );
+          return;
+        }
+        log(`ChatAI: Generating reply for "${promptText}"...`);
+        const aiRes = await runAiReply({
+          sender: sessionState.mcName || sessionState.username || "User",
+          message: promptText,
+          bypassCooldown: true,
+        });
+        if (aiRes.ok) {
+          logAiResult(aiRes, "Server");
+          if (bot && typeof bot.chat === "function") {
+            aiChatQueue.send(aiRes.parts?.length ? aiRes.parts : [aiRes.reply]);
+          }
+        } else {
+          log(
+            aiRes.silent
+              ? "ChatAI: Model chose not to reply"
+              : `ChatAI error: ${aiRes.error}`,
+          );
+        }
+        return;
+      }
+      if (!bot || !bot.entity) {
+        log(`Console (!${cmd}): Connect a bot first`);
+        return;
+      }
+      if (cmd === "pos" || cmd === "xyz") {
+        const p = bot.entity.position;
+        log(
+          `Console: XYZ (${Math.floor(p.x)}, ${Math.floor(p.y)}, ${Math.floor(p.z)}) in ${bot.game?.dimension || "overworld"}`,
+        );
+      } else if (cmd === "hp" || cmd === "status") {
+        log(
+          `Console: HP ${(bot.health ?? 0).toFixed(1)}/20 | Food ${bot.food ?? 0}/20 | Lv ${bot.experience?.level ?? 0} | Ping ${bot.player?.ping ?? 0}ms`,
+        );
+      } else if (cmd === "signs" || cmd === "sign") {
+        const signs = scanNearbySigns(bot, { maxDistance: 24, maxCount: 16 });
+        cachedSigns = signs;
+        if (signs.length === 0) {
+          log("Console: No signs detected within 24 blocks");
+          return;
+        }
+        const query = args.join(" ").trim().toLowerCase();
+        if (!query) {
+          for (const s of signs) {
+            const label = s.text || `(${s.name} — empty)`;
+            log(`Sign (${s.x}, ${s.y}, ${s.z}) [${s.distance}m]: ${label}`);
+          }
+        } else {
+          const match = signs.find(
+            (s) =>
+              s.text.toLowerCase().includes(query) ||
+              `${s.x} ${s.y} ${s.z}` === query,
+          );
+          if (!match) {
+            log(`Console: No nearby sign matching "${query}"`);
+          } else {
+            await handleBotControl({
+              action: "sign-action",
+              subAction: "interact",
+              x: match.x,
+              y: match.y,
+              z: match.z,
+            });
+          }
+        }
+      } else if (cmd === "close") {
+        await handleInventoryAction({ action: "container-close" });
+      } else if (cmd === "gear") {
+        await handleInventoryAction({ action: "auto-gear" });
+      } else if (cmd === "gearup") {
+        const tierArg = (args[0] || "diamond").toLowerCase();
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          await mainWindow.webContents
+            .executeJavaScript(
+              `(() => {
+                const inp = document.getElementById("tier-GearUp");
+                if (inp) {
+                  inp.value = ${JSON.stringify(tierArg)};
+                  inp.dispatchEvent(new Event("input", { bubbles: true }));
+                }
+              })()`,
+            )
+            .catch(() => {});
+        }
+        if (!activeScripts.has("GearUp")) {
+          const runner = scriptFunctions.get("GearUp");
+          if (runner) {
+            activeScripts.add("GearUp");
+            sendToRenderer("script-state", "GearUp", true);
+            runner();
+          }
+        }
+        log(`GearUp: Started progression to ${tierArg} tier`);
+      } else if (cmd === "weapon") {
+        const w = await equipBestWeapon(bot, { saveLowDurability: true });
+        log(w ? `Console: Equipped ${w.name}` : "Console: No weapon found");
+      } else if (cmd === "tool" && args[0]) {
+        const bName = args[0].toLowerCase().replace(/^minecraft:/, "");
+        const bType = bot.registry?.blocksByName?.[bName];
+        if (bType) {
+          const fakeBlock = { name: bName, material: bType.material };
+          const t = await equipBestToolForBlock(bot, fakeBlock);
+          log(
+            t
+              ? `Console: Equipped ${t.name} for ${bName}`
+              : `Console: No tool found for ${bName}`,
+          );
+        } else {
+          log(`Console: Unknown block "${bName}"`);
+        }
+      } else if (cmd === "goto" && args.length >= 2) {
+        const { goals } = loadLibraries();
+        const x = Number(args[0]);
+        const y =
+          args.length >= 3
+            ? Number(args[1])
+            : Math.floor(bot.entity.position.y);
+        const z = args.length >= 3 ? Number(args[2]) : Number(args[1]);
+        if (
+          Number.isFinite(x) &&
+          Number.isFinite(y) &&
+          Number.isFinite(z) &&
+          bot.pathfinder
+        ) {
+          bot.pathfinder.setGoal(new goals.GoalBlock(x, y, z));
+          log(`Console: Pathing to (${x}, ${y}, ${z})`);
+        }
+      } else if (cmd === "follow" && args[0]) {
+        await handleBotControl({
+          action: "entity-action",
+          username: args[0],
+          subAction: "follow",
+        });
+      } else if (cmd === "guard" && args[0]) {
+        await handleBotControl({
+          action: "entity-action",
+          username: args[0],
+          subAction: "guard",
+        });
+      } else if (cmd === "hunt" && args[0]) {
+        await handleBotControl({
+          action: "entity-action",
+          username: args[0],
+          subAction: "hunt",
+        });
+      } else if (cmd === "stop") {
+        await handleBotControl({ action: "stop-all" });
+      } else if (cmd === "dropall") {
+        await handleInventoryAction({ action: "drop-all" });
+      } else if (cmd === "respawn") {
+        await handleBotControl({ action: "respawn" });
+      } else {
+        log(`Console: Unknown command "!${cmd}". Type !help for commands.`);
+      }
+      return;
+    }
+
+    if (!bot || typeof bot.chat !== "function") {
+      log("Cannot send chat: Bot is not connected");
+      return;
+    }
+    bot.chat(msg);
+  });
+
+  ipcMain.on("on-script-toggle-on", (_event, scriptId) => {
+    const id = String(scriptId || "");
+    if (!scriptFunctions.has(id)) return;
+    sessionLogger.record("UI Click", `Toggled ON script: ${id}`, "");
+    pushSessionLogStatus();
+    const tempLogText = "Toggled on ";
+    clearLog(tempLogText);
+    log(tempLogText + id);
+    if (!startScriptByName(id)) sendToRenderer("script-state", id, true);
+  });
+
+  ipcMain.on("on-script-toggle-off", (_event, scriptId) => {
+    const id = String(scriptId || "");
+    if (!stopScriptByName(id)) return;
+    sessionLogger.record("UI Click", `Toggled OFF script: ${id}`, "");
+    pushSessionLogStatus();
+    if (
+      (id === "Guard" && activeRadarTarget.subAction === "guard") ||
+      (id === "Hunt" && activeRadarTarget.subAction === "hunt")
+    ) {
+      activeRadarTarget = { subAction: "", username: "", entityId: null };
+    }
+    const tempLogText = "Toggled off ";
+    clearLog(tempLogText);
+    log(tempLogText + id);
+  });
+
+  // --- Ollama Chat AI IPC Handlers ---
+  ipcMain.handle("ollama-get-status", async () => {
+    const st = await ollamaManager.getStatus();
+    return st;
+  });
+
+  ipcMain.handle("ollama-save-config", async (_event, partial = {}) => {
+    const flagChanges = {};
+    const rest = { ...(partial || {}) };
+    for (const [scriptId, flag] of Object.entries(AI_SCRIPT_FLAGS)) {
+      if (typeof rest[flag] === "boolean") {
+        flagChanges[scriptId] = rest[flag];
+        delete rest[flag];
       }
     }
+    const updated = ollamaManager.saveConfig(rest);
+    // Preload a newly chosen model so the next reply is fast.
+    if (ollamaManager.isActive() && ("model" in rest || "agentModel" in rest)) {
+      if (updated.enabled) ollamaManager.warmUp(ollamaManager.resolveModel());
+      if (updated.agentEnabled)
+        ollamaManager.warmUp(ollamaManager.resolveAgentModel());
+    }
+    sessionLogger.record(
+      "UI Click",
+      "Updated ChatAI Config",
+      `Model: ${updated.model}, Trigger: ${updated.triggerMode}, Split: ${updated.splitMessages}`,
+    );
+    pushSessionLogStatus();
+    for (const [scriptId, on] of Object.entries(flagChanges)) {
+      if (on && !startScriptByName(scriptId)) {
+        // Script file missing: still honour the flag.
+        if (!scriptFunctions.has(scriptId)) setAiScriptFlag(scriptId, true);
+      } else if (!on) {
+        stopScriptByName(scriptId);
+        setAiScriptFlag(scriptId, false);
+      }
+    }
+    const st = await ollamaManager.getStatus();
+    sendToRenderer("ollama-status", st);
+    return st;
+  });
+
+  ipcMain.handle("ollama-auto-setup", async (_event, payload = {}) => {
+    const preferredModel = String(payload?.model || "").trim();
+    sessionLogger.record(
+      "UI Click",
+      "Clicked Ollama Auto-Setup",
+      preferredModel || "Recommended model",
+    );
+    pushSessionLogStatus();
+    log(
+      `ChatAI: Starting Auto-Setup (${preferredModel || "recommended model"})...`,
+    );
+    const res = await ollamaManager.autoSetup({
+      preferredModel,
+      onProgress: (prog) => {
+        sendToRenderer("ollama-progress", prog);
+      },
+    });
+    const st = await ollamaManager.getStatus();
+    sendToRenderer("ollama-status", st);
+    if (res.ok) {
+      log(`ChatAI: Auto-Setup complete — ${res.model} is ready!`);
+      sessionLogger.record(
+        "AI Setup",
+        "Ollama Auto-Setup Complete",
+        `Model ready: ${res.model}`,
+      );
+    } else {
+      log(`ChatAI setup error: ${res.error}`);
+      sessionLogger.record("AI Setup", "Ollama Auto-Setup Error", res.error);
+    }
+    pushSessionLogStatus();
+    return { ...res, status: st };
+  });
+
+  ipcMain.handle("ollama-pull-model", async (_event, modelName) => {
+    const clean = String(modelName || "").trim();
+    sessionLogger.record("UI Click", `Pulling Ollama model: ${clean}`, "");
+    pushSessionLogStatus();
+    const startRes = await ollamaManager.ensureServerRunning((prog) =>
+      sendToRenderer("ollama-progress", prog),
+    );
+    if (!startRes.ok) {
+      return {
+        ok: false,
+        error: startRes.error,
+        status: await ollamaManager.getStatus(),
+      };
+    }
+    const res = await ollamaManager.pullModel(
+      clean,
+      (prog) => sendToRenderer("ollama-progress", prog),
+      { makeActive: true },
+    );
+    const st = await ollamaManager.getStatus();
+    sendToRenderer("ollama-status", st);
+    if (res.ok) {
+      log(`ChatAI: Pulled model ${clean}`);
+    } else {
+      log(`ChatAI pull error: ${res.error}`);
+    }
+    return { ...res, status: st };
+  });
+
+  ipcMain.handle("ollama-test-prompt", async (_event, payload = {}) => {
+    const prompt = String(payload?.prompt || "hey, what are you doing?").trim();
+    const model = String(payload?.model || "").trim();
+    sessionLogger.record(
+      "UI Click",
+      "Tested ChatAI Prompt",
+      `Model: ${model || ollamaManager.config.model} | Prompt: "${prompt}"`,
+    );
+    pushSessionLogStatus();
+
+    await ollamaManager.ensureServerRunning((prog) =>
+      sendToRenderer("ollama-progress", prog),
+    );
+    const res = await runAiReply({
+      sender:
+        payload?.sender ||
+        sessionState.mcName ||
+        sessionState.username ||
+        "Player",
+      message: prompt,
+      overrideModel: model,
+      bypassCooldown: true,
+      forceAgent: Boolean(payload?.agent),
+    });
+    if (res.ok) {
+      sessionLogger.record(
+        "AI Reply",
+        `Test Reply (${res.model})`,
+        `"${res.reply}" (${res.latencyMs}ms)`,
+      );
+      if (payload?.sendToServer && bot && typeof bot.chat === "function") {
+        aiChatQueue.send(res.parts?.length ? res.parts : [res.reply]);
+        log(`ChatAI ➙ Server: ${res.reply}`);
+      }
+    }
+    pushSessionLogStatus();
+    return res;
+  });
+
+  // --- Script Studio IPC Handlers ---
+  let studioAbort = null;
+
+  ipcMain.handle("studio-get-init", () => ({
+    templates: scriptStudio.listTemplates(),
+    docs: scriptStudio.getDocsStatus(),
+    customScripts: scriptStudio.listCustomScripts(resolveCustomPath("scripts")),
+    builtinScripts: Array.from(scriptSources.entries())
+      .filter(([, src]) => src.type === "default")
+      .map(([name]) => name),
+  }));
+
+  ipcMain.handle("studio-docs-download", async (_event, payload = {}) => {
+    sendToRenderer("studio-docs-status", {
+      ...scriptStudio.getDocsStatus(),
+      downloading: true,
+    });
+    const res = await scriptStudio.downloadDocs({
+      force: Boolean(payload.force),
+    });
+    sendToRenderer("studio-docs-status", res.status);
+    if (!res.ok) log(`Studio: Docs download failed (${res.error})`);
+    else if (!res.skipped) log(`Studio: Mineflayer docs updated`);
+    return res;
+  });
+
+  ipcMain.handle("studio-docs-search", (_event, query) =>
+    scriptStudio.searchDocs(String(query || ""), 60),
+  );
+
+  ipcMain.handle("studio-docs-section", (_event, id) =>
+    scriptStudio.getSection(String(id || "")),
+  );
+
+  ipcMain.handle("studio-validate", (_event, code) =>
+    scriptStudio.validateScript(String(code || "")),
+  );
+
+  ipcMain.handle("studio-open-script", (_event, file) =>
+    scriptStudio.readCustomScript(resolveCustomPath("scripts"), file),
+  );
+
+  ipcMain.handle("studio-save", async (_event, payload = {}) => {
+    const code = String(payload.code || "");
+    const check = scriptStudio.validateScript(code);
+    if (/^Syntax/.test(check.error || "")) return { ok: false, ...check };
+    const name = check.name;
+    if (!name) {
+      return {
+        ok: false,
+        error: 'Add a name, e.g. info = { name: "MyScript" }',
+      };
+    }
+
+    const existing = scriptSources.get(name);
+    if (existing && existing.type === "default") {
+      return {
+        ok: false,
+        error: `"${name}" is a built-in script name, pick another`,
+      };
+    }
+
+    const dir = resolveCustomPath("scripts");
+    fs.mkdirSync(dir, { recursive: true });
+    const fileName = `${scriptStudio.slugify(payload.file || name)}.js`;
+    const fullPath = path.join(dir, fileName);
+    if (fs.existsSync(fullPath) && !payload.overwrite) {
+      return {
+        ok: false,
+        exists: true,
+        file: fileName,
+        error: `${fileName} already exists`,
+      };
+    }
+    if (existing && existing.fullPath !== fullPath) {
+      return {
+        ok: false,
+        error: `${path.basename(existing.fullPath)} already uses the name "${name}"`,
+      };
+    }
+
+    // Same file previously registered under another name: drop the old card.
+    for (const [oldName, src] of Array.from(scriptSources.entries())) {
+      if (src.fullPath === fullPath && oldName !== name) {
+        stopScriptByName(oldName);
+        scriptFunctions.delete(oldName);
+        scriptSources.delete(oldName);
+        sendToRenderer("remove-script", oldName);
+      }
+    }
+    stopScriptByName(name);
+    fs.writeFileSync(fullPath, code, "utf8");
+    sessionLogger.record("Studio", `Saved script ${fileName}`, name);
+    pushSessionLogStatus();
+    try {
+      registerScriptFile(fullPath, "custom");
+    } catch (err) {
+      return {
+        ok: false,
+        saved: true,
+        file: fileName,
+        error: `Saved, but it failed to load: ${err.message}`,
+      };
+    }
+    log(`Studio: Saved ${fileName} → ${name} is in the Scripts tab`);
+    return {
+      ok: true,
+      file: fileName,
+      name,
+      warnings: check.problems,
+      customScripts: scriptStudio.listCustomScripts(dir),
+    };
+  });
+
+  ipcMain.handle("studio-generate", async (_event, payload = {}) => {
+    const request = String(payload.prompt || "").trim();
+    if (!request)
+      return { ok: false, error: "Describe what the script should do" };
+    if (studioAbort) studioAbort.abort();
+    const ctrl = new AbortController();
+    studioAbort = ctrl;
+    const progress = (p) => sendToRenderer("studio-gen-progress", p);
+
+    try {
+      progress({ stage: "starting", message: "Checking local Ollama..." });
+      let st = await ollamaManager.getStatus();
+      if (!st.installed) {
+        const inst = await ollamaManager.installOllamaBinary(progress);
+        if (!inst.ok) return { ok: false, error: inst.error };
+      }
+      const started = await ollamaManager.ensureServerRunning(progress);
+      if (!started.ok) return { ok: false, error: started.error };
+      st = await ollamaManager.getStatus();
+
+      const model = String(
+        payload.model || ollamaManager.resolveScriptModel(st.installedModels),
+      ).trim();
+      const installed = st.installedModels.some(
+        (m) => m.name === model || m.name === `${model}:latest`,
+      );
+      if (!installed) {
+        const pulled = await ollamaManager.pullModel(model, progress);
+        sendToRenderer("ollama-status", await ollamaManager.getStatus());
+        if (!pulled.ok) return { ok: false, error: pulled.error, model };
+      }
+      if (ctrl.signal.aborted) return { ok: false, error: "Cancelled" };
+
+      progress({
+        stage: "writing",
+        message: `Writing with ${model}...`,
+        text: "",
+      });
+      sessionLogger.record("Studio", "Generate script", `${model}: ${request}`);
+      const messages = scriptStudio.buildGenerationMessages({
+        request,
+        currentCode: payload.currentCode || "",
+      });
+      let lastSent = 0;
+      const res = await ollamaManager.streamChat({
+        model,
+        messages,
+        signal: ctrl.signal,
+        options: { temperature: 0.2, num_predict: 2048, num_ctx: 8192 },
+        onToken: (text) => {
+          const now = Date.now();
+          if (now - lastSent > 100) {
+            lastSent = now;
+            progress({
+              stage: "writing",
+              message: `Writing with ${model}...`,
+              text,
+            });
+          }
+        },
+      });
+      if (!res.ok) return { ok: false, error: res.error, model };
+      const code = scriptStudio.extractCode(res.text);
+      return {
+        ok: true,
+        code,
+        model,
+        validation: scriptStudio.validateScript(code),
+      };
+    } finally {
+      if (studioAbort === ctrl) studioAbort = null;
+    }
+  });
+
+  ipcMain.on("studio-generate-cancel", () => {
+    if (studioAbort) studioAbort.abort();
+  });
+
+  // --- Session Markdown Logger IPC Handlers ---
+  ipcMain.handle("session-log-get-status", () => sessionLogger.getStatus());
+
+  ipcMain.on("open-session-log", (_event, filePath) => {
+    const target = filePath || sessionLogger.currentFilePath;
+    sessionLogger.flush();
+    if (target && fs.existsSync(target)) {
+      openWithCleanEnv(target);
+    } else if (sessionLogger.logsDir) {
+      openWithCleanEnv(sessionLogger.logsDir);
+    }
+  });
+
+  ipcMain.on("open-logs-folder", () => {
+    sessionLogger.flush();
+    const dir = sessionLogger.logsDir || resolveLogsDir();
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      openWithCleanEnv(dir);
+    } catch (_) {}
+  });
+
+  ipcMain.on("record-ui-event", (_event, payload = {}) => {
+    if (!payload || !payload.event) return;
+    sessionLogger.record(
+      payload.category || "UI Click",
+      payload.event,
+      payload.details || "",
+    );
+    pushSessionLogStatus();
+  });
+
+  ipcMain.on("sync-mineflayer", async () => {
+    log("Checking npm for latest Mineflayer & minecraft-data...");
+    const info = await syncLatestMineflayer({
+      onLog: log,
+      onUpdated: (updated) => sendToRenderer("runtime-info", updated),
+    });
+    sendToRenderer("runtime-info", info);
+    log(
+      `Mineflayer v${info.mineflayerVersion} is up to date (MC ${info.versionRange})`,
+    );
+  });
+
+  ipcMain.on("open-custom-folder", () => {
+    const scriptsDir = resolveCustomPath("scripts");
+    try {
+      fs.mkdirSync(scriptsDir, { recursive: true });
+      openWithCleanEnv(scriptsDir);
+    } catch (_) {}
+  });
+
+  ipcMain.on("open-external", (_event, url) => {
+    if (!/^https?:\/\//.test(String(url || ""))) {
+      console.error("URL must include http:// or https://");
+      return;
+    }
+    openWithCleanEnv(String(url));
+  });
+
+  ipcMain.on("update-install", async () => {
+    const send = (pct) => sendToRenderer("update-progress", pct);
+    const result = await updater.installUpdate(send);
+    sendToRenderer("update-done", result);
   });
 }
 
-app.on("ready", createMainWindow);
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) app.quit();
+
+app.on("second-instance", () => {
+  const [win] = BrowserWindow.getAllWindows();
+  if (win) {
+    if (win.isMinimized()) win.restore();
+    win.focus();
+  }
+});
+
+if (gotLock) {
+  app.whenReady().then(() => {
+    process.env.MCBP_VERSION = app.getVersion();
+    ollamaManager.init(app.getPath("userData"));
+    scriptStudio.init({
+      userDataDir: app.getPath("userData"),
+      baseDirs: [__dirname],
+    });
+    sessionLogger.init(resolveLogsDir(), { appVersion: app.getVersion() });
+    registerIpcHandlers();
+    createWindow();
+
+    updater.start((info) => {
+      sendToRenderer("update-available", info);
+    });
+
+    app.on("activate", () => {
+      if (process.platform === "darwin") {
+        app.dock.setIcon(ICON_PNG);
+      }
+      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    });
+  });
+}
+
+app.on("before-quit", () => {
+  sessionLogger.finalize();
+});
+
+app.on("window-all-closed", () => {
+  sessionLogger.finalize();
+  closeMsaPopup();
+  disconnectBot();
+  if (process.platform !== "darwin") {
+    app.quit();
+  }
+});
