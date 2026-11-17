@@ -1,4 +1,7 @@
-let info = {
+const { loadLibraries } = require("../runtime");
+const { configureSmartMovements, clearPathfinderGoal } = require("../botUtils");
+
+const info = {
   name: "GoTo",
   default: { interval: 2500 },
   options: [
@@ -6,6 +9,16 @@ let info = {
       type: "checkbox",
       label: "Repeat",
       id: "repeat",
+    },
+    {
+      type: "checkbox",
+      label: "Dig Obstacles",
+      id: "dig",
+    },
+    {
+      type: "checkbox",
+      label: "Pillar / Bridge",
+      id: "bridge",
     },
     {
       type: "input",
@@ -25,47 +38,75 @@ let info = {
   ],
 };
 
-function script(bot, log, clearLog, getOption, scriptRepeater) {
-  const { goals } = require("mineflayer-pathfinder");
-  let x;
-  let y;
-  let z;
-
-  function toNumber(num) {
-    let parsed = parseInt(num);
-    if (!isNaN(parsed)) return parsed;
-    else return false;
+function toNumber(num) {
+  if (num === undefined || num === null || String(num).trim() === "") {
+    return null;
   }
-  getOption("x", info.name).then((inputX) => {
-    x = toNumber(inputX);
-  });
-  getOption("z", info.name).then((inputZ) => {
-    z = toNumber(inputZ);
-  });
-  getOption("y", info.name).then((inputY) => {
-    y = toNumber(inputY);
+  const parsed = Number(num);
+  return Number.isFinite(parsed) ? Math.floor(parsed) : null;
+}
+
+async function script(bot, log, clearLog, getOption, scriptRepeater) {
+  if (!bot || !bot.entity || !bot.pathfinder) {
+    clearLog("GoTo:");
+    log("GoTo: Connect a bot first");
+    return;
+  }
+
+  const { goals, mcData, Movements } = loadLibraries();
+  const [inputX, inputY, inputZ, repeat, digOpt, bridgeOpt] = await Promise.all(
+    [
+      getOption("x", info.name),
+      getOption("y", info.name),
+      getOption("z", info.name),
+      getOption("repeat", info.name),
+      getOption("dig", info.name),
+      getOption("bridge", info.name),
+    ],
+  );
+
+  const x = toNumber(inputX);
+  const z = toNumber(inputZ);
+  let y = toNumber(inputY);
+
+  if (x === null || z === null) {
+    clearLog("is not a valid coordinate");
+    log(`GoTo: X and Z coordinates are required`);
+    return;
+  }
+
+  if (y === null) {
+    y = Math.floor(bot.entity.position.y);
+  }
+
+  configureSmartMovements(bot, mcData, Movements, {
+    allowSprinting: true,
+    allowParkour: bridgeOpt === "on",
+    canDig: digOpt === "on",
+    allowPillaring: bridgeOpt === "on",
+    allowBridging: bridgeOpt === "on",
   });
 
-  getOption("repeat", info.name).then((r) => {
-    if (x === false || z === false) {
-      let logMsg = " is not a number";
-      clearLog(logMsg);
-      if (z === false) log(z + logMsg);
-      else if (x === false) log(x + logMsg);
-      else log("ERROR: " + info.name + " crashed");
+  function goTo() {
+    if (!bot || !bot.entity || !bot.pathfinder) return;
+    clearLog("Going to XYZ: ");
+    log(`Going to XYZ: ${x}, ${y}, ${z}`);
+    bot.pathfinder.setGoal(new goals.GoalBlock(x, y, z));
+  }
+
+  try {
+    goTo();
+    if (repeat === "on") {
+      await scriptRepeater(goTo, info.default.interval);
     }
-    if (y === false) y = bot.entity.position.y;
-    function goTo() {
-      clearLog("Going to XYZ: ");
-      log(`Going to XYZ: ${x}, ${y}, ${z}`);
-      bot.pathfinder.setGoal(new goals.GoalBlock(x, y, z));
+  } finally {
+    if (bot && bot.pathfinder) {
+      if (repeat === "on") {
+        clearPathfinderGoal(bot);
+      }
+      configureSmartMovements(bot, mcData, Movements);
     }
-    if (r === "on") {
-      scriptRepeater(goTo, info.default.interval).then(() => {
-        return;
-      });
-    } else goTo();
-  });
+  }
 }
 
 module.exports = {

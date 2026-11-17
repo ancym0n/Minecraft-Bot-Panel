@@ -1,105 +1,137 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="stylesheet" href="../css/main.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Poppins:ital,wght@0,300;0,400;1,300&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;700;800&family=Poppins:ital,wght@0,300;0,400;0,600;0,700;1,300&display=swap"
       rel="stylesheet"
     />
-    <title></title>
+    <link rel="stylesheet" href="../css/default.css" />
+    <link rel="stylesheet" href="../css/auth.css" />
+    <link rel="stylesheet" href="../css/resize.css" />
+    <link rel="shortcut icon" href="../img/logo.png" type="image/png" />
+    <script src="../js/main.js" defer></script>
+    <script src="../js/auth.js" defer></script>
+    <title>MCBP &gt; Login &gt; Microsoft</title>
   </head>
-  <body>
-    <div class="centerLogin">
-      <img id="img-mcbp" src="../img/mcbp.svg" alt="MCBP Logo" />
-      <div class="loginField">
-        <form id="mailForm">
-          <label for="email">email:</label>
-          <input type="email" id="email" spellcheck="false" required />
-        </form>
-        <form id="passForm">
-          <label for="password">password:</label>
-          <input type="password" id="password" spellcheck="false" required />
-        </form>
-      </div>
-      <p id="continue" class="mButton">Continue</p>
-    </div>
-    <style>
-      #mcbp {
-        margin-top: 85px;
-      }
-      label {
-        font-size: 31px;
-      }
-      .mButton {
-        font-size: 25px;
-      }
-      form {
-        width: 460px;
-        position: relative;
-        display: flex;
-        align-items: center;
-      }
-      #mailForm {
-        margin-top: 40px;
-        margin-bottom: 5px;
-      }
-      #passForm {
-        margin-bottom: 20px;
-      }
+  <body data-page="microsoft">
+    <main class="centerLogin">
+      <section id="banner-logo">
+        <img id="img-mcbp" src="../img/mcbp-title.svg" alt="MCBP Logo" />
+      </section>
 
-      input {
-        border: none;
-        border-bottom: 2px solid var(--font-main-color);
-        background-color: var(--background-color);
-        color: var(--font-user-color);
-        font-size: 25px;
-        font-weight: lighter;
-        border-radius: 3px;
-        width: 100%;
-        margin-left: 10px;
-      }
+      <section class="auth-card auth-card-msa">
+        <div>
+          <h1 id="h1-welcome">Microsoft Login</h1>
+          <p class="auth-subtitle">
+            Passwordless Xbox Live &amp; Minecraft Java OAuth2 authentication
+          </p>
+        </div>
 
-      input:focus {
-        outline: none;
-        background-color: var(--button-background-color);
-      }
-    </style>
-    <script defer>
-      document.getElementById("email").addEventListener("input", () => {
-        const inputField = document.getElementById("email");
-        if (inputField.value.includes(" ")) {
-          inputField.value = inputField.value.replace(" ", "");
-        }
-      });
+        <div id="msa-saved-section" class="msa-saved-section" hidden>
+          <span class="field-label">Saved Microsoft Accounts</span>
+          <div id="msa-saved-list" class="msa-saved-list"></div>
+        </div>
 
-      function submit() {
-        const email = document.getElementById("email").value;
-        const password = document.getElementById("password").value;
-        window.api.sendFormData({ email, password });
-      }
-      document
-        .querySelector("#mailForm")
-        .addEventListener("submit", (event) => {
-          event.preventDefault();
-          submit();
-        });
-      document
-        .querySelector("#passForm")
-        .addEventListener("submit", (event) => {
-          event.preventDefault();
-          submit();
-        });
-      document.querySelector(".mButton").addEventListener("click", (event) => {
-        submit();
-      });
+        <div class="loginField">
+          <form id="mailForm">
+            <label for="email"
+              >Account Label or Email (for profile cache)</label
+            >
+            <input
+              type="text"
+              id="email"
+              placeholder="e.g. name@outlook.com or MainAccount"
+              spellcheck="false"
+            />
+          </form>
 
-      window.api.onSetVersion((version) => {
-        document.querySelector(
-          "title"
-        ).innerHTML = `MCBP v${version} > Login > Microsoft`;
-      });
-    </script>
+          <div id="msa-code-box" class="msa-code-box" hidden>
+            <div class="msa-code-header">
+              <span class="msa-code-title">Microsoft Device Code</span>
+              <span id="msa-copy-badge" class="msa-copy-badge"
+                >Copied to clipboard</span
+              >
+            </div>
+            <div
+              id="msa-code-value"
+              class="msa-code-value"
+              title="Click to copy code"
+            >
+              --------
+            </div>
+            <div class="msa-code-actions">
+              <button
+                id="msa-open-popup"
+                type="button"
+                class="mButton msa-action-btn"
+              >
+                Sign In Inside App
+              </button>
+              <button
+                id="msa-open-browser"
+                type="button"
+                class="mButton secondary msa-action-btn"
+              >
+                Open in Browser
+              </button>
+            </div>
+          </div>
+
+          <p id="msa-status-text" class="auth-hint">
+            Click <b>Sign In with Microsoft</b> to authenticate in an app popup
+            or browser (tokens are cached automatically so you stay signed in).
+          </p>
+        </div>
+
+        <div class="auth-actions auth-actions-msa">
+          <div id="back-btn" class="back-button">← Back</div>
+          <p
+            id="quick-continue"
+            class="mButton secondary"
+            title="Enter panel immediately and authenticate when connecting to a server"
+          >
+            Auth on Connect
+          </p>
+          <p id="continue" class="mButton">Sign In with Microsoft</p>
+        </div>
+      </section>
+    </main>
+
+    <aside id="update-toast" role="status" hidden>
+      <span id="update-text"></span>
+      <button id="update-install" type="button">Update</button>
+      <button id="update-later" type="button" class="ghost">Later</button>
+    </aside>
+
+    <footer id="credit" class="selfpromo">
+      <span>Made by</span>
+      <a href="https://github.com/ancym0n" target="_blank" rel="noopener"
+        >ancymon</a
+      >
+      <span class="credit-sep">·</span>
+      <a
+        class="github"
+        href="https://github.com/ancym0n/Minecraft-Bot-Panel"
+        target="_blank"
+        rel="noopener"
+      >
+        <img src="../img/github-mark-white.svg" alt="" />
+        <span>Source Code</span>
+      </a>
+      <span class="credit-sep">·</span>
+      <a
+        href="https://github.com/ancym0n/Minecraft-Bot-Panel/issues"
+        target="_blank"
+        rel="noopener"
+        class="report-link"
+        >Report a bug</a
+      >
+      <span class="credit-sep">·</span>
+      <span id="version">v1.0.0</span>
+    </footer>
   </body>
 </html>

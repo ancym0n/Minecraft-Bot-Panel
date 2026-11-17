@@ -1,0 +1,206 @@
+/* ---------------------------------------------------------------
+   Responsive behaviour (shared by login screens and the panel)
+   Everything is sized in rem, so scaling the root font keeps the
+   whole interface proportional from small windows to 4K.
+   --------------------------------------------------------------- */
+
+html {
+  font-size: clamp(13px, 0.42vw + 10.5px, 19px);
+}
+
+/* Wide screens: a little more breathing room */
+@media (min-width: 1500px) {
+  .panel-dashboard {
+    max-width: 96rem;
+    gap: 1.25rem;
+  }
+
+  .panel-col {
+    gap: 1.25rem;
+  }
+}
+
+/* Medium: tighten the connection form */
+@media (max-width: 1100px) {
+  .panel-dashboard {
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    gap: 0.8rem;
+  }
+
+  .panel-col {
+    gap: 0.8rem;
+  }
+
+  .vital-bar {
+    width: 3.4rem;
+  }
+
+  .radar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Narrow or short windows: stack the columns and let both the page and inner panels scroll */
+@media (max-width: 880px), (max-height: 620px) {
+  html,
+  body {
+    height: auto;
+    min-height: 100vh;
+    min-height: 100svh;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+
+  .panel-dashboard {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workspace-card {
+    min-height: 22rem;
+    max-height: 36rem;
+  }
+
+  .console-card {
+    min-height: 18rem;
+    max-height: 28rem;
+  }
+
+  .div-actions,
+  #tab-control,
+  #tab-inventory,
+  #tab-ai {
+    max-height: 26rem;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .pre-logs,
+  .pre-chat {
+    min-height: 11rem;
+    max-height: 20rem;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .radar-list {
+    max-height: 8.5rem;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+}
+
+/* Small windows */
+@media (max-width: 640px) {
+  body {
+    padding: 0.7rem 0.65rem 0.6rem;
+    gap: 0.7rem;
+  }
+
+  .panel-card {
+    padding: 0.75rem 0.8rem;
+  }
+
+  .connect-form {
+    grid-template-columns: minmax(0, 1fr) 6.5rem;
+  }
+
+  .connect-buttons {
+    grid-column: 1 / -1;
+  }
+
+  .connect-buttons .btn {
+    width: 100%;
+  }
+
+  .vitals {
+    gap: 0.5rem 0.8rem;
+  }
+
+  .vital-hand {
+    margin-left: 0;
+    flex-basis: 100%;
+  }
+
+  .pads,
+  .ai-form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ai-custom-pull {
+    width: 100%;
+  }
+
+  .ai-custom-pull .input-slim {
+    flex: 1;
+    width: auto;
+  }
+
+  .inv-equipment-row {
+    max-width: none;
+  }
+
+  .inv-item-label {
+    display: none;
+  }
+
+  .inv-grid {
+    gap: 0.2rem;
+  }
+
+  .tab {
+    padding: 0.34rem 0.65rem;
+  }
+
+  #credit {
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.3rem;
+  }
+
+  /* Login screens */
+  .auth-card {
+    padding: 1.15rem 1rem 1.3rem;
+  }
+
+  .div-buttons {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .auth-actions-msa {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .auth-actions-msa #continue {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 420px) {
+  .connect-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .div-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .toolbar {
+    flex-wrap: wrap;
+  }
+}
+
+/* Respect users who turn animations down */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .panel-dashboard,
+  #credit {
+    opacity: 1;
+  }
+}

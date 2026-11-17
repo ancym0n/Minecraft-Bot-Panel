@@ -1,0 +1,10 @@
+dist
+out
+tmp
+node_modules
+mineflayer-runtime
+Hidden
+.py
+package-lock.json
+build/installer
+custom/scripts/readme

@@ -1,46 +1,104 @@
 {
   "name": "minecraft-bot-panel",
-  "version": "0.1.0",
-  "description": "Minecraft Bot Panel",
+  "desktopName": "minecraft-bot-panel.desktop",
+  "version": "0.2.0",
   "main": "index.js",
-  "author": "ancym0n",
   "scripts": {
-    "start": "electron-forge start",
-    "package": "electron-forge package",
-    "make": "electron-forge make"
+    "start": "electron .",
+    "make": "electron-builder --linux AppImage zip --win nsis zip --x64",
+    "make:linux": "electron-builder --linux AppImage zip --x64",
+    "make:win": "electron-builder --win nsis zip --x64",
+    "update:mineflayer": "node src/js/syncVersions.js",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "keywords": [],
+  "author": {
+    "name": "ancymon",
+    "email": "ancym0n@users.noreply.github.com"
+  },
   "license": "GPL-3.0-only",
+  "description": "GUI-based Minecraft bot manager with custom script creation",
   "dependencies": {
-    "electron-squirrel-startup": "^1.0.1",
-    "minecraft-data": "^3.68.0",
-    "mineflayer": "^4.20.1",
+    "minecraft-data": "^3.119.0",
+    "mineflayer": "^4.39.0",
     "mineflayer-pathfinder": "^2.4.5"
   },
+  "devDependencies": {
+    "electron": "^34.0.2",
+    "electron-builder": "^26.18.0",
+    "prettier": "3.10.1"
+  },
+  "homepage": "https://github.com/ancym0n/Minecraft-Bot-Panel",
   "build": {
-    "appId": "com.ancymon.mcbp",
-    "productName": "MCBP",
+    "appId": "com.ancymon.minecraft-bot-panel",
+    "productName": "Minecraft Bot Panel",
+    "copyright": "Copyright © ancymon",
     "directories": {
-      "buildResources": "assets/icons"
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "artifactName": "MCBPv${version}-${os}.${arch}.${ext}",
+    "files": [
+      "index.js",
+      "package.json",
+      "src/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "custom",
+        "to": "custom",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "asar": true,
+    "linux": {
+      "target": [
+        "AppImage",
+        "zip"
+      ],
+      "icon": "build/logo.png",
+      "category": "Utility",
+      "maintainer": "ancymon",
+      "syncDesktopName": true,
+      "executableArgs": [
+        "--no-sandbox"
+      ]
+    },
+    "appImage": {
+      "artifactName": "Minecraft-Bot-Panel-${version}-x86_64.AppImage",
+      "compression": "gzip"
     },
     "win": {
-      "icon": "src/icons/icon.ico"
+      "target": [
+        "nsis",
+        "zip"
+      ],
+      "icon": "build/logo.ico"
     },
-    "linux": {
-      "icon": "src/icons/icon.png"
-    }
-  },
-  "devDependencies": {
-    "@electron-forge/cli": "^7.4.0",
-    "@electron-forge/maker-deb": "^7.4.0",
-    "@electron-forge/maker-rpm": "^7.4.0",
-    "@electron-forge/maker-squirrel": "^7.4.0",
-    "@electron-forge/maker-zip": "^7.4.0",
-    "@electron-forge/plugin-auto-unpack-natives": "^7.4.0",
-    "@electron-forge/plugin-fuses": "^7.4.0",
-    "@electron/fuses": "^1.8.0",
-    "@electron/packager": "^18.3.4",
-    "@electron/rebuild": "^3.6.0",
-    "electron": "^32.0.1"
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Minecraft Bot Panel",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "MCBPv${version}-win.x64-setup.exe",
+      "installerIcon": "build/logo.ico",
+      "uninstallerIcon": "build/logo.ico",
+      "installerHeaderIcon": "build/logo.ico",
+      "installerSidebar": "build/installer/sidebar.bmp",
+      "uninstallerSidebar": "build/installer/uninstallerSidebar.bmp",
+      "installerHeader": "build/installer/header.bmp",
+      "include": "build/installer.nsh"
+    },
+    "electronLanguages": [
+      "en-US"
+    ],
+    "compression": "normal"
   }
 }
