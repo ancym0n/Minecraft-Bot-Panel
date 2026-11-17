@@ -299,6 +299,9 @@
 }
 
 .field label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 0.68rem;
   font-weight: 800;
   letter-spacing: 0.04em;
@@ -440,12 +443,20 @@ body[data-conn="connecting"] #connect {
   display: inline-flex;
   align-items: center;
   gap: 0.2rem;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
   padding: 0.2rem;
   background-color: var(--bg-dark);
   border-radius: 12px;
 }
 
+.tabs::-webkit-scrollbar {
+  display: none;
+}
+
 .tab {
+  flex-shrink: 0;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -586,6 +597,11 @@ body[data-conn="connecting"] #connect {
 .script-container:has(.script-name-active) {
   border-color: rgba(123, 255, 208, 0.42);
   box-shadow: 0 4px 14px -4px rgba(123, 255, 208, 0.14);
+}
+
+.script-container.script-flash {
+  border-color: var(--green-color);
+  box-shadow: 0 0 0 3px rgba(123, 255, 208, 0.18);
 }
 
 .script-name {
@@ -1389,6 +1405,15 @@ input[type="checkbox"]:checked::after {
   gap: 0.45rem;
 }
 
+.ai-config-card .field input,
+.ai-test-card .input-slim,
+.studio-ai-card .input-slim,
+.studio-footer .input-slim {
+  padding: 0.4rem 0.65rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
 .ai-section-title {
   font-size: 0.82rem;
   font-weight: 800;
@@ -1404,36 +1429,279 @@ input[type="checkbox"]:checked::after {
 
 .ai-form-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) 5.5rem;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) 6.5rem;
   gap: 0.55rem;
   align-items: end;
 }
 
-.ai-select {
+/* --- Themed dropdowns (select + combo) ------------------------- */
+
+.dd {
+  position: relative;
+  min-width: 0;
+  width: 100%;
+}
+
+.dd-native {
+  display: none !important;
+}
+
+.dd-trigger {
   width: 100%;
   min-width: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
   padding: 0.4rem 0.65rem;
   font-family: inherit;
-  font-size: 0.78rem;
+  font-size: 0.8rem;
   font-weight: 700;
+  text-align: left;
   color: var(--title-color);
   background-color: var(--bg-dark);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   outline: none;
-  cursor: pointer;
-  transition: border-color 0.18s ease;
+  transition:
+    border-color 0.18s ease,
+    background-color 0.18s ease;
 }
 
-.ai-select:hover,
-.ai-select:focus {
+.dd-trigger:hover,
+.dd-trigger:focus-visible,
+.dd-open .dd-trigger {
   border-color: var(--line-strong);
+}
+
+.dd-trigger:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.dd-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: inherit;
+}
+
+.dd-chevron {
+  flex-shrink: 0;
+  width: 0.45rem;
+  height: 0.45rem;
+  margin-top: -0.2rem;
+  border-right: 2px solid var(--main-color);
+  border-bottom: 2px solid var(--main-color);
+  transform: rotate(45deg);
+  transition: transform 0.22s var(--spring-ease);
+}
+
+.dd-open .dd-chevron {
+  transform: translateY(0.2rem) rotate(225deg);
+}
+
+.dd-combo input {
+  padding-right: 2rem !important;
+}
+
+.dd-combo-toggle {
+  position: absolute;
+  top: 0;
+  right: 0.15rem;
+  bottom: 0;
+  width: 1.75rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+}
+
+.dd-combo-toggle:hover .dd-chevron {
+  border-color: var(--title-color);
+}
+
+.dd-menu {
+  position: fixed;
+  z-index: 1000;
+  max-width: min(22rem, calc(100vw - 12px));
+  padding: 0.3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background-color: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  box-shadow: 0 14px 32px -10px rgba(0, 0, 0, 0.65);
+  animation: ddReveal 0.16s var(--spring-ease);
+}
+
+.dd-menu-up {
+  animation-name: ddRevealUp;
+}
+
+@keyframes ddReveal {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes ddRevealUp {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.dd-group {
+  padding: 0.35rem 0.55rem 0.15rem;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--main-color);
+  opacity: 0.75;
+}
+
+.dd-option {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.38rem 0.55rem;
+  border-radius: 8px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--light-main-color);
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.dd-option:hover,
+.dd-option.dd-active {
+  background-color: var(--surface-3);
+  color: #ffffff;
+}
+
+.dd-option.dd-selected {
+  background-color: rgba(145, 113, 248, 0.22);
+  color: #ffffff;
+}
+
+.dd-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: inherit;
+}
+
+.dd-hint {
+  flex-shrink: 0;
+  font-size: 0.66rem;
+  font-weight: 800;
+  color: var(--main-color);
+  opacity: 0.85;
+}
+
+.dd-empty {
+  padding: 0.45rem 0.55rem;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: var(--main-color);
+  opacity: 0.7;
 }
 
 .ai-checkbox-strip {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.1rem;
   padding-top: 0.1rem;
+}
+
+.ai-toggle-group {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.ai-subsection {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid var(--line);
+}
+
+.ai-sub-title {
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--light-main-color);
+}
+
+.ai-form-grid.ai-form-grid-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.ai-sub-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.ai-sub-head .muted-text {
+  font-size: 0.7rem;
+}
+
+.ai-sub-head .muted-text.is-warn {
+  color: #ffd678;
+  opacity: 1;
+}
+
+.ai-form-grid.ai-form-grid-4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.ai-model-badge.is-tools {
+  background-color: rgba(255, 214, 120, 0.14);
+  color: #ffd678;
+}
+
+.ai-model-badge.is-code {
+  background-color: rgba(85, 255, 255, 0.12);
+  color: #8ff3f3;
+}
+
+.ai-test-agent {
+  flex-shrink: 0;
+}
+
+/* Selects inside script cards */
+.script-options .dd-trigger {
+  padding: 0.3rem 0.5rem;
+  font-size: 0.76rem;
 }
 
 .ai-models-section {
@@ -1499,7 +1767,7 @@ input[type="checkbox"]:checked::after {
 
 .ai-test-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 0.45rem;
   align-items: center;
 }
@@ -1510,6 +1778,302 @@ input[type="checkbox"]:checked::after {
   color: var(--light-main-color);
   line-height: 1.35;
   word-break: break-word;
+  white-space: pre-line;
+}
+
+/* --- Script Studio ---------------------------------------------- */
+
+.studio-toolbar {
+  justify-content: space-between;
+}
+
+.studio-picker {
+  flex: 0 1 15rem;
+  min-width: 0;
+}
+
+.studio-view {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  animation: paneEnter 0.22s var(--spring-ease);
+}
+
+.studio-view[hidden] {
+  display: none !important;
+}
+
+.studio-ai-card {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.6rem 0.7rem;
+  background-color: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.studio-ai-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 11rem) auto;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.studio-ai-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.studio-ai-meta .muted-text {
+  white-space: normal;
+  line-height: 1.35;
+}
+
+.studio-ai-meta .vital-bar {
+  flex: 0 0 5rem;
+}
+
+.studio-ai-card.is-busy {
+  border-color: var(--line-strong);
+}
+
+.studio-editor-wrap {
+  flex: 1;
+  min-height: 9rem;
+  min-width: 0;
+  display: flex;
+  background-color: var(--bg-dark);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  transition: border-color 0.18s ease;
+}
+
+.studio-editor-wrap:focus-within {
+  border-color: var(--line-strong);
+}
+
+.studio-gutter,
+.studio-editor {
+  font-family:
+    "JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace;
+  font-size: 0.76rem;
+  line-height: 1.55;
+}
+
+.studio-gutter {
+  flex-shrink: 0;
+  min-width: 2.6rem;
+  padding: 0.6rem 0.5rem 0.6rem 0.4rem;
+  text-align: right;
+  white-space: pre;
+  color: var(--main-color);
+  opacity: 0.45;
+  background-color: rgba(145, 113, 248, 0.05);
+  border-right: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.studio-gutter .is-error {
+  color: var(--red-color);
+  opacity: 1;
+}
+
+.studio-editor {
+  font-variant-ligatures: none;
+  flex: 1;
+  min-width: 0;
+  resize: none;
+  padding: 0.6rem 0.75rem;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--title-color);
+  caret-color: var(--accent-border);
+  white-space: pre;
+  overflow: auto;
+  tab-size: 2;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.studio-editor::selection {
+  background-color: rgba(145, 113, 248, 0.35);
+}
+
+.studio-footer {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.studio-check {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.74rem;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--main-color);
+}
+
+.studio-check.is-ok {
+  color: var(--green-color);
+}
+
+.studio-check.is-warn {
+  color: #ffd678;
+}
+
+.studio-check.is-error {
+  color: var(--red-color);
+}
+
+.studio-check .link-button {
+  margin-left: 0.4rem;
+}
+
+.studio-file {
+  flex: 0 1 10rem;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.studio-file-ext {
+  margin-right: 0.15rem;
+  font-size: 0.74rem;
+  font-weight: 800;
+  color: var(--main-color);
+}
+
+.studio-docs {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.4fr);
+  gap: 0.6rem;
+}
+
+.studio-docs-list {
+  max-height: none;
+  min-height: 0;
+}
+
+.studio-docs-list .radar-item {
+  cursor: pointer;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.05rem;
+}
+
+.studio-docs-list .radar-item.is-active {
+  background-color: rgba(145, 113, 248, 0.22);
+  border-color: var(--line-strong);
+}
+
+.studio-doc-path {
+  max-width: 100%;
+  font-size: 0.64rem;
+  font-weight: 700;
+  color: var(--main-color);
+  opacity: 0.75;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.studio-docs-reader {
+  min-height: 0;
+  padding: 0.65rem 0.8rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background-color: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--light-main-color);
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.studio-docs-reader * {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.studio-docs-reader h4 {
+  margin-bottom: 0.15rem;
+  font-size: 0.9rem;
+  color: var(--title-color);
+  word-break: break-word;
+}
+
+.studio-docs-reader .studio-doc-path {
+  display: block;
+  margin-bottom: 0.5rem;
+}
+
+.studio-docs-reader p,
+.studio-docs-reader ul {
+  margin: 0.35rem 0;
+  color: var(--light-main-color);
+}
+
+.studio-docs-reader ul {
+  padding-left: 1.1rem;
+}
+
+.studio-docs-reader li {
+  margin: 0.15rem 0;
+  font-weight: 700;
+  color: var(--light-main-color);
+}
+
+.studio-docs-reader code {
+  padding: 0.05rem 0.3rem;
+  border-radius: 5px;
+  background-color: var(--surface-3);
+  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+  font-size: 0.72rem;
+  color: #ffffff;
+}
+
+.studio-docs-reader pre {
+  flex: none;
+  margin: 0.45rem 0;
+  padding: 0.5rem 0.65rem;
+  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+  font-size: 0.72rem;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.studio-docs-reader pre code {
+  padding: 0;
+  background: none;
+}
+
+.studio-docs-reader a {
+  color: var(--accent-border);
+}
+
+.studio-docs-actions {
+  display: flex;
+  gap: 0.3rem;
+  margin-top: 0.6rem;
 }
 
 /* --- Console ---------------------------------------------------- */

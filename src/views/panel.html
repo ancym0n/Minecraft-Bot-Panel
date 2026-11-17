@@ -14,6 +14,7 @@
     <link rel="stylesheet" href="../css/resize.css" />
     <link rel="shortcut icon" href="../img/logo.png" type="image/png" />
     <script src="../js/main.js" defer></script>
+    <script src="../js/dropdown.js" defer></script>
     <script src="../js/panel.js" defer></script>
     <title>MCBP &gt; Panel</title>
   </head>
@@ -53,13 +54,10 @@
                 type="text"
                 id="version"
                 class="input-server-version"
-                list="mc-versions-list"
                 placeholder="Auto"
                 spellcheck="false"
+                autocomplete="off"
               />
-              <datalist id="mc-versions-list">
-                <option value="Auto">Auto-detect server version</option>
-              </datalist>
             </div>
             <div class="connect-buttons">
               <button type="button" id="connect" class="btn btn-primary">
@@ -145,6 +143,9 @@
               <button type="button" class="tab workspace-tab" data-tab="ai">
                 AI
                 <span id="ai-tab-dot" class="tab-dot" hidden></span>
+              </button>
+              <button type="button" class="tab workspace-tab" data-tab="studio">
+                Studio
               </button>
             </div>
           </div>
@@ -524,44 +525,54 @@
             <div class="ai-config-card">
               <div class="ai-config-top">
                 <div class="ai-config-title-group">
-                  <span class="ai-section-title">Auto-Respond in Chat</span>
+                  <span class="ai-section-title">Chat AI</span>
                   <span id="ai-rec-badge" class="chip ai-rec-chip"
-                    >Recommended: qwen2.5:1.5b</span
+                    >Recommended: qwen3:1.7b</span
                   >
                 </div>
-                <button
-                  type="button"
-                  id="ai-toggle-enabled"
-                  class="btn btn-small kb-toggle-btn"
-                >
-                  Auto-Reply: off
-                </button>
+                <div class="ai-toggle-group">
+                  <button
+                    type="button"
+                    id="ai-toggle-enabled"
+                    class="btn btn-small kb-toggle-btn"
+                    title="Reply to players in chat (ChatAI script)"
+                  >
+                    Auto-Reply: off
+                  </button>
+                  <button
+                    type="button"
+                    id="ai-toggle-agent"
+                    class="btn btn-small kb-toggle-btn"
+                    title="Let the AI run bot actions when players ask (AIAgent script)"
+                  >
+                    Actions: off
+                  </button>
+                </div>
               </div>
 
               <div class="ai-form-grid">
                 <div class="field">
-                  <label for="ai-model-select">Active Model</label>
-                  <select id="ai-model-select" class="ai-select">
-                    <option value="qwen2.5:1.5b">
-                      qwen2.5:1.5b (Recommended)
-                    </option>
+                  <label for="ai-model-select">Chat Model</label>
+                  <select id="ai-model-select">
+                    <option value="qwen3:1.7b">qwen3:1.7b</option>
                   </select>
                 </div>
                 <div class="field">
                   <label for="ai-trigger-select">Reply Trigger</label>
-                  <select id="ai-trigger-select" class="ai-select">
-                    <option value="mention">Mentions &amp; Bot Name</option>
-                    <option value="all">All Player Messages</option>
+                  <select id="ai-trigger-select">
+                    <option value="mention">Mentions &amp; bot name</option>
+                    <option value="all">All player messages</option>
                   </select>
                 </div>
                 <div class="field">
-                  <label for="ai-cooldown-input">Cooldown</label>
+                  <label for="ai-cooldown-input">Cooldown [s]</label>
                   <input
                     type="text"
                     id="ai-cooldown-input"
                     class="input-slim"
                     value="4"
-                    title="Minimum seconds between AI auto-replies"
+                    inputmode="decimal"
+                    title="Minimum seconds between AI replies"
                     spellcheck="false"
                   />
                 </div>
@@ -573,12 +584,104 @@
                   type="text"
                   id="ai-persona-input"
                   class="input-slim"
-                  placeholder="Friendly Minecraft player, short natural 1-sentence replies"
+                  placeholder="Friendly Minecraft player, short casual replies"
                   spellcheck="false"
                 />
               </div>
 
+              <div class="ai-subsection">
+                <span class="ai-sub-title">Anti-spam</span>
+                <div class="ai-form-grid ai-form-grid-4">
+                  <div class="field">
+                    <label for="ai-maxlen-input">Max msg length</label>
+                    <input
+                      type="text"
+                      id="ai-maxlen-input"
+                      class="input-slim"
+                      inputmode="numeric"
+                      title="Characters per chat message (30-250)"
+                      spellcheck="false"
+                    />
+                  </div>
+                  <div class="field">
+                    <label for="ai-parts-input">Max messages</label>
+                    <input
+                      type="text"
+                      id="ai-parts-input"
+                      class="input-slim"
+                      inputmode="numeric"
+                      title="How many chat messages one reply may be split into (1-6)"
+                      spellcheck="false"
+                    />
+                  </div>
+                  <div class="field">
+                    <label for="ai-gap-input">Msg gap [s]</label>
+                    <input
+                      type="text"
+                      id="ai-gap-input"
+                      class="input-slim"
+                      inputmode="decimal"
+                      title="Seconds between split messages (randomized a bit)"
+                      spellcheck="false"
+                    />
+                  </div>
+                  <div class="field">
+                    <label for="ai-rate-input">Replies / min</label>
+                    <input
+                      type="text"
+                      id="ai-rate-input"
+                      class="input-slim"
+                      inputmode="numeric"
+                      title="Hard limit of AI replies per minute"
+                      spellcheck="false"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div class="ai-subsection">
+                <div class="ai-sub-head">
+                  <span class="ai-sub-title">Actions</span>
+                  <span id="ai-agent-hint" class="muted-text"></span>
+                </div>
+                <div class="ai-form-grid ai-form-grid-2">
+                  <div class="field">
+                    <label for="ai-agent-model-select">Actions model</label>
+                    <select id="ai-agent-model-select">
+                      <option value="">Auto</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label for="ai-players-input"
+                      >Allowed players (empty = everyone)</label
+                    >
+                    <input
+                      type="text"
+                      id="ai-players-input"
+                      class="input-slim"
+                      placeholder="Steve, Alex"
+                      spellcheck="false"
+                    />
+                  </div>
+                </div>
+                <label
+                  class="script-checkbox-row"
+                  for="ai-allowcode-cb"
+                  title="Lets the agent write and run Mineflayer code to solve tasks or fix errors. Only works for players in the allowed list."
+                >
+                  <input type="checkbox" id="ai-allowcode-cb" value="off" />
+                  <span
+                    >Allow Mineflayer code (only for allowed players, they get
+                    full control of the bot)</span
+                  >
+                </label>
+              </div>
+
               <div class="ai-checkbox-strip">
+                <label class="script-checkbox-row" for="ai-split-cb">
+                  <input type="checkbox" id="ai-split-cb" value="on" checked />
+                  <span>Split long replies into several messages</span>
+                </label>
                 <label class="script-checkbox-row" for="ai-context-cb">
                   <input
                     type="checkbox"
@@ -586,10 +689,7 @@
                     value="on"
                     checked
                   />
-                  <span
-                    >Include live bot HP, coords, held item &amp; nearby
-                    players</span
-                  >
+                  <span>Include live HP, coords &amp; nearby players</span>
                 </label>
               </div>
             </div>
@@ -626,9 +726,17 @@
                   type="text"
                   id="ai-test-input"
                   class="input-slim"
-                  placeholder="Test a chat message (e.g. hey what are you mining?)"
+                  placeholder="Test a chat message (e.g. come here and mine 3 oak logs)"
                   spellcheck="false"
                 />
+                <label
+                  class="script-checkbox-row ai-test-agent"
+                  for="ai-test-agent-cb"
+                  title="Let the test run real bot actions"
+                >
+                  <input type="checkbox" id="ai-test-agent-cb" value="off" />
+                  <span>Actions</span>
+                </label>
                 <button
                   type="button"
                   id="ai-test-btn"
@@ -639,6 +747,148 @@
               </div>
               <div id="ai-test-output" class="ai-test-output">
                 Click Auto-Setup or Test AI to preview how the bot replies.
+              </div>
+            </div>
+          </div>
+
+          <!-- Script Studio -->
+          <div id="tab-studio" class="workspace-pane" hidden>
+            <div class="toolbar studio-toolbar">
+              <div class="tabs" role="tablist">
+                <button
+                  type="button"
+                  class="tab studio-view-tab active"
+                  data-studio-view="editor"
+                >
+                  Editor
+                </button>
+                <button
+                  type="button"
+                  class="tab studio-view-tab"
+                  data-studio-view="docs"
+                >
+                  Docs
+                  <span id="studio-docs-count" class="tab-count">0</span>
+                </button>
+              </div>
+              <div class="studio-picker">
+                <select id="studio-template-select">
+                  <option value="">Open template or script…</option>
+                </select>
+              </div>
+            </div>
+
+            <div id="studio-view-editor" class="studio-view">
+              <div class="studio-ai-card">
+                <div class="studio-ai-row">
+                  <input
+                    type="text"
+                    id="studio-prompt"
+                    class="input-slim"
+                    placeholder="Describe a script, e.g. chop 20 oak logs then come back to me"
+                    spellcheck="false"
+                  />
+                  <div class="studio-model">
+                    <select id="studio-model-select">
+                      <option value="">Auto (coder model)</option>
+                    </select>
+                  </div>
+                  <button
+                    type="button"
+                    id="studio-generate-btn"
+                    class="btn btn-small btn-primary"
+                    title="Write or edit the script with your local AI (Ollama)"
+                  >
+                    Generate
+                  </button>
+                </div>
+                <div class="studio-ai-meta">
+                  <span id="studio-gen-status" class="muted-text"
+                    >Local AI writes the script from the Mineflayer docs. With
+                    code in the editor, it edits that code instead.</span
+                  >
+                </div>
+              </div>
+
+              <div class="studio-editor-wrap">
+                <div
+                  id="studio-gutter"
+                  class="studio-gutter"
+                  aria-hidden="true"
+                >
+                  1
+                </div>
+                <textarea
+                  id="studio-editor"
+                  class="studio-editor"
+                  spellcheck="false"
+                  autocomplete="off"
+                  wrap="off"
+                ></textarea>
+              </div>
+
+              <div class="studio-footer">
+                <span id="studio-check" class="studio-check is-idle"
+                  >Pick a template or generate a script</span
+                >
+                <div class="studio-file">
+                  <input
+                    type="text"
+                    id="studio-filename"
+                    class="input-slim"
+                    placeholder="file-name"
+                    spellcheck="false"
+                  />
+                  <span class="studio-file-ext">.js</span>
+                </div>
+                <button
+                  type="button"
+                  id="studio-check-btn"
+                  class="btn btn-small btn-ghost"
+                  title="Check the script for errors"
+                >
+                  Check
+                </button>
+                <button
+                  type="button"
+                  id="studio-save-btn"
+                  class="btn btn-small btn-primary"
+                  title="Save to the custom scripts folder and load it into the Scripts tab"
+                >
+                  Save &amp; Load
+                </button>
+              </div>
+            </div>
+
+            <div id="studio-view-docs" class="studio-view" hidden>
+              <div class="toolbar">
+                <input
+                  type="text"
+                  id="studio-docs-search"
+                  class="input-slim"
+                  placeholder="Search Mineflayer docs (dig, chat, GoalNear…)"
+                  spellcheck="false"
+                />
+                <span id="studio-docs-badge" class="chip chip-muted"
+                  >Loading docs…</span
+                >
+                <button
+                  type="button"
+                  id="studio-docs-update"
+                  class="btn btn-small btn-ghost"
+                  title="Download the latest docs for your Mineflayer version"
+                >
+                  Update
+                </button>
+              </div>
+              <div class="studio-docs">
+                <div
+                  id="studio-docs-list"
+                  class="radar-list studio-docs-list"
+                ></div>
+                <div id="studio-docs-reader" class="studio-docs-reader">
+                  <p class="radar-empty">Pick a topic to read it here</p>
+                </div>
               </div>
             </div>
           </div>

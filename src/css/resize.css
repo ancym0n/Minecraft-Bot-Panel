@@ -38,6 +38,24 @@ html {
   .radar {
     grid-template-columns: minmax(0, 1fr);
   }
+
+  .ai-form-grid.ai-form-grid-4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .studio-ai-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .studio-model {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .studio-docs {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(6rem, 0.6fr) minmax(0, 1fr);
+  }
 }
 
 /* Narrow or short windows: stack the columns and let both the page and inner panels scroll */

@@ -96,6 +96,8 @@ contextBridge.exposeInMainWorld("api", {
     onChannel("on-script", (_event, html, scriptId, meta) =>
       callback(html, scriptId, meta),
     ),
+  onRemoveScript: (callback) =>
+    onChannel("remove-script", (_event, scriptId) => callback(scriptId)),
   onScriptState: (callback) =>
     onChannel("script-state", (_event, scriptId, active) =>
       callback(scriptId, active),
@@ -134,6 +136,21 @@ contextBridge.exposeInMainWorld("api", {
     onChannel("ollama-status", (_e, status) => cb(status)),
   onOllamaProgress: (cb) =>
     onChannel("ollama-progress", (_e, prog) => cb(prog)),
+  // Script Studio methods
+  studioGetInit: () => ipcRenderer.invoke("studio-get-init"),
+  studioDocsDownload: (payload) =>
+    ipcRenderer.invoke("studio-docs-download", payload || {}),
+  studioDocsSearch: (query) => ipcRenderer.invoke("studio-docs-search", query),
+  studioDocsSection: (id) => ipcRenderer.invoke("studio-docs-section", id),
+  studioValidate: (code) => ipcRenderer.invoke("studio-validate", code),
+  studioSave: (payload) => ipcRenderer.invoke("studio-save", payload),
+  studioOpenScript: (file) => ipcRenderer.invoke("studio-open-script", file),
+  studioGenerate: (payload) => ipcRenderer.invoke("studio-generate", payload),
+  studioGenerateCancel: () => ipcRenderer.send("studio-generate-cancel"),
+  onStudioDocsStatus: (cb) =>
+    onChannel("studio-docs-status", (_e, status) => cb(status)),
+  onStudioGenProgress: (cb) =>
+    onChannel("studio-gen-progress", (_e, prog) => cb(prog)),
   // Session Markdown Logger methods
   sessionLogGetStatus: () => ipcRenderer.invoke("session-log-get-status"),
   openSessionLog: (filePath) =>

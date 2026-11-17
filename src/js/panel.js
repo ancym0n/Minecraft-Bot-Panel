@@ -540,6 +540,22 @@ document.querySelectorAll(".workspace-tab").forEach((tabBtn) => {
   });
 });
 
+// --- Version picker (themed combo instead of a native datalist) ---
+const versionInput = document.getElementById("version");
+const versionCombo = window.mcbpDropdown?.attachCombo(versionInput, {
+  items: [{ value: "Auto", label: "Auto", hint: "detect" }],
+  emptyValue: "Auto",
+});
+const VERSION_STORAGE_KEY = "mcbp-last-version";
+if (versionInput) {
+  versionInput.value = localStorage.getItem(VERSION_STORAGE_KEY) || "";
+  versionInput.addEventListener("change", () => {
+    const v = versionInput.value.trim();
+    if (/^auto$/i.test(v)) versionInput.value = "";
+    localStorage.setItem(VERSION_STORAGE_KEY, versionInput.value.trim());
+  });
+}
+
 // --- Account & Connection Status ---
 window.api.onSetUsername((username) => {
   onlineMode = false;
@@ -572,13 +588,18 @@ window.api.onRuntimeInfo((info) => {
   if (runtimeEl) {
     runtimeEl.textContent = `Mineflayer v${info.mineflayerVersion} · MC ${info.versionRange}`;
   }
-  const datalist = document.getElementById("mc-versions-list");
-  if (datalist && Array.isArray(info.supportedVersions)) {
-    datalist.innerHTML =
-      '<option value="Auto">Auto-detect server version</option>' +
-      info.supportedVersions
-        .map((v) => `<option value="${escapeHtml(v)}"></option>`)
-        .join("");
+  if (versionCombo && Array.isArray(info.supportedVersions)) {
+    const sorted = [...info.supportedVersions].sort((a, b) =>
+      b.localeCompare(a, undefined, { numeric: true }),
+    );
+    versionCombo.setItems([
+      { value: "Auto", label: "Auto", hint: "detect" },
+      ...sorted.map((v, i) => ({
+        value: v,
+        label: v,
+        hint: i === 0 ? "latest" : "",
+      })),
+    ]);
   }
 });
 
@@ -1247,7 +1268,19 @@ if (window.api && typeof window.api.onScriptState === "function") {
   });
 }
 
-window.api.onScript((html, scriptId) => {
+if (window.api?.onRemoveScript) {
+  window.api.onRemoveScript((scriptId) => {
+    document
+      .querySelector(
+        `.script-container[data-script="${CSS.escape(String(scriptId))}"]`,
+      )
+      ?.remove();
+    aiSyncScripts.delete(String(scriptId));
+    updateActiveScriptsBadge();
+  });
+}
+
+window.api.onScript((html, scriptId, meta = {}) => {
   if (!actionsContainer) return;
   const wrapper = document.createElement("div");
   wrapper.innerHTML = html.trim();
@@ -1258,10 +1291,29 @@ window.api.onScript((html, scriptId) => {
     form.addEventListener("submit", (event) => event.preventDefault());
   });
 
+  if (meta?.aiSync) aiSyncScripts.add(String(scriptId));
+
   const savedOpts = loadSavedScriptOptions();
+  card.querySelectorAll("select").forEach((sel) => {
+    const fid = sel.id;
+    if (!fid) return;
+    if (!bindAiSyncField(sel)) {
+      if (
+        savedOpts[fid] !== undefined &&
+        [...sel.options].some((o) => o.value === savedOpts[fid])
+      ) {
+        sel.value = savedOpts[fid];
+      }
+      sel.addEventListener("change", () =>
+        saveScriptOptionValue(fid, sel.value),
+      );
+    }
+    window.mcbpDropdown?.enhanceSelect(sel);
+  });
   card.querySelectorAll("input").forEach((inp) => {
     const fid = inp.id;
     if (!fid) return;
+    if (bindAiSyncField(inp)) return;
     if (inp.type === "checkbox") {
       if (savedOpts[fid] === "on") {
         inp.checked = true;
@@ -1312,7 +1364,21 @@ window.api.onScript((html, scriptId) => {
     });
   }
 
-  actionsContainer.appendChild(card);
+  // Re-registered script (saved from Studio): swap the card in place.
+  const existing = actionsContainer.querySelector(
+    `.script-container[data-script="${CSS.escape(scriptName)}"]`,
+  );
+  if (existing) {
+    if (existing.classList.contains("open")) card.classList.add("open");
+    existing.replaceWith(card);
+    card.classList.add("script-flash");
+    setTimeout(() => card.classList.remove("script-flash"), 1200);
+  } else {
+    actionsContainer.appendChild(card);
+  }
+  if (meta?.aiSync && latestOllamaStatus)
+    syncAiScriptFields(latestOllamaStatus);
+  updateActiveScriptsBadge();
 });
 
 // --- Live Telemetry, Radar & Interactive Controls ---
@@ -2318,31 +2384,239 @@ if (window.api?.sessionLogGetStatus) {
 }
 
 // --- Ollama Chat AI Module UI ---
-const aiTabDot = document.getElementById("ai-tab-dot");
-const aiServiceBadge = document.getElementById("ai-service-badge");
-const aiHwSummary = document.getElementById("ai-hw-summary");
-const aiAutoSetupBtn = document.getElementById("ai-auto-setup-btn");
-const aiRefreshBtn = document.getElementById("ai-refresh-btn");
-const aiProgressBox = document.getElementById("ai-progress-box");
-const aiProgressText = document.getElementById("ai-progress-text");
-const aiProgressPct = document.getElementById("ai-progress-pct");
-const aiProgressFill = document.getElementById("ai-progress-fill");
-const aiRecBadge = document.getElementById("ai-rec-badge");
-const aiToggleEnabledBtn = document.getElementById("ai-toggle-enabled");
-const aiModelSelect = document.getElementById("ai-model-select");
-const aiTriggerSelect = document.getElementById("ai-trigger-select");
-const aiCooldownInput = document.getElementById("ai-cooldown-input");
-const aiPersonaInput = document.getElementById("ai-persona-input");
-const aiContextCb = document.getElementById("ai-context-cb");
-const aiModelsCount = document.getElementById("ai-models-count");
-const aiModelsList = document.getElementById("ai-models-list");
-const aiCustomModelInput = document.getElementById("ai-custom-model-input");
-const aiPullCustomBtn = document.getElementById("ai-pull-custom-btn");
-const aiTestInput = document.getElementById("ai-test-input");
-const aiTestBtn = document.getElementById("ai-test-btn");
-const aiTestOutput = document.getElementById("ai-test-output");
+const $id = (id) => document.getElementById(id);
+const aiTabDot = $id("ai-tab-dot");
+const aiServiceBadge = $id("ai-service-badge");
+const aiHwSummary = $id("ai-hw-summary");
+const aiAutoSetupBtn = $id("ai-auto-setup-btn");
+const aiRefreshBtn = $id("ai-refresh-btn");
+const aiProgressBox = $id("ai-progress-box");
+const aiProgressText = $id("ai-progress-text");
+const aiProgressPct = $id("ai-progress-pct");
+const aiProgressFill = $id("ai-progress-fill");
+const aiRecBadge = $id("ai-rec-badge");
+const aiToggleEnabledBtn = $id("ai-toggle-enabled");
+const aiToggleAgentBtn = $id("ai-toggle-agent");
+const aiModelSelect = $id("ai-model-select");
+const aiTriggerSelect = $id("ai-trigger-select");
+const aiCooldownInput = $id("ai-cooldown-input");
+const aiPersonaInput = $id("ai-persona-input");
+const aiContextCb = $id("ai-context-cb");
+const aiSplitCb = $id("ai-split-cb");
+const aiMaxLenInput = $id("ai-maxlen-input");
+const aiPartsInput = $id("ai-parts-input");
+const aiGapInput = $id("ai-gap-input");
+const aiRateInput = $id("ai-rate-input");
+const aiPlayersInput = $id("ai-players-input");
+const aiAgentModelSelect = $id("ai-agent-model-select");
+const aiAllowCodeCb = $id("ai-allowcode-cb");
+const aiAgentHint = $id("ai-agent-hint");
+const aiModelsCount = $id("ai-models-count");
+const aiModelsList = $id("ai-models-list");
+const aiCustomModelInput = $id("ai-custom-model-input");
+const aiPullCustomBtn = $id("ai-pull-custom-btn");
+const aiTestInput = $id("ai-test-input");
+const aiTestBtn = $id("ai-test-btn");
+const aiTestAgentCb = $id("ai-test-agent-cb");
+const aiTestOutput = $id("ai-test-output");
 
 let latestOllamaStatus = null;
+
+[aiModelSelect, aiTriggerSelect, aiAgentModelSelect].forEach((sel) =>
+  window.mcbpDropdown?.enhanceSelect(sel),
+);
+
+function syncDropdown(sel) {
+  if (sel && sel._dd) sel._dd.sync();
+}
+
+function setCheckbox(cb, on) {
+  if (!cb) return;
+  cb.checked = Boolean(on);
+  cb.setAttribute("value", on ? "on" : "off");
+}
+
+function setInputUnlessFocused(input, value) {
+  if (!input || document.activeElement === input) return;
+  input.value = value === undefined || value === null ? "" : String(value);
+}
+
+function modelTags(m) {
+  return Array.isArray(m.tags) ? m.tags : [];
+}
+
+// Options for a model <select>: installed first, then downloadable.
+function buildModelOptionsHtml(
+  st,
+  { purpose = "chat", activeValue = "" } = {},
+) {
+  const hw = st?.hardware || {};
+  const catalog = Array.isArray(hw.catalog) ? hw.catalog : [];
+  const installed = Array.isArray(st?.installedModels)
+    ? st.installedModels
+    : [];
+  const installedNames = new Set(installed.map((m) => m.name));
+  const isInstalled = (name) =>
+    installedNames.has(name) || installedNames.has(`${name}:latest`);
+  const recName =
+    purpose === "code" ? hw.recommendedCodeModel : hw.recommendedModel;
+
+  const fits = (c) =>
+    purpose === "code"
+      ? modelTags(c).includes("code")
+      : purpose === "agent"
+        ? modelTags(c).includes("tools") && modelTags(c).includes("chat")
+        : modelTags(c).includes("chat");
+  const opt = (value, label, hint) =>
+    `<option value="${escapeHtml(value)}" data-hint="${escapeHtml(hint)}"${value === activeValue ? " selected" : ""}>${escapeHtml(label)}</option>`;
+
+  const seen = new Set();
+  const inst = [];
+  for (const m of installed) {
+    const base = catalog.find(
+      (c) => c.name === m.name || `${c.name}:latest` === m.name,
+    );
+    if (base && !fits(base) && purpose !== "code") continue;
+    if (!base && purpose === "agent" && /coder/i.test(m.name)) continue;
+    seen.add(m.name);
+    if (base) seen.add(base.name);
+    const name = base ? base.name : m.name;
+    inst.push(
+      opt(name, name, name === recName ? "★ " + m.sizeLabel : m.sizeLabel),
+    );
+  }
+  const more = [];
+  for (const c of catalog) {
+    if (seen.has(c.name) || !fits(c) || isInstalled(c.name)) continue;
+    seen.add(c.name);
+    more.push(
+      opt(
+        c.name,
+        c.name,
+        `${c.name === recName ? "★ " : ""}${c.sizeLabel} · download`,
+      ),
+    );
+  }
+  let html = "";
+  if (purpose === "code") {
+    html += opt("", "Auto (best coder model)", "");
+  } else if (purpose === "agent") {
+    html += opt(
+      "",
+      "Auto",
+      st?.agentModelResolved ? `uses ${st.agentModelResolved}` : "",
+    );
+  }
+  if (activeValue && !seen.has(activeValue) && activeValue !== "") {
+    html += opt(activeValue, activeValue, "custom");
+  }
+  if (inst.length)
+    html += `<optgroup label="Installed">${inst.join("")}</optgroup>`;
+  if (more.length)
+    html += `<optgroup label="Download">${more.join("")}</optgroup>`;
+  return html;
+}
+
+// Script-tab options that mirror the shared AI config (ChatAI / AIAgent).
+const AI_SYNC_FIELDS = {
+  replyall: {
+    key: "triggerMode",
+    kind: "checkbox",
+    toUi: (v) => v === "all",
+    fromUi: (on) => (on ? "all" : "mention"),
+  },
+  context: {
+    key: "includeBotContext",
+    kind: "checkbox",
+    toUi: (v) => v !== false,
+  },
+  split: { key: "splitMessages", kind: "checkbox", toUi: (v) => v !== false },
+  model: { key: "model", kind: "select" },
+  agentmodel: {
+    key: "agentModel",
+    kind: "select",
+    purpose: "agent",
+    allowEmpty: true,
+  },
+  allowcode: { key: "agentAllowCode", kind: "checkbox" },
+  cooldown: { key: "cooldownSec", kind: "number" },
+  gap: { key: "messageDelaySec", kind: "number" },
+  persona: { key: "systemPrompt", kind: "text" },
+  players: { key: "agentAllowedPlayers", kind: "text", allowEmpty: true },
+};
+const aiSyncScripts = new Set();
+
+function aiSyncFieldFor(el) {
+  const m = String(el?.id || "").match(/^([^-]+)-(.+)$/);
+  if (!m || !aiSyncScripts.has(m[2])) return null;
+  return AI_SYNC_FIELDS[m[1]] || null;
+}
+
+function syncAiScriptFields(st) {
+  const cfg = st?.config || {};
+  aiSyncScripts.forEach((scriptName) => {
+    Object.entries(AI_SYNC_FIELDS).forEach(([optId, field]) => {
+      const el = document.getElementById(`${optId}-${scriptName}`);
+      if (!el) return;
+      const value = cfg[field.key];
+      if (field.kind === "checkbox") {
+        setCheckbox(el, field.toUi ? field.toUi(value) : Boolean(value));
+      } else if (field.kind === "select") {
+        el.innerHTML = buildModelOptionsHtml(st, {
+          purpose: field.purpose || "chat",
+          activeValue:
+            field.purpose === "agent"
+              ? value || ""
+              : value || st?.hardware?.recommendedModel || "",
+        });
+        el.value = field.purpose === "agent" ? value || "" : el.value;
+        syncDropdown(el);
+      } else {
+        setInputUnlessFocused(el, value);
+      }
+    });
+  });
+}
+
+function saveAiConfig(partial) {
+  if (!window.api?.ollamaSaveConfig) return Promise.resolve(null);
+  return window.api
+    .ollamaSaveConfig(partial)
+    .then((st) => {
+      renderOllamaStatus(st);
+      return st;
+    })
+    .catch(() => null);
+}
+
+// Wires one script-card field to the shared AI config.
+function bindAiSyncField(el) {
+  const field = aiSyncFieldFor(el);
+  if (!field) return false;
+  const commit = () => {
+    let value;
+    if (field.kind === "checkbox") {
+      value = field.fromUi ? field.fromUi(el.checked) : el.checked;
+    } else if (field.kind === "number") {
+      value = Number(String(el.value).replace(",", "."));
+      if (!Number.isFinite(value)) {
+        renderOllamaStatus(latestOllamaStatus);
+        return;
+      }
+    } else {
+      value = String(el.value).trim();
+      if (!value && !field.allowEmpty) return;
+    }
+    saveAiConfig({ [field.key]: value });
+  };
+  el.addEventListener("change", commit);
+  if (el.tagName === "INPUT" && el.type !== "checkbox") {
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") el.blur();
+    });
+  }
+  return true;
+}
 
 function renderOllamaStatus(st) {
   if (!st || typeof st !== "object" || Array.isArray(st) || !st.hardware)
@@ -2376,208 +2650,238 @@ function renderOllamaStatus(st) {
   if (aiHwSummary && hw.recommendReason) {
     aiHwSummary.textContent = hw.recommendReason;
   }
-
   if (aiRecBadge && hw.recommendedModel) {
     aiRecBadge.textContent = `Recommended: ${hw.recommendedModel}`;
   }
 
   const isEnabled = Boolean(cfg.enabled);
-  if (aiTabDot) {
-    aiTabDot.hidden = !isEnabled;
-  }
+  const isAgent = Boolean(cfg.agentEnabled);
+  if (aiTabDot) aiTabDot.hidden = !(isEnabled || isAgent);
   if (aiToggleEnabledBtn) {
     aiToggleEnabledBtn.classList.toggle("kb-toggle-active", isEnabled);
-    aiToggleEnabledBtn.textContent = isEnabled
-      ? "Auto-Reply: on"
-      : "Auto-Reply: off";
+    aiToggleEnabledBtn.textContent = `Auto-Reply: ${isEnabled ? "on" : "off"}`;
+  }
+  if (aiToggleAgentBtn) {
+    aiToggleAgentBtn.classList.toggle("kb-toggle-active", isAgent);
+    aiToggleAgentBtn.textContent = `Actions: ${isAgent ? "on" : "off"}`;
   }
 
-  // Populate model dropdown combining installed + catalog models
+  const activeModel = cfg.model || hw.recommendedModel || "qwen3:1.7b";
   if (aiModelSelect) {
-    const catalog = Array.isArray(hw.catalog) ? hw.catalog : [];
-    const allNames = [];
-    const seen = new Set();
-    for (const m of installed) {
-      if (!seen.has(m.name)) {
-        seen.add(m.name);
-        allNames.push({
-          name: m.name,
-          label: `${m.name} (Installed · ${m.sizeLabel})`,
-        });
-      }
-    }
-    for (const c of catalog) {
-      if (!seen.has(c.name)) {
-        seen.add(c.name);
-        allNames.push({
-          name: c.name,
-          label: `${c.name}${c.isRecommended ? " ★ Recommended" : ""} (${c.sizeLabel})`,
-        });
-      }
-    }
-    if (cfg.model && !seen.has(cfg.model)) {
-      allNames.unshift({ name: cfg.model, label: cfg.model });
-    }
-    const activeVal = cfg.model || hw.recommendedModel || "qwen2.5:1.5b";
-    aiModelSelect.innerHTML = allNames
-      .map(
-        (m) =>
-          `<option value="${escapeHtml(m.name)}" ${m.name === activeVal ? "selected" : ""}>${escapeHtml(m.label)}</option>`,
-      )
-      .join("");
+    aiModelSelect.innerHTML = buildModelOptionsHtml(st, {
+      activeValue: activeModel,
+    });
+    aiModelSelect.value = activeModel;
+    syncDropdown(aiModelSelect);
   }
-
   if (aiTriggerSelect && cfg.triggerMode) {
     aiTriggerSelect.value = cfg.triggerMode;
+    syncDropdown(aiTriggerSelect);
   }
-  if (
-    aiCooldownInput &&
-    document.activeElement !== aiCooldownInput &&
-    cfg.cooldownSec
-  ) {
-    aiCooldownInput.value = String(cfg.cooldownSec);
+  setInputUnlessFocused(aiCooldownInput, cfg.cooldownSec);
+  setInputUnlessFocused(aiPersonaInput, cfg.systemPrompt);
+  setInputUnlessFocused(aiMaxLenInput, cfg.maxMessageLength);
+  setInputUnlessFocused(aiPartsInput, cfg.maxParts);
+  setInputUnlessFocused(aiGapInput, cfg.messageDelaySec);
+  setInputUnlessFocused(aiRateInput, cfg.maxRepliesPerMinute);
+  setInputUnlessFocused(aiPlayersInput, cfg.agentAllowedPlayers);
+  setCheckbox(aiContextCb, cfg.includeBotContext !== false);
+  setCheckbox(aiAllowCodeCb, Boolean(cfg.agentAllowCode));
+  if (aiAgentModelSelect) {
+    aiAgentModelSelect.innerHTML = buildModelOptionsHtml(st, {
+      purpose: "agent",
+      activeValue: cfg.agentModel || "",
+    });
+    aiAgentModelSelect.value = cfg.agentModel || "";
+    syncDropdown(aiAgentModelSelect);
   }
-  if (
-    aiPersonaInput &&
-    document.activeElement !== aiPersonaInput &&
-    cfg.systemPrompt
-  ) {
-    aiPersonaInput.value = cfg.systemPrompt;
+  if (aiAgentHint) {
+    const agentModel = st.agentModelResolved || "";
+    const chatCanAct =
+      !cfg.agentModel && agentModel && agentModel === activeModel;
+    const codeOn =
+      cfg.agentAllowCode && String(cfg.agentAllowedPlayers || "").trim();
+    aiAgentHint.classList.toggle(
+      "is-warn",
+      Boolean(cfg.agentAllowCode && !codeOn),
+    );
+    aiAgentHint.textContent =
+      cfg.agentAllowCode && !codeOn
+        ? "Add allowed players to enable code"
+        : agentModel
+          ? `Runs on ${agentModel}${chatCanAct ? "" : cfg.agentModel ? "" : " (chat model can't do actions)"}`
+          : "";
   }
-  if (aiContextCb) {
-    const ctxOn = cfg.includeBotContext !== false;
-    aiContextCb.checked = ctxOn;
-    aiContextCb.setAttribute("value", ctxOn ? "on" : "off");
-  }
+  setCheckbox(aiSplitCb, cfg.splitMessages !== false);
+  [aiMaxLenInput, aiPartsInput, aiGapInput].forEach((inp) => {
+    if (inp)
+      inp.disabled = cfg.splitMessages === false && inp !== aiMaxLenInput;
+  });
 
-  // Render models list
+  syncAiScriptFields(st);
+  if (typeof refreshStudioModels === "function") refreshStudioModels(st);
+
   if (aiModelsList) {
     const catalog = Array.isArray(hw.catalog) ? hw.catalog : [];
     const merged = [];
     const seen = new Set();
-
     for (const c of catalog) {
       seen.add(c.name);
       merged.push({
         name: c.name,
         desc: c.desc,
         sizeLabel: c.sizeLabel,
+        tags: modelTags(c),
         isRecommended: Boolean(c.isRecommended),
         isInstalled:
           installedSet.has(c.name) || installedSet.has(`${c.name}:latest`),
       });
     }
     for (const inst of installed) {
-      if (!seen.has(inst.name)) {
+      if (
+        !seen.has(inst.name) &&
+        !seen.has(inst.name.replace(/:latest$/, ""))
+      ) {
         merged.push({
           name: inst.name,
           desc: "Installed local Ollama model",
           sizeLabel: inst.sizeLabel,
-          isRecommended: inst.name === hw.recommendedModel,
+          tags: [],
+          isRecommended: false,
           isInstalled: true,
         });
       }
     }
+    merged.sort((a, b) => Number(b.isInstalled) - Number(a.isInstalled));
 
     if (aiModelsCount) {
       aiModelsCount.textContent = `${installed.length} installed`;
     }
 
-    const activeModel = cfg.model || hw.recommendedModel;
+    const scriptModel = cfg.scriptModel || "";
     aiModelsList.innerHTML = merged
       .map((m) => {
-        const isCurrent = m.name === activeModel;
-        const recPill = m.isRecommended
-          ? `<span class="ai-model-badge is-rec">Recommended</span>`
-          : "";
-        const instPill = m.isInstalled
-          ? `<span class="ai-model-badge is-installed">Installed</span>`
-          : `<span class="ai-model-badge">${escapeHtml(m.sizeLabel)}</span>`;
+        const isCode = m.tags.includes("code") && !m.tags.includes("chat");
+        const isCurrent = isCode
+          ? m.name === scriptModel
+          : m.name === activeModel;
+        const pills = [
+          m.isRecommended
+            ? `<span class="ai-model-badge is-rec">Recommended</span>`
+            : "",
+          m.tags.includes("tools")
+            ? `<span class="ai-model-badge is-tools" title="Supports AI Agent actions">Actions</span>`
+            : "",
+          m.tags.includes("code")
+            ? `<span class="ai-model-badge is-code" title="Good at writing scripts (Studio)">Code</span>`
+            : "",
+          m.isInstalled
+            ? `<span class="ai-model-badge is-installed">Installed</span>`
+            : `<span class="ai-model-badge">${escapeHtml(m.sizeLabel)}</span>`,
+        ].join("");
         return `
-          <div class="radar-item">
+          <div class="radar-item" title="${escapeHtml(m.desc)}">
             <div class="radar-item-info">
-              <span class="radar-entity-icon">🤖</span>
-              <span class="radar-item-name" title="${escapeHtml(m.desc)}">${escapeHtml(m.name)}</span>
-              ${recPill}
-              ${instPill}
+              <span class="radar-item-name">${escapeHtml(m.name)}</span>
+              ${pills}
             </div>
             <div class="radar-item-actions">
-              <button type="button" class="radar-btn ${isCurrent ? "radar-btn-active" : ""}" data-ai-use="${escapeHtml(m.name)}">${isCurrent ? "Active" : "Use"}</button>
+              <button type="button" class="radar-btn ${isCurrent ? "radar-btn-active" : ""}" data-ai-use="${escapeHtml(m.name)}" data-ai-code="${isCode ? "1" : ""}">${isCurrent ? "Active" : "Use"}</button>
               <button type="button" class="radar-btn" data-ai-pull="${escapeHtml(m.name)}">${m.isInstalled ? "Update" : "Pull"}</button>
             </div>
           </div>
         `;
       })
       .join("");
-
-    aiModelsList.querySelectorAll("[data-ai-use]").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const model = btn.getAttribute("data-ai-use");
-        if (window.api?.ollamaSaveConfig) {
-          const updated = await window.api.ollamaSaveConfig({ model });
-          renderOllamaStatus(updated);
-        }
-      });
-    });
-
-    aiModelsList.querySelectorAll("[data-ai-pull]").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const model = btn.getAttribute("data-ai-pull");
-        if (!model || !window.api?.ollamaPullModel) return;
-        btn.disabled = true;
-        btn.textContent = "Pulling…";
-        await window.api.ollamaPullModel(model);
-      });
-    });
   }
+}
+
+if (aiModelsList) {
+  aiModelsList.addEventListener("click", async (e) => {
+    const useBtn = e.target.closest("[data-ai-use]");
+    const pullBtn = e.target.closest("[data-ai-pull]");
+    if (useBtn) {
+      const model = useBtn.getAttribute("data-ai-use");
+      const isCode = useBtn.getAttribute("data-ai-code") === "1";
+      saveAiConfig(isCode ? { scriptModel: model } : { model });
+    } else if (pullBtn && window.api?.ollamaPullModel) {
+      pullBtn.disabled = true;
+      pullBtn.textContent = "Pulling…";
+      if (aiProgressBox) aiProgressBox.hidden = false;
+      const res = await window.api.ollamaPullModel(
+        pullBtn.getAttribute("data-ai-pull"),
+      );
+      if (res?.status) renderOllamaStatus(res.status);
+      setTimeout(() => {
+        if (aiProgressBox) aiProgressBox.hidden = true;
+      }, 1800);
+    }
+  });
 }
 
 async function refreshOllamaUi() {
   if (!window.api?.ollamaGetStatus) return;
   try {
-    const st = await window.api.ollamaGetStatus();
-    renderOllamaStatus(st);
+    renderOllamaStatus(await window.api.ollamaGetStatus());
   } catch (_) {}
 }
 
-function saveAiFormChanges(extra = {}) {
-  if (!window.api?.ollamaSaveConfig) return;
-  const payload = {
-    model: aiModelSelect ? aiModelSelect.value : undefined,
-    triggerMode: aiTriggerSelect ? aiTriggerSelect.value : undefined,
-    cooldownSec: aiCooldownInput ? Number(aiCooldownInput.value) || 4 : 4,
-    systemPrompt: aiPersonaInput ? aiPersonaInput.value.trim() : undefined,
-    includeBotContext: aiContextCb ? aiContextCb.checked : true,
-    ...extra,
-  };
-  window.api
-    .ollamaSaveConfig(payload)
-    .then((st) => renderOllamaStatus(st))
-    .catch(() => {});
-}
-
-if (aiToggleEnabledBtn) {
-  aiToggleEnabledBtn.addEventListener("click", () => {
-    const nextEnabled = !(latestOllamaStatus?.config?.enabled ?? false);
-    saveAiFormChanges({ enabled: nextEnabled });
+function bindAiNumber(input, key) {
+  if (!input) return;
+  input.addEventListener("change", () => {
+    const n = Number(String(input.value).replace(",", "."));
+    if (Number.isFinite(n)) saveAiConfig({ [key]: n });
+    else renderOllamaStatus(latestOllamaStatus);
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") input.blur();
   });
 }
 
-if (aiModelSelect) {
-  aiModelSelect.addEventListener("change", () => saveAiFormChanges());
+function bindAiText(input, key, allowEmpty = false) {
+  if (!input) return;
+  input.addEventListener("change", () => {
+    const v = input.value.trim();
+    if (v || allowEmpty) saveAiConfig({ [key]: v });
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") input.blur();
+  });
 }
-if (aiTriggerSelect) {
-  aiTriggerSelect.addEventListener("change", () => saveAiFormChanges());
-}
-if (aiCooldownInput) {
-  aiCooldownInput.addEventListener("change", () => saveAiFormChanges());
-}
-if (aiPersonaInput) {
-  aiPersonaInput.addEventListener("change", () => saveAiFormChanges());
-}
-if (aiContextCb) {
-  aiContextCb.addEventListener("change", () => saveAiFormChanges());
-}
+
+aiToggleEnabledBtn?.addEventListener("click", () => {
+  saveAiConfig({ enabled: !(latestOllamaStatus?.config?.enabled ?? false) });
+});
+aiToggleAgentBtn?.addEventListener("click", () => {
+  saveAiConfig({
+    agentEnabled: !(latestOllamaStatus?.config?.agentEnabled ?? false),
+  });
+});
+aiModelSelect?.addEventListener("change", () =>
+  saveAiConfig({ model: aiModelSelect.value }),
+);
+aiTriggerSelect?.addEventListener("change", () =>
+  saveAiConfig({ triggerMode: aiTriggerSelect.value }),
+);
+aiContextCb?.addEventListener("change", () =>
+  saveAiConfig({ includeBotContext: aiContextCb.checked }),
+);
+aiAgentModelSelect?.addEventListener("change", () =>
+  saveAiConfig({ agentModel: aiAgentModelSelect.value }),
+);
+aiAllowCodeCb?.addEventListener("change", () =>
+  saveAiConfig({ agentAllowCode: aiAllowCodeCb.checked }),
+);
+aiSplitCb?.addEventListener("change", () =>
+  saveAiConfig({ splitMessages: aiSplitCb.checked }),
+);
+bindAiNumber(aiCooldownInput, "cooldownSec");
+bindAiNumber(aiMaxLenInput, "maxMessageLength");
+bindAiNumber(aiPartsInput, "maxParts");
+bindAiNumber(aiGapInput, "messageDelaySec");
+bindAiNumber(aiRateInput, "maxRepliesPerMinute");
+bindAiText(aiPersonaInput, "systemPrompt");
+bindAiText(aiPlayersInput, "agentAllowedPlayers", true);
 
 if (aiAutoSetupBtn) {
   aiAutoSetupBtn.addEventListener("click", async () => {
@@ -2586,8 +2890,9 @@ if (aiAutoSetupBtn) {
     aiAutoSetupBtn.textContent = "Setting up…";
     if (aiProgressBox) aiProgressBox.hidden = false;
     try {
-      const targetModel = aiModelSelect ? aiModelSelect.value : "";
-      const res = await window.api.ollamaAutoSetup({ model: targetModel });
+      const res = await window.api.ollamaAutoSetup({
+        model: aiModelSelect ? aiModelSelect.value : "",
+      });
       if (res?.status) renderOllamaStatus(res.status);
       if (aiTestOutput) {
         aiTestOutput.textContent = res?.ok
@@ -2604,12 +2909,10 @@ if (aiAutoSetupBtn) {
   });
 }
 
-if (aiRefreshBtn) {
-  aiRefreshBtn.addEventListener("click", () => refreshOllamaUi());
-}
+aiRefreshBtn?.addEventListener("click", () => refreshOllamaUi());
 
 if (aiPullCustomBtn && aiCustomModelInput) {
-  aiPullCustomBtn.addEventListener("click", async () => {
+  const pullCustom = async () => {
     const tag = aiCustomModelInput.value.trim();
     if (!tag || !window.api?.ollamaPullModel) return;
     aiPullCustomBtn.disabled = true;
@@ -2626,28 +2929,52 @@ if (aiPullCustomBtn && aiCustomModelInput) {
         if (aiProgressBox) aiProgressBox.hidden = true;
       }, 1800);
     }
+  };
+  aiPullCustomBtn.addEventListener("click", pullCustom);
+  aiCustomModelInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      pullCustom();
+    }
   });
 }
 
 if (aiTestBtn && aiTestInput && aiTestOutput) {
   const runAiTest = async () => {
     if (!window.api?.ollamaTestPrompt) return;
+    const useAgent = Boolean(aiTestAgentCb?.checked);
     const prompt =
-      aiTestInput.value.trim() || "hey Steve, what are you working on?";
+      aiTestInput.value.trim() ||
+      (useAgent ? "come to me" : "hey, what are you working on?");
     const model = aiModelSelect ? aiModelSelect.value : "";
     aiTestBtn.disabled = true;
     aiTestBtn.textContent = "Thinking…";
-    aiTestOutput.textContent = `Generating reply with ${model || "Ollama"}…`;
+    aiTestOutput.textContent = useAgent
+      ? `Running actions with ${latestOllamaStatus?.agentModelResolved || "Ollama"}…`
+      : `Generating reply with ${model || "Ollama"}…`;
     try {
       const res = await window.api.ollamaTestPrompt({
         prompt,
-        model,
-        sender: "Alex",
+        model: useAgent ? aiAgentModelSelect?.value || "" : model,
+        agent: useAgent,
       });
       if (res?.ok) {
-        aiTestOutput.textContent = `[${res.model} · ${res.latencyMs}ms] "${res.reply}"`;
+        const lines = [];
+        (res.actions || []).forEach((a) =>
+          lines.push(
+            `⚙ ${a.name}(${JSON.stringify(a.args || {})}) → ${a.result.split("\n")[0]}`,
+          ),
+        );
+        const parts = res.parts?.length ? res.parts : [res.reply];
+        parts.forEach((p, i) =>
+          lines.push(`${parts.length > 1 ? `${i + 1}. ` : ""}"${p}"`),
+        );
+        if (res.note) lines.push(res.note);
+        aiTestOutput.textContent = `[${res.model} · ${res.latencyMs}ms]\n${lines.join("\n")}`;
       } else {
-        aiTestOutput.textContent = `Error: ${res?.error || "Could not reach Ollama. Click Auto-Setup first."}`;
+        aiTestOutput.textContent = res?.silent
+          ? `[${res.model}] Stayed silent (the persona told it not to reply to this)`
+          : `Error: ${res?.error || "Could not reach Ollama. Click Auto-Setup first."}`;
       }
     } finally {
       aiTestBtn.disabled = false;
@@ -2662,6 +2989,10 @@ if (aiTestBtn && aiTestInput && aiTestOutput) {
     }
   });
 }
+
+aiTestAgentCb?.addEventListener("change", () => {
+  aiTestAgentCb.setAttribute("value", aiTestAgentCb.checked ? "on" : "off");
+});
 
 if (window.api?.onOllamaStatus) {
   window.api.onOllamaStatus((st) => renderOllamaStatus(st));
@@ -2684,3 +3015,596 @@ if (window.api?.onOllamaProgress) {
 }
 
 refreshOllamaUi();
+
+// --- Script Studio (templates, Mineflayer docs, local AI generator) ---
+const studioPicker = $id("studio-template-select");
+const studioPrompt = $id("studio-prompt");
+const studioModelSelect = $id("studio-model-select");
+const studioGenerateBtn = $id("studio-generate-btn");
+const studioGenStatus = $id("studio-gen-status");
+const studioAiCard = document.querySelector(".studio-ai-card");
+const studioEditor = $id("studio-editor");
+const studioGutter = $id("studio-gutter");
+const studioCheck = $id("studio-check");
+const studioFilename = $id("studio-filename");
+const studioCheckBtn = $id("studio-check-btn");
+const studioSaveBtn = $id("studio-save-btn");
+const studioDocsCount = $id("studio-docs-count");
+const studioDocsSearch = $id("studio-docs-search");
+const studioDocsBadge = $id("studio-docs-badge");
+const studioDocsUpdate = $id("studio-docs-update");
+const studioDocsList = $id("studio-docs-list");
+const studioDocsReader = $id("studio-docs-reader");
+
+const studio = {
+  ready: false,
+  templates: [],
+  customScripts: [],
+  currentFile: "",
+  filenameTouched: false,
+  undoCode: null,
+  generating: false,
+  activeDocId: "",
+  errorLine: null,
+};
+
+[studioPicker, studioModelSelect].forEach((sel) =>
+  window.mcbpDropdown?.enhanceSelect(sel),
+);
+
+document.querySelectorAll(".studio-view-tab").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const view = btn.getAttribute("data-studio-view");
+    document
+      .querySelectorAll(".studio-view-tab")
+      .forEach((b) => b.classList.toggle("active", b === btn));
+    document.querySelectorAll(".studio-view").forEach((pane) => {
+      pane.hidden = pane.id !== `studio-view-${view}`;
+    });
+    if (view === "docs" && studioDocsList && !studioDocsList.children.length) {
+      runDocsSearch();
+    }
+  });
+});
+
+function setStudioCheck(text, kind = "idle", extraHtml = "") {
+  if (!studioCheck) return;
+  studioCheck.className = `studio-check is-${kind}`;
+  studioCheck.textContent = text;
+  studioCheck.title = text;
+  if (extraHtml) studioCheck.insertAdjacentHTML("beforeend", extraHtml);
+}
+
+function updateGutter() {
+  if (!studioGutter || !studioEditor) return;
+  const lines = studioEditor.value.split("\n").length;
+  let html = "";
+  for (let i = 1; i <= lines; i++) {
+    html +=
+      i === studio.errorLine
+        ? `<span class="is-error">${i}</span>\n`
+        : `${i}\n`;
+  }
+  studioGutter.innerHTML = html;
+  studioGutter.scrollTop = studioEditor.scrollTop;
+}
+
+function scriptNameFromCode(code) {
+  const m = String(code || "").match(/name\s*:\s*["'`]([^"'`\n]{1,48})["'`]/);
+  return m ? m[1].trim() : "";
+}
+
+function slugifyFile(name) {
+  return String(name || "")
+    .trim()
+    .replace(/\.js$/i, "")
+    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase()
+    .slice(0, 48);
+}
+
+function syncFilenameFromCode() {
+  if (!studioFilename || studio.filenameTouched || studio.currentFile) return;
+  studioFilename.value = slugifyFile(scriptNameFromCode(studioEditor.value));
+}
+
+function setEditorCode(code, { file = "", label = "" } = {}) {
+  if (!studioEditor) return;
+  const prev = studioEditor.value;
+  studio.undoCode = prev.trim() && prev !== code ? prev : null;
+  studioEditor.value = code;
+  studioEditor.scrollTop = 0;
+  studio.currentFile = file;
+  studio.filenameTouched = Boolean(file);
+  studio.errorLine = null;
+  if (studioFilename) {
+    studioFilename.value = file
+      ? file.replace(/\.js$/, "")
+      : slugifyFile(scriptNameFromCode(code));
+  }
+  updateGutter();
+  validateStudio({
+    prefix: label,
+    undo: studio.undoCode !== null,
+  });
+}
+
+let studioValidateTimer = null;
+async function validateStudio({ prefix = "", undo = false } = {}) {
+  if (!window.api?.studioValidate || !studioEditor) return null;
+  const code = studioEditor.value;
+  const undoHtml = undo
+    ? ` <button type="button" class="link-button" data-studio-undo>Undo</button>`
+    : "";
+  if (!code.trim()) {
+    studio.errorLine = null;
+    updateGutter();
+    setStudioCheck("Pick a template or generate a script", "idle");
+    return null;
+  }
+  const res = await window.api.studioValidate(code);
+  studio.errorLine = res?.line || null;
+  updateGutter();
+  const lead = prefix ? `${prefix} · ` : "";
+  if (res?.ok) {
+    setStudioCheck(`${lead}✓ ${res.name} looks good`, "ok", undoHtml);
+  } else if (res?.line || /^Syntax/.test(res?.error || "")) {
+    setStudioCheck(`${lead}${res.error}`, "error", undoHtml);
+  } else {
+    setStudioCheck(
+      `${lead}⚠ ${res?.error || "Check the script"}`,
+      "warn",
+      undoHtml,
+    );
+  }
+  return res;
+}
+
+studioCheck?.addEventListener("click", (e) => {
+  if (!e.target.closest("[data-studio-undo]") || studio.undoCode === null)
+    return;
+  const back = studio.undoCode;
+  studio.undoCode = null;
+  studioEditor.value = back;
+  updateGutter();
+  validateStudio({ prefix: "Restored previous code" });
+});
+
+if (studioEditor) {
+  studioEditor.addEventListener("input", () => {
+    updateGutter();
+    syncFilenameFromCode();
+    clearTimeout(studioValidateTimer);
+    studioValidateTimer = setTimeout(() => validateStudio(), 600);
+  });
+  studioEditor.addEventListener("scroll", () => {
+    if (studioGutter) studioGutter.scrollTop = studioEditor.scrollTop;
+  });
+  studioEditor.addEventListener("keydown", (e) => {
+    if (e.key === "Tab" && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault();
+      document.execCommand("insertText", false, "  ");
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+      e.preventDefault();
+      saveStudioScript();
+    }
+  });
+}
+
+studioFilename?.addEventListener("input", () => {
+  studio.filenameTouched = Boolean(studioFilename.value.trim());
+  if (!studio.filenameTouched) studio.currentFile = "";
+});
+
+function buildPickerOptions() {
+  if (!studioPicker) return;
+  let html = `<option value="">Open template or script…</option>`;
+  if (studio.templates.length) {
+    html += `<optgroup label="Templates">${studio.templates
+      .map(
+        (t) =>
+          `<option value="tpl:${escapeHtml(t.id)}">${escapeHtml(t.title)}</option>`,
+      )
+      .join("")}</optgroup>`;
+  }
+  if (studio.customScripts.length) {
+    html += `<optgroup label="My scripts">${studio.customScripts
+      .map(
+        (c) =>
+          `<option value="file:${escapeHtml(c.file)}" data-hint="${escapeHtml(c.file)}">${escapeHtml(c.name)}</option>`,
+      )
+      .join("")}</optgroup>`;
+  }
+  studioPicker.innerHTML = html;
+  studioPicker.value = "";
+  syncDropdown(studioPicker);
+}
+
+studioPicker?.addEventListener("change", async () => {
+  const val = studioPicker.value;
+  studioPicker.value = "";
+  syncDropdown(studioPicker);
+  if (val.startsWith("tpl:")) {
+    const tpl = studio.templates.find((t) => t.id === val.slice(4));
+    if (tpl) {
+      setEditorCode(tpl.code, { label: `Template: ${tpl.title}` });
+      if (studioGenStatus && tpl.desc) studioGenStatus.textContent = tpl.desc;
+    }
+  } else if (val.startsWith("file:") && window.api?.studioOpenScript) {
+    const res = await window.api.studioOpenScript(val.slice(5));
+    if (res)
+      setEditorCode(res.code, { file: res.file, label: `Opened ${res.file}` });
+  }
+  studioEditor?.focus();
+});
+
+async function saveStudioScript({ overwrite = false } = {}) {
+  if (!window.api?.studioSave || !studioEditor) return;
+  const code = studioEditor.value;
+  const file = slugifyFile(studioFilename?.value) || "";
+  clearTimeout(studioValidateTimer);
+  const sameFile =
+    studio.currentFile &&
+    studio.currentFile ===
+      `${file || slugifyFile(scriptNameFromCode(code))}.js`;
+  studioSaveBtn.disabled = true;
+  try {
+    const res = await window.api.studioSave({
+      code,
+      file,
+      overwrite: overwrite || Boolean(sameFile),
+    });
+    if (res?.ok) {
+      studio.currentFile = res.file;
+      studio.filenameTouched = true;
+      studio.customScripts = res.customScripts || studio.customScripts;
+      buildPickerOptions();
+      const warn = res.warnings?.length ? ` · ⚠ ${res.warnings[0]}` : "";
+      setStudioCheck(
+        `✓ Saved ${res.file} · ${res.name} is ready in the Scripts tab${warn}`,
+        warn ? "warn" : "ok",
+      );
+    } else if (res?.exists) {
+      setStudioCheck(
+        `${res.file} already exists.`,
+        "warn",
+        ` <button type="button" class="link-button" data-studio-overwrite>Overwrite</button>`,
+      );
+    } else {
+      studio.errorLine = res?.line || null;
+      updateGutter();
+      setStudioCheck(res?.error || "Could not save", "error");
+    }
+  } finally {
+    studioSaveBtn.disabled = false;
+  }
+}
+
+studioCheck?.addEventListener("click", (e) => {
+  if (e.target.closest("[data-studio-overwrite]")) {
+    saveStudioScript({ overwrite: true });
+  }
+});
+studioSaveBtn?.addEventListener("click", () => saveStudioScript());
+studioCheckBtn?.addEventListener("click", () => validateStudio());
+
+function refreshStudioModels(st) {
+  if (!studioModelSelect || !st) return;
+  const chosen = st.config?.scriptModel || "";
+  studioModelSelect.innerHTML = buildModelOptionsHtml(st, {
+    purpose: "code",
+    activeValue: chosen,
+  });
+  studioModelSelect.value = chosen;
+  syncDropdown(studioModelSelect);
+}
+
+studioModelSelect?.addEventListener("change", () =>
+  saveAiConfig({ scriptModel: studioModelSelect.value }),
+);
+
+function setGenerating(on) {
+  studio.generating = on;
+  studioAiCard?.classList.toggle("is-busy", on);
+  if (studioGenerateBtn) {
+    studioGenerateBtn.textContent = on ? "Cancel" : "Generate";
+    studioGenerateBtn.classList.toggle("btn-primary", !on);
+    studioGenerateBtn.classList.toggle("btn-danger-soft", on);
+  }
+  if (studioPrompt) studioPrompt.disabled = on;
+  if (studioEditor) studioEditor.readOnly = on;
+  if (studioSaveBtn) studioSaveBtn.disabled = on;
+}
+
+function stripFences(text) {
+  const raw = String(text || "").replace(/<think>[\s\S]*?(<\/think>|$)/gi, "");
+  const start = raw.search(/```(?:js|javascript)?\s*\n/i);
+  if (start === -1) return raw.trim();
+  const body = raw.slice(start).replace(/^```(?:js|javascript)?\s*\n/i, "");
+  const end = body.indexOf("```");
+  return (end === -1 ? body : body.slice(0, end)).trimEnd();
+}
+
+async function runStudioGenerate() {
+  if (studio.generating) {
+    window.api?.studioGenerateCancel?.();
+    return;
+  }
+  const prompt = studioPrompt?.value.trim();
+  if (!prompt) {
+    studioPrompt?.focus();
+    if (studioGenStatus)
+      studioGenStatus.textContent = "Describe what the script should do first.";
+    return;
+  }
+  const before = studioEditor.value;
+  setGenerating(true);
+  if (studioGenStatus) studioGenStatus.textContent = "Starting local AI…";
+  try {
+    const res = await window.api.studioGenerate({
+      prompt,
+      currentCode: before,
+      model: studioModelSelect?.value || "",
+    });
+    if (res?.ok && res.code) {
+      studioEditor.value = before;
+      setEditorCode(res.code, {
+        file: before.trim() ? studio.currentFile : "",
+        label: `Generated with ${res.model}`,
+      });
+      if (studioGenStatus) {
+        studioGenStatus.textContent = `Done with ${res.model}. Review the code, then Save & Load.`;
+      }
+    } else {
+      studioEditor.value = before;
+      updateGutter();
+      if (studioGenStatus) {
+        studioGenStatus.textContent =
+          res?.error === "Cancelled"
+            ? "Generation cancelled."
+            : `Error: ${res?.error || "Could not reach Ollama"}`;
+      }
+    }
+  } finally {
+    setGenerating(false);
+  }
+}
+
+studioGenerateBtn?.addEventListener("click", runStudioGenerate);
+studioPrompt?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    runStudioGenerate();
+  }
+});
+
+window.api?.onStudioGenProgress?.((prog) => {
+  if (!prog || !studio.generating) return;
+  if (studioGenStatus && prog.message) {
+    studioGenStatus.textContent = prog.message;
+  }
+  if (typeof prog.text === "string" && prog.text && studioEditor) {
+    studioEditor.value = stripFences(prog.text);
+    updateGutter();
+    studioEditor.scrollTop = studioEditor.scrollHeight;
+    if (studioGutter) studioGutter.scrollTop = studioEditor.scrollTop;
+  }
+});
+
+// --- Studio docs ---
+function timeAgo(ts) {
+  if (!ts) return "";
+  const mins = Math.round((Date.now() - ts) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 48) return `${hrs}h ago`;
+  return `${Math.round(hrs / 24)}d ago`;
+}
+
+function renderDocsStatus(st) {
+  if (!st) return;
+  if (studioDocsCount) studioDocsCount.textContent = String(st.sections || 0);
+  if (studioDocsBadge) {
+    const ver = st.version ? `v${st.version}` : "";
+    studioDocsBadge.textContent = st.downloading
+      ? "Downloading docs…"
+      : st.source === "downloaded"
+        ? `Mineflayer ${ver} · updated ${timeAgo(st.fetchedAt)}`
+        : st.source === "bundled"
+          ? `Mineflayer ${ver} · bundled copy`
+          : "No docs yet";
+  }
+  if (studioDocsUpdate) studioDocsUpdate.disabled = Boolean(st.downloading);
+}
+
+function mdInline(text) {
+  return escapeHtml(text)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2">$1</a>')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1");
+}
+
+function renderMarkdown(md) {
+  const lines = String(md || "").split("\n");
+  let html = "";
+  let para = [];
+  let list = [];
+  let code = null;
+  const flushPara = () => {
+    if (para.length) html += `<p>${mdInline(para.join(" "))}</p>`;
+    para = [];
+  };
+  const flushList = () => {
+    if (list.length)
+      html += `<ul>${list.map((li) => `<li>${mdInline(li)}</li>`).join("")}</ul>`;
+    list = [];
+  };
+  for (const line of lines) {
+    if (code !== null) {
+      if (/^```/.test(line)) {
+        html += `<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`;
+        code = null;
+      } else {
+        code.push(line);
+      }
+      continue;
+    }
+    if (/^```/.test(line)) {
+      flushPara();
+      flushList();
+      code = [];
+    } else if (/^\s*[-*]\s+/.test(line)) {
+      flushPara();
+      list.push(line.replace(/^\s*[-*]\s+/, ""));
+    } else if (/^#{1,6}\s/.test(line)) {
+      flushPara();
+      flushList();
+      html += `<p><b>${mdInline(line.replace(/^#+\s*/, ""))}</b></p>`;
+    } else if (!line.trim()) {
+      flushPara();
+      flushList();
+    } else if (list.length && /^\s{2,}/.test(line)) {
+      list[list.length - 1] += ` ${line.trim()}`;
+    } else {
+      flushList();
+      para.push(line.trim());
+    }
+  }
+  if (code !== null)
+    html += `<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`;
+  flushPara();
+  flushList();
+  return html;
+}
+
+let docsSearchTimer = null;
+async function runDocsSearch() {
+  if (!window.api?.studioDocsSearch || !studioDocsList) return;
+  const results = await window.api.studioDocsSearch(
+    studioDocsSearch?.value || "",
+  );
+  if (!results?.length) {
+    studioDocsList.innerHTML = `<p class="radar-empty">No matching topics</p>`;
+    return;
+  }
+  studioDocsList.innerHTML = results
+    .map(
+      (r) => `
+        <div class="radar-item${r.id === studio.activeDocId ? " is-active" : ""}" data-doc-id="${escapeHtml(r.id)}">
+          <span class="radar-item-name">${escapeHtml(r.title)}</span>
+          <span class="studio-doc-path">${escapeHtml(r.path || r.source)}</span>
+        </div>`,
+    )
+    .join("");
+}
+
+async function openDocSection(id) {
+  if (!window.api?.studioDocsSection || !studioDocsReader) return;
+  const sec = await window.api.studioDocsSection(id);
+  if (!sec) return;
+  studio.activeDocId = id;
+  studioDocsList
+    ?.querySelectorAll(".radar-item")
+    .forEach((el) => el.classList.toggle("is-active", el.dataset.docId === id));
+  const hasCode = /```/.test(sec.body);
+  studioDocsReader.innerHTML = `
+    <h4>${escapeHtml(sec.title)}</h4>
+    <span class="studio-doc-path">${escapeHtml([sec.sourceTitle, sec.path].filter(Boolean).join(" › "))}</span>
+    ${renderMarkdown(sec.body) || `<p class="radar-empty">No description</p>`}
+    <div class="studio-docs-actions">
+      <button type="button" class="btn btn-small btn-ghost" data-doc-ask>Ask AI to use this</button>
+      ${hasCode ? `<button type="button" class="btn btn-small btn-ghost" data-doc-insert>Insert example</button>` : ""}
+    </div>`;
+  studioDocsReader.scrollTop = 0;
+  studioDocsReader.dataset.title = sec.title;
+  studioDocsReader.dataset.example =
+    (sec.body.match(/```(?:js|javascript)?\s*\n([\s\S]*?)```/) || [])[1] || "";
+}
+
+function insertIntoEditor(text) {
+  if (!studioEditor) return;
+  studioEditor.focus();
+  const start = studioEditor.selectionStart ?? studioEditor.value.length;
+  studioEditor.setSelectionRange(start, start);
+  document.execCommand("insertText", false, `${text.trimEnd()}\n`);
+  updateGutter();
+}
+
+function showStudioView(view) {
+  document
+    .querySelector(`.studio-view-tab[data-studio-view="${view}"]`)
+    ?.click();
+}
+
+studioDocsList?.addEventListener("click", (e) => {
+  const item = e.target.closest("[data-doc-id]");
+  if (item) openDocSection(item.dataset.docId);
+});
+
+studioDocsReader?.addEventListener("click", (e) => {
+  if (e.target.closest("[data-doc-insert]")) {
+    showStudioView("editor");
+    insertIntoEditor(studioDocsReader.dataset.example || "");
+  } else if (e.target.closest("[data-doc-ask]")) {
+    showStudioView("editor");
+    if (studioPrompt) {
+      const title = studioDocsReader.dataset.title || "";
+      studioPrompt.value =
+        `${studioPrompt.value.trim()} ${studioPrompt.value.trim() ? "using" : "Use"} ${title}`.trim();
+      studioPrompt.focus();
+    }
+  }
+});
+
+studioDocsSearch?.addEventListener("input", () => {
+  clearTimeout(docsSearchTimer);
+  docsSearchTimer = setTimeout(runDocsSearch, 160);
+});
+
+studioDocsUpdate?.addEventListener("click", async () => {
+  if (!window.api?.studioDocsDownload) return;
+  renderDocsStatus({ downloading: true });
+  const res = await window.api.studioDocsDownload({ force: true });
+  renderDocsStatus(res?.status);
+  if (res && !res.ok && studioDocsBadge) {
+    studioDocsBadge.textContent = `Download failed · using ${res.status?.source || "bundled"} copy`;
+  }
+  runDocsSearch();
+});
+
+window.api?.onStudioDocsStatus?.((st) => {
+  renderDocsStatus(st);
+  if (!st?.downloading && studioDocsList?.children.length) runDocsSearch();
+});
+
+async function initStudio() {
+  if (studio.ready || !window.api?.studioGetInit) return;
+  try {
+    const init = await window.api.studioGetInit();
+    studio.ready = true;
+    studio.templates = init.templates || [];
+    studio.customScripts = init.customScripts || [];
+    buildPickerOptions();
+    renderDocsStatus(init.docs);
+    if (latestOllamaStatus) refreshStudioModels(latestOllamaStatus);
+    updateGutter();
+  } catch (_) {}
+}
+
+document
+  .querySelector('.workspace-tab[data-tab="studio"]')
+  ?.addEventListener("click", () => {
+    if (!studio.ready) initStudio();
+    else if (window.api?.studioGetInit) {
+      window.api.studioGetInit().then((init) => {
+        studio.customScripts = init.customScripts || [];
+        buildPickerOptions();
+        renderDocsStatus(init.docs);
+      });
+    }
+  });
+
+initStudio();

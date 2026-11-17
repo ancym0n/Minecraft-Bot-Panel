@@ -27,6 +27,9 @@ const {
   attachSmartMovement,
 } = require("./src/js/botUtils");
 const { ollamaManager } = require("./src/js/ollamaManager");
+const { ChatQueue } = require("./src/js/chatQueue");
+const { createAiTools } = require("./src/js/aiTools");
+const scriptStudio = require("./src/js/scriptStudio");
 const { sessionLogger } = require("./src/js/sessionLogger");
 const updater = require("./src/js/updater");
 
@@ -384,6 +387,35 @@ let lastInventoryJson = "";
 
 const scriptFunctions = new Map();
 const activeScripts = new Set();
+
+// Code execution needs the opt-in AND an explicit allowed-players list.
+function aiCanRunCode(sender) {
+  return (
+    Boolean(ollamaManager.config.agentAllowCode) &&
+    String(ollamaManager.config.agentAllowedPlayers || "").trim() !== "" &&
+    ollamaManager.canCommand(sender)
+  );
+}
+
+const aiChatQueue = new ChatQueue({
+  getBot: () => bot,
+  getConfig: () => ollamaManager.config,
+  log: (text) => log(text),
+});
+
+const aiTools = createAiTools({
+  getBot: () => bot,
+  loadLibraries,
+  log: (text) => log(text),
+  onTaskDone: (evt) => handleAiTaskDone(evt),
+  canRunCode: (sender) => aiCanRunCode(sender),
+  scripts: {
+    list: () => Array.from(scriptFunctions.keys()),
+    active: () => Array.from(activeScripts),
+    start: (name) => startScriptByName(name),
+    stop: (name) => stopScriptByName(name),
+  },
+});
 const activeControlStates = {
   forward: false,
   back: false,
@@ -574,6 +606,121 @@ function buildLiveBotAiContext() {
     nearbyPlayers: nearbyPlayers.slice(0, 6),
     activeScripts: Array.from(activeScripts),
   };
+}
+
+// Chat reply, or a tool-using agent run when AIAgent is on and the
+// sender is allowed to give commands.
+function runAiReply({
+  sender,
+  message,
+  overrideModel = "",
+  bypassCooldown = false,
+  forceAgent = null,
+}) {
+  const useAgent = forceAgent ?? Boolean(ollamaManager.config.agentEnabled);
+  const botContext = buildLiveBotAiContext();
+  if (useAgent && bot && bot.entity && ollamaManager.canCommand(sender)) {
+    return ollamaManager.runAgent({
+      sender,
+      message,
+      botContext,
+      tools: aiTools.schemasFor(sender),
+      executeTool: aiTools.executeTool,
+      overrideModel,
+      bypassCooldown,
+    });
+  }
+  return ollamaManager.generateChatReply({
+    sender,
+    message,
+    botContext,
+    overrideModel,
+    bypassCooldown,
+  });
+}
+
+function logAiResult(res, target) {
+  const tag = res.actions?.length ? "AIAgent" : "ChatAI";
+  const parts = res.parts?.length || 1;
+  log(
+    `${tag}: [${res.model} · ${res.latencyMs}ms${parts > 1 ? ` · ${parts} msgs` : ""}] ➙ ${target}: ${res.reply}`,
+  );
+  if (res.note) log(`${tag}: ${res.note}`);
+  sessionLogger.record(
+    "AI Reply",
+    `Replied to ${target} (${res.model})`,
+    `Reply: "${res.reply}"${res.actions?.length ? ` · Actions: ${res.actions.map((a) => a.name).join(", ")}` : ""} (${res.latencyMs}ms)`,
+  );
+  pushSessionLogStatus();
+}
+
+// When a background task fails (stuck, no path, mob survived...), let the
+// agent try to fix it, at most twice per player within 90 seconds.
+const aiFixAttempts = new Map();
+
+async function handleAiTaskDone(evt) {
+  if (!evt || evt.ok || !ollamaManager.config.agentEnabled) return;
+  const currentBot = bot;
+  if (!currentBot || !currentBot.entity) return;
+  const sender = evt.sender || "Player";
+  const now = Date.now();
+  const prev = aiFixAttempts.get(sender);
+  const count = prev && now - prev.at < 90000 ? prev.count : 0;
+  if (count >= 2) {
+    log(`AIAgent: Giving up on ${evt.name} for ${sender}`);
+    return;
+  }
+  aiFixAttempts.set(sender, { count: count + 1, at: now });
+
+  for (let i = 0; i < 60 && ollamaManager.isGenerating; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  if (bot !== currentBot) return;
+  const lastTry = count + 1 >= 2;
+  log(
+    `AIAgent: ${evt.name} failed, ${lastTry ? "telling" : "trying to fix it for"} ${sender}`,
+  );
+  const res = await ollamaManager.runAgent({
+    sender,
+    message: `[Task report, not a chat message] Your ${evt.name} task failed: ${evt.result}. ${
+      lastTry
+        ? `Do not retry. Tell ${sender} in one short sentence what went wrong.`
+        : `Fix it now with a different approach (another tool, another target or position${aiCanRunCode(sender) ? ", or run_code" : ""}). Never repeat the same call with the same arguments. If it is impossible, tell ${sender} briefly.`
+    }`,
+    botContext: buildLiveBotAiContext(),
+    tools: aiTools.schemasFor(sender),
+    executeTool: aiTools.executeTool,
+    bypassCooldown: true,
+    remember: false,
+  });
+  if (bot !== currentBot || !res.ok) return;
+  logAiResult(res, sender);
+  aiChatQueue.send(res.parts?.length ? res.parts : [res.reply]);
+}
+
+async function handleAiChat(currentBot, text) {
+  const parsed = parseChatSenderAndMessage(text, currentBot.username);
+  if (!parsed || aiChatQueue.isBusy()) return;
+  if (
+    !ollamaManager.shouldRespondToChat({
+      sender: parsed.sender,
+      message: parsed.content,
+      botUsername: currentBot.username,
+    })
+  ) {
+    return;
+  }
+  const res = await runAiReply({
+    sender: parsed.sender,
+    message: parsed.content,
+  });
+  if (bot !== currentBot) return;
+  if (!res.ok) {
+    if (res.error && !res.silent) log(`ChatAI error: ${res.error}`);
+    return;
+  }
+  logAiResult(res, parsed.sender);
+  await aiChatQueue.send(res.parts?.length ? res.parts : [res.reply]);
 }
 
 function sendToRenderer(channel, ...args) {
@@ -1640,100 +1787,139 @@ function stopTelemetryLoop() {
   pushBotInventory(true);
 }
 
-function loadScriptsFromDir(fullDirectory, type) {
-  if (!fs.existsSync(fullDirectory)) {
-    log(`Loaded ${type} (0) scripts`);
-    return;
+// Scripts whose on/off state mirrors a flag in the AI config.
+const AI_SCRIPT_FLAGS = { ChatAI: "enabled", AIAgent: "agentEnabled" };
+const scriptSources = new Map();
+const scriptRunIds = new Map();
+
+function setAiScriptFlag(scriptName, on) {
+  const flag = AI_SCRIPT_FLAGS[scriptName];
+  if (!flag || Boolean(ollamaManager.config[flag]) === on) return;
+  ollamaManager.saveConfig({ [flag]: on });
+  if (!ollamaManager.isActive()) aiChatQueue.clear();
+  ollamaManager
+    .getStatus()
+    .then((st) => sendToRenderer("ollama-status", st))
+    .catch(() => {});
+}
+
+function renderScriptOptionHtml(option, scriptName) {
+  const fieldId = `${escapeAttr(option.id)}-${escapeAttr(scriptName)}`;
+  const label = escapeAttr(option.label);
+  if (option.type === "checkbox") {
+    return `<label class="script-checkbox-row" for="${fieldId}"><input type="checkbox" id="${fieldId}" value="off" onclick="checkbox('${fieldId}')"/><span>${label}</span></label>`;
+  }
+  if (option.type === "select") {
+    const choices = Array.isArray(option.choices) ? option.choices : [];
+    const opts = choices
+      .map((c) => {
+        const value = typeof c === "object" ? c.value : c;
+        const text = typeof c === "object" ? c.label || c.value : c;
+        return `<option value="${escapeAttr(value)}">${escapeAttr(text)}</option>`;
+      })
+      .join("");
+    return `<div class="script-input-group"><label for="${fieldId}">${label}</label><select id="${fieldId}" class="script-select">${opts}</select></div>`;
+  }
+  if (option.type === "input") {
+    return `<div class="script-input-group"><label for="${fieldId}">${label}</label><input type="text" id="${fieldId}" class="script-text-input" spellcheck="false"${option.placeholder ? ` placeholder="${escapeAttr(option.placeholder)}"` : ""}/></div>`;
+  }
+  return "";
+}
+
+function registerScriptFile(fullPath, type) {
+  delete require.cache[require.resolve(fullPath)];
+  const scriptDetails = require(fullPath);
+  if (!scriptDetails || !scriptDetails.info || !scriptDetails.info.name) {
+    return null;
+  }
+  if (typeof scriptDetails.script !== "function") {
+    throw new Error("missing exported script() function");
   }
 
+  const scriptName = String(scriptDetails.info.name);
+  const options = Array.isArray(scriptDetails.info.options)
+    ? scriptDetails.info.options
+    : [];
+
+  let formattedHTML = `<div class="${escapeAttr(scriptName)}-script script-container" data-script="${escapeAttr(scriptName)}" data-type="${escapeAttr(type)}"><p class="${escapeAttr(scriptName)}-name script-name" data-script="${escapeAttr(scriptName)}">${escapeAttr(scriptName)}</p><form class="script-options">`;
+  for (const option of options) {
+    formattedHTML += renderScriptOptionHtml(option, scriptName);
+  }
+  formattedHTML += "</form></div>";
+
+  scriptSources.set(scriptName, { type, fullPath });
+  sendToRenderer("on-script", formattedHTML, scriptName, {
+    name: scriptName,
+    type,
+    options,
+    aiSync: Boolean(scriptDetails.info.aiSync),
+  });
+
+  scriptFunctions.set(scriptName, () => {
+    const libs = loadLibraries();
+    const runId = (scriptRunIds.get(scriptName) || 0) + 1;
+    scriptRunIds.set(scriptName, runId);
+    return Promise.resolve()
+      .then(() =>
+        scriptDetails.script(
+          bot,
+          log,
+          clearLog,
+          getOption,
+          (func, intervalNum) => {
+            const safeInterval =
+              Number.isFinite(Number(intervalNum)) && Number(intervalNum) >= 50
+                ? Number(intervalNum)
+                : 1000;
+            return new Promise((resolve) => {
+              const timer = setInterval(async () => {
+                if (!activeScripts.has(scriptName)) {
+                  clearInterval(timer);
+                  resolve(true);
+                } else {
+                  try {
+                    await func();
+                  } catch (err) {
+                    log(`Error in ${scriptName}: ${err.message}`);
+                  }
+                }
+              }, safeInterval);
+            });
+          },
+          libs,
+        ),
+      )
+      .catch((err) => {
+        log(`Error in ${scriptName}: ${err.message || err}`);
+      })
+      .finally(() => {
+        // A newer run (quick off/on toggle) owns the state now.
+        if (scriptRunIds.get(scriptName) !== runId) return;
+        activeScripts.delete(scriptName);
+        setAiScriptFlag(scriptName, false);
+        sendToRenderer("script-state", scriptName, false);
+      });
+  });
+  return scriptName;
+}
+
+function loadScriptsFromDir(fullDirectory, type) {
   let files = [];
   try {
-    files = fs
-      .readdirSync(fullDirectory)
-      .filter((f) => f.endsWith(".js"))
-      .sort();
-  } catch (_) {
-    log(`Loaded ${type} (0) scripts`);
-    return;
-  }
+    files = fs.existsSync(fullDirectory)
+      ? fs
+          .readdirSync(fullDirectory)
+          .filter((f) => f.endsWith(".js"))
+          .sort()
+      : [];
+  } catch (_) {}
 
   let scriptAmount = 0;
   for (const file of files) {
-    const fullPath = path.join(fullDirectory, file);
     try {
-      delete require.cache[require.resolve(fullPath)];
-      const scriptDetails = require(fullPath);
-      if (!scriptDetails || !scriptDetails.info || !scriptDetails.info.name) {
-        continue;
+      if (registerScriptFile(path.join(fullDirectory, file), type)) {
+        scriptAmount += 1;
       }
-
-      scriptAmount += 1;
-      const scriptName = String(scriptDetails.info.name);
-      const options = Array.isArray(scriptDetails.info.options)
-        ? scriptDetails.info.options
-        : [];
-
-      let formattedHTML = `<div class="${escapeAttr(scriptName)}-script script-container" data-script="${escapeAttr(scriptName)}"><p class="${escapeAttr(scriptName)}-name script-name" data-script="${escapeAttr(scriptName)}">${escapeAttr(scriptName)}</p><form class="script-options">`;
-
-      for (let i = 0; i < options.length; i++) {
-        const option = options[i];
-        const fieldId = `${escapeAttr(option.id)}-${escapeAttr(scriptName)}`;
-        if (option.type === "checkbox") {
-          formattedHTML += `<label class="script-checkbox-row" for="${fieldId}"><input type="checkbox" id="${fieldId}" value="off" onclick="checkbox('${fieldId}')"/><span>${escapeAttr(option.label)}</span></label>`;
-        } else if (option.type === "input") {
-          formattedHTML += `<div class="script-input-group"><label for="${fieldId}">${escapeAttr(option.label)}</label><input type="text" id="${fieldId}" class="script-text-input" spellcheck="false"/></div>`;
-        }
-      }
-
-      formattedHTML += "</form></div>";
-      sendToRenderer("on-script", formattedHTML, scriptName, {
-        name: scriptName,
-        type,
-        options,
-      });
-
-      scriptFunctions.set(scriptName, () => {
-        const libs = loadLibraries();
-        return Promise.resolve(
-          scriptDetails.script(
-            bot,
-            log,
-            clearLog,
-            getOption,
-            (func, intervalNum) => {
-              const safeInterval =
-                Number.isFinite(Number(intervalNum)) &&
-                Number(intervalNum) >= 50
-                  ? Number(intervalNum)
-                  : 1000;
-              return new Promise((resolve) => {
-                const timer = setInterval(async () => {
-                  if (!activeScripts.has(scriptName)) {
-                    clearInterval(timer);
-                    resolve(true);
-                  } else {
-                    try {
-                      await func();
-                    } catch (err) {
-                      log(`Error in ${scriptName}: ${err.message}`);
-                    }
-                  }
-                }, safeInterval);
-              });
-            },
-            libs,
-          ),
-        )
-          .catch((err) => {
-            log(`Error in ${scriptName}: ${err.message || err}`);
-          })
-          .finally(() => {
-            if (activeScripts.has(scriptName)) {
-              activeScripts.delete(scriptName);
-            }
-            sendToRenderer("script-state", scriptName, false);
-          });
-      });
     } catch (err) {
       log(`Failed to load ${file}: ${err.message}`);
     }
@@ -1742,9 +1928,29 @@ function loadScriptsFromDir(fullDirectory, type) {
   log(`Loaded ${type} (${scriptAmount}) scripts`);
 }
 
+function startScriptByName(id) {
+  const runner = scriptFunctions.get(id);
+  if (!runner || activeScripts.has(id)) return false;
+  activeScripts.add(id);
+  setAiScriptFlag(id, true);
+  sendToRenderer("script-state", id, true);
+  runner();
+  return true;
+}
+
+function stopScriptByName(id) {
+  if (!activeScripts.has(id)) return false;
+  activeScripts.delete(id);
+  setAiScriptFlag(id, false);
+  sendToRenderer("script-state", id, false);
+  return true;
+}
+
 function loadAllScripts() {
   scriptFunctions.clear();
+  scriptSources.clear();
   activeScripts.clear();
+  Object.keys(AI_SCRIPT_FLAGS).forEach((id) => setAiScriptFlag(id, false));
   sendToRenderer("clear-scripts");
 
   const defaultLoading = "Loading default scripts...";
@@ -1769,6 +1975,8 @@ function disconnectBot(isManual = true) {
     activeScripts.clear();
   }
   cachedSigns = [];
+  aiChatQueue.clear();
+  aiTools.stopAll();
   if (bot) {
     try {
       bot.end();
@@ -1812,6 +2020,14 @@ function enterPanelWithSession() {
       ollamaManager
         .getStatus()
         .then((st) => sendToRenderer("ollama-status", st))
+        .catch(() => {});
+      try {
+        scriptStudio.setBaseDirs([loadLibraries().baseDir, __dirname]);
+      } catch (_) {}
+      // Keep Mineflayer docs fresh for the Studio tab in the background.
+      scriptStudio
+        .downloadDocs()
+        .then((res) => sendToRenderer("studio-docs-status", res.status))
         .catch(() => {});
       syncLatestMineflayer({
         onLog: log,
@@ -2671,12 +2887,7 @@ function registerIpcHandlers() {
 
         if (restoredScripts && restoredScripts.size > 0) {
           for (const scriptId of restoredScripts) {
-            const runner = scriptFunctions.get(scriptId);
-            if (runner) {
-              activeScripts.add(scriptId);
-              sendToRenderer("script-state", scriptId, true);
-              runner();
-            }
+            startScriptByName(scriptId);
           }
           log(
             `AutoReconnect: Restored ${restoredScripts.size} active script(s)`,
@@ -2763,41 +2974,8 @@ function registerIpcHandlers() {
           );
           pushSessionLogStatus();
 
-          // Check if Ollama ChatAI should auto-respond
-          if (activeScripts.has("ChatAI") || ollamaManager.config.enabled) {
-            const parsed = parseChatSenderAndMessage(
-              payload.text || payload.motd,
-              currentBot.username,
-            );
-            if (
-              parsed &&
-              ollamaManager.shouldRespondToChat({
-                sender: parsed.sender,
-                message: parsed.content,
-                botUsername: currentBot.username,
-              })
-            ) {
-              const botContext = buildLiveBotAiContext();
-              const aiRes = await ollamaManager.generateChatReply({
-                sender: parsed.sender,
-                message: parsed.content,
-                botContext,
-              });
-              if (aiRes.ok && aiRes.reply && bot === currentBot) {
-                currentBot.chat(aiRes.reply);
-                log(
-                  `ChatAI: [${aiRes.model} · ${aiRes.latencyMs}ms] ➙ ${parsed.sender}: ${aiRes.reply}`,
-                );
-                sessionLogger.record(
-                  "AI Reply",
-                  `Replied to ${parsed.sender} (${aiRes.model})`,
-                  `Prompt: "${parsed.content}" ➙ Reply: "${aiRes.reply}" (${aiRes.latencyMs}ms)`,
-                );
-                pushSessionLogStatus();
-              } else if (!aiRes.ok && aiRes.error) {
-                log(`ChatAI error: ${aiRes.error}`);
-              }
-            }
+          if (ollamaManager.isActive()) {
+            handleAiChat(currentBot, payload.text || payload.motd);
           }
         }
       });
@@ -2912,24 +3090,27 @@ function registerIpcHandlers() {
         if (!promptText) {
           const st = await ollamaManager.getStatus();
           log(
-            `ChatAI: ${st.serverRunning ? "Online" : "Offline"} | Model: ${st.config.model || st.hardware.recommendedModel} | Auto-reply: ${st.config.enabled ? "ON" : "OFF"}`,
+            `ChatAI: ${st.serverRunning ? "Online" : "Offline"} | Model: ${st.config.model || st.hardware.recommendedModel} | Auto-reply: ${st.config.enabled ? "ON" : "OFF"} | Agent: ${st.config.agentEnabled ? "ON" : "OFF"}`,
           );
           return;
         }
         log(`ChatAI: Generating reply for "${promptText}"...`);
-        const aiRes = await ollamaManager.generateChatReply({
+        const aiRes = await runAiReply({
           sender: sessionState.mcName || sessionState.username || "User",
           message: promptText,
-          botContext: buildLiveBotAiContext(),
           bypassCooldown: true,
         });
         if (aiRes.ok) {
-          log(`ChatAI (${aiRes.model}, ${aiRes.latencyMs}ms): ${aiRes.reply}`);
+          logAiResult(aiRes, "Server");
           if (bot && typeof bot.chat === "function") {
-            bot.chat(aiRes.reply);
+            aiChatQueue.send(aiRes.parts?.length ? aiRes.parts : [aiRes.reply]);
           }
         } else {
-          log(`ChatAI error: ${aiRes.error}`);
+          log(
+            aiRes.silent
+              ? "ChatAI: Model chose not to reply"
+              : `ChatAI error: ${aiRes.error}`,
+          );
         }
         return;
       }
@@ -3078,51 +3259,29 @@ function registerIpcHandlers() {
 
   ipcMain.on("on-script-toggle-on", (_event, scriptId) => {
     const id = String(scriptId || "");
-    const runner = scriptFunctions.get(id);
-    if (runner) {
-      activeScripts.add(id);
-      if (id === "ChatAI") {
-        ollamaManager.saveConfig({ enabled: true });
-        ollamaManager
-          .getStatus()
-          .then((st) => sendToRenderer("ollama-status", st))
-          .catch(() => {});
-      }
-      sessionLogger.record("UI Click", `Toggled ON script: ${id}`, "");
-      pushSessionLogStatus();
-      sendToRenderer("script-state", id, true);
-      const tempLogText = "Toggled on ";
-      clearLog(tempLogText);
-      log(tempLogText + id);
-      runner();
-    }
+    if (!scriptFunctions.has(id)) return;
+    sessionLogger.record("UI Click", `Toggled ON script: ${id}`, "");
+    pushSessionLogStatus();
+    const tempLogText = "Toggled on ";
+    clearLog(tempLogText);
+    log(tempLogText + id);
+    if (!startScriptByName(id)) sendToRenderer("script-state", id, true);
   });
 
   ipcMain.on("on-script-toggle-off", (_event, scriptId) => {
     const id = String(scriptId || "");
-    if (activeScripts.has(id)) {
-      activeScripts.delete(id);
-      if (id === "ChatAI") {
-        ollamaManager.saveConfig({ enabled: false });
-        if (bot) bot._mcbpChatAiEnabled = false;
-        ollamaManager
-          .getStatus()
-          .then((st) => sendToRenderer("ollama-status", st))
-          .catch(() => {});
-      }
-      sessionLogger.record("UI Click", `Toggled OFF script: ${id}`, "");
-      pushSessionLogStatus();
-      if (
-        (id === "Guard" && activeRadarTarget.subAction === "guard") ||
-        (id === "Hunt" && activeRadarTarget.subAction === "hunt")
-      ) {
-        activeRadarTarget = { subAction: "", username: "", entityId: null };
-      }
-      sendToRenderer("script-state", id, false);
-      const tempLogText = "Toggled off ";
-      clearLog(tempLogText);
-      log(tempLogText + id);
+    if (!stopScriptByName(id)) return;
+    sessionLogger.record("UI Click", `Toggled OFF script: ${id}`, "");
+    pushSessionLogStatus();
+    if (
+      (id === "Guard" && activeRadarTarget.subAction === "guard") ||
+      (id === "Hunt" && activeRadarTarget.subAction === "hunt")
+    ) {
+      activeRadarTarget = { subAction: "", username: "", entityId: null };
     }
+    const tempLogText = "Toggled off ";
+    clearLog(tempLogText);
+    log(tempLogText + id);
   });
 
   // --- Ollama Chat AI IPC Handlers ---
@@ -3132,24 +3291,34 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle("ollama-save-config", async (_event, partial = {}) => {
-    const updated = ollamaManager.saveConfig(partial);
+    const flagChanges = {};
+    const rest = { ...(partial || {}) };
+    for (const [scriptId, flag] of Object.entries(AI_SCRIPT_FLAGS)) {
+      if (typeof rest[flag] === "boolean") {
+        flagChanges[scriptId] = rest[flag];
+        delete rest[flag];
+      }
+    }
+    const updated = ollamaManager.saveConfig(rest);
+    // Preload a newly chosen model so the next reply is fast.
+    if (ollamaManager.isActive() && ("model" in rest || "agentModel" in rest)) {
+      if (updated.enabled) ollamaManager.warmUp(ollamaManager.resolveModel());
+      if (updated.agentEnabled)
+        ollamaManager.warmUp(ollamaManager.resolveAgentModel());
+    }
     sessionLogger.record(
       "UI Click",
       "Updated ChatAI Config",
-      `Enabled: ${updated.enabled}, Model: ${updated.model}, Trigger: ${updated.triggerMode}`,
+      `Model: ${updated.model}, Trigger: ${updated.triggerMode}, Split: ${updated.splitMessages}`,
     );
     pushSessionLogStatus();
-    if (typeof partial.enabled === "boolean") {
-      if (partial.enabled && !activeScripts.has("ChatAI")) {
-        const runner = scriptFunctions.get("ChatAI");
-        if (runner) {
-          activeScripts.add("ChatAI");
-          sendToRenderer("script-state", "ChatAI", true);
-          runner();
-        }
-      } else if (!partial.enabled && activeScripts.has("ChatAI")) {
-        activeScripts.delete("ChatAI");
-        sendToRenderer("script-state", "ChatAI", false);
+    for (const [scriptId, on] of Object.entries(flagChanges)) {
+      if (on && !startScriptByName(scriptId)) {
+        // Script file missing: still honour the flag.
+        if (!scriptFunctions.has(scriptId)) setAiScriptFlag(scriptId, true);
+      } else if (!on) {
+        stopScriptByName(scriptId);
+        setAiScriptFlag(scriptId, false);
       }
     }
     const st = await ollamaManager.getStatus();
@@ -3205,9 +3374,11 @@ function registerIpcHandlers() {
         status: await ollamaManager.getStatus(),
       };
     }
-    const res = await ollamaManager.pullModel(clean, (prog) => {
-      sendToRenderer("ollama-progress", prog);
-    });
+    const res = await ollamaManager.pullModel(
+      clean,
+      (prog) => sendToRenderer("ollama-progress", prog),
+      { makeActive: true },
+    );
     const st = await ollamaManager.getStatus();
     sendToRenderer("ollama-status", st);
     if (res.ok) {
@@ -3231,12 +3402,16 @@ function registerIpcHandlers() {
     await ollamaManager.ensureServerRunning((prog) =>
       sendToRenderer("ollama-progress", prog),
     );
-    const res = await ollamaManager.generateChatReply({
-      sender: payload?.sender || "Player",
+    const res = await runAiReply({
+      sender:
+        payload?.sender ||
+        sessionState.mcName ||
+        sessionState.username ||
+        "Player",
       message: prompt,
-      botContext: buildLiveBotAiContext(),
       overrideModel: model,
       bypassCooldown: true,
+      forceAgent: Boolean(payload?.agent),
     });
     if (res.ok) {
       sessionLogger.record(
@@ -3245,12 +3420,204 @@ function registerIpcHandlers() {
         `"${res.reply}" (${res.latencyMs}ms)`,
       );
       if (payload?.sendToServer && bot && typeof bot.chat === "function") {
-        bot.chat(res.reply);
+        aiChatQueue.send(res.parts?.length ? res.parts : [res.reply]);
         log(`ChatAI ➙ Server: ${res.reply}`);
       }
     }
     pushSessionLogStatus();
     return res;
+  });
+
+  // --- Script Studio IPC Handlers ---
+  let studioAbort = null;
+
+  ipcMain.handle("studio-get-init", () => ({
+    templates: scriptStudio.listTemplates(),
+    docs: scriptStudio.getDocsStatus(),
+    customScripts: scriptStudio.listCustomScripts(resolveCustomPath("scripts")),
+    builtinScripts: Array.from(scriptSources.entries())
+      .filter(([, src]) => src.type === "default")
+      .map(([name]) => name),
+  }));
+
+  ipcMain.handle("studio-docs-download", async (_event, payload = {}) => {
+    sendToRenderer("studio-docs-status", {
+      ...scriptStudio.getDocsStatus(),
+      downloading: true,
+    });
+    const res = await scriptStudio.downloadDocs({
+      force: Boolean(payload.force),
+    });
+    sendToRenderer("studio-docs-status", res.status);
+    if (!res.ok) log(`Studio: Docs download failed (${res.error})`);
+    else if (!res.skipped) log(`Studio: Mineflayer docs updated`);
+    return res;
+  });
+
+  ipcMain.handle("studio-docs-search", (_event, query) =>
+    scriptStudio.searchDocs(String(query || ""), 60),
+  );
+
+  ipcMain.handle("studio-docs-section", (_event, id) =>
+    scriptStudio.getSection(String(id || "")),
+  );
+
+  ipcMain.handle("studio-validate", (_event, code) =>
+    scriptStudio.validateScript(String(code || "")),
+  );
+
+  ipcMain.handle("studio-open-script", (_event, file) =>
+    scriptStudio.readCustomScript(resolveCustomPath("scripts"), file),
+  );
+
+  ipcMain.handle("studio-save", async (_event, payload = {}) => {
+    const code = String(payload.code || "");
+    const check = scriptStudio.validateScript(code);
+    if (/^Syntax/.test(check.error || "")) return { ok: false, ...check };
+    const name = check.name;
+    if (!name) {
+      return {
+        ok: false,
+        error: 'Add a name, e.g. info = { name: "MyScript" }',
+      };
+    }
+
+    const existing = scriptSources.get(name);
+    if (existing && existing.type === "default") {
+      return {
+        ok: false,
+        error: `"${name}" is a built-in script name, pick another`,
+      };
+    }
+
+    const dir = resolveCustomPath("scripts");
+    fs.mkdirSync(dir, { recursive: true });
+    const fileName = `${scriptStudio.slugify(payload.file || name)}.js`;
+    const fullPath = path.join(dir, fileName);
+    if (fs.existsSync(fullPath) && !payload.overwrite) {
+      return {
+        ok: false,
+        exists: true,
+        file: fileName,
+        error: `${fileName} already exists`,
+      };
+    }
+    if (existing && existing.fullPath !== fullPath) {
+      return {
+        ok: false,
+        error: `${path.basename(existing.fullPath)} already uses the name "${name}"`,
+      };
+    }
+
+    // Same file previously registered under another name: drop the old card.
+    for (const [oldName, src] of Array.from(scriptSources.entries())) {
+      if (src.fullPath === fullPath && oldName !== name) {
+        stopScriptByName(oldName);
+        scriptFunctions.delete(oldName);
+        scriptSources.delete(oldName);
+        sendToRenderer("remove-script", oldName);
+      }
+    }
+    stopScriptByName(name);
+    fs.writeFileSync(fullPath, code, "utf8");
+    sessionLogger.record("Studio", `Saved script ${fileName}`, name);
+    pushSessionLogStatus();
+    try {
+      registerScriptFile(fullPath, "custom");
+    } catch (err) {
+      return {
+        ok: false,
+        saved: true,
+        file: fileName,
+        error: `Saved, but it failed to load: ${err.message}`,
+      };
+    }
+    log(`Studio: Saved ${fileName} → ${name} is in the Scripts tab`);
+    return {
+      ok: true,
+      file: fileName,
+      name,
+      warnings: check.problems,
+      customScripts: scriptStudio.listCustomScripts(dir),
+    };
+  });
+
+  ipcMain.handle("studio-generate", async (_event, payload = {}) => {
+    const request = String(payload.prompt || "").trim();
+    if (!request)
+      return { ok: false, error: "Describe what the script should do" };
+    if (studioAbort) studioAbort.abort();
+    const ctrl = new AbortController();
+    studioAbort = ctrl;
+    const progress = (p) => sendToRenderer("studio-gen-progress", p);
+
+    try {
+      progress({ stage: "starting", message: "Checking local Ollama..." });
+      let st = await ollamaManager.getStatus();
+      if (!st.installed) {
+        const inst = await ollamaManager.installOllamaBinary(progress);
+        if (!inst.ok) return { ok: false, error: inst.error };
+      }
+      const started = await ollamaManager.ensureServerRunning(progress);
+      if (!started.ok) return { ok: false, error: started.error };
+      st = await ollamaManager.getStatus();
+
+      const model = String(
+        payload.model || ollamaManager.resolveScriptModel(st.installedModels),
+      ).trim();
+      const installed = st.installedModels.some(
+        (m) => m.name === model || m.name === `${model}:latest`,
+      );
+      if (!installed) {
+        const pulled = await ollamaManager.pullModel(model, progress);
+        sendToRenderer("ollama-status", await ollamaManager.getStatus());
+        if (!pulled.ok) return { ok: false, error: pulled.error, model };
+      }
+      if (ctrl.signal.aborted) return { ok: false, error: "Cancelled" };
+
+      progress({
+        stage: "writing",
+        message: `Writing with ${model}...`,
+        text: "",
+      });
+      sessionLogger.record("Studio", "Generate script", `${model}: ${request}`);
+      const messages = scriptStudio.buildGenerationMessages({
+        request,
+        currentCode: payload.currentCode || "",
+      });
+      let lastSent = 0;
+      const res = await ollamaManager.streamChat({
+        model,
+        messages,
+        signal: ctrl.signal,
+        options: { temperature: 0.2, num_predict: 2048, num_ctx: 8192 },
+        onToken: (text) => {
+          const now = Date.now();
+          if (now - lastSent > 100) {
+            lastSent = now;
+            progress({
+              stage: "writing",
+              message: `Writing with ${model}...`,
+              text,
+            });
+          }
+        },
+      });
+      if (!res.ok) return { ok: false, error: res.error, model };
+      const code = scriptStudio.extractCode(res.text);
+      return {
+        ok: true,
+        code,
+        model,
+        validation: scriptStudio.validateScript(code),
+      };
+    } finally {
+      if (studioAbort === ctrl) studioAbort = null;
+    }
+  });
+
+  ipcMain.on("studio-generate-cancel", () => {
+    if (studioAbort) studioAbort.abort();
   });
 
   // --- Session Markdown Logger IPC Handlers ---
@@ -3335,6 +3702,10 @@ if (gotLock) {
   app.whenReady().then(() => {
     process.env.MCBP_VERSION = app.getVersion();
     ollamaManager.init(app.getPath("userData"));
+    scriptStudio.init({
+      userDataDir: app.getPath("userData"),
+      baseDirs: [__dirname],
+    });
     sessionLogger.init(resolveLogsDir(), { appVersion: app.getVersion() });
     registerIpcHandlers();
     createWindow();

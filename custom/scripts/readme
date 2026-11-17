@@ -1,6 +1,7 @@
 Custom Scripts Directory
 
-Place any `.js` files in this folder to load them into the Scripts panel on launch.
+Place any `.js` files in this folder to load them into the Scripts panel on launch,
+or use the Studio tab in the app (templates, Mineflayer docs and a local AI generator).
 
 Each script should export an `info` object and an async `script` function:
 
@@ -30,5 +31,8 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
 
 module.exports = { info, script };
 ```
+
+The 6th script argument is `libs` = { goals, Movements, Vec3, mcData }.
+Option types: "checkbox", "input" and "select" (with `choices: ["a", "b"]`).
 
 Only run scripts from sources you trust, since custom scripts have full access to the active Mineflayer bot instance and Node.js runtime.
