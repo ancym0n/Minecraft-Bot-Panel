@@ -59,6 +59,10 @@
   animation-delay: 0.46s;
 }
 
+#faq > div:nth-of-type(6) {
+  animation-delay: 0.52s;
+}
+
 #faq a {
   display: inline-flex;
   max-width: 16rem;

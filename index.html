@@ -28,10 +28,10 @@
     <link rel="stylesheet" href="src/css/loader.css" />
     <script src="src/js/main.js" defer></script>
     <link rel="shortcut icon" href="src/img/logo.png" type="image/png" />
-    <title>MCBP</title>
+    <title>MCBP - Minecraft Bot Panel</title>
     <meta
       name="description"
-      content="Desktop application for creating and managing Minecraft bots, running built-in automation modules, and loading custom Mineflayer scripts."
+      content="Free desktop app for running Minecraft bots. 26 built-in scripts, local AI that chats and takes orders, a script studio, and Windows, Linux and macOS builds."
     />
     <meta name="theme-color" content="#6b4ce6" />
     <meta property="og:type" content="website" />
@@ -42,7 +42,7 @@
     <meta property="og:title" content="MCBP" />
     <meta
       property="og:description"
-      content="Desktop application for creating and managing Minecraft bots, running built-in automation modules, and loading custom Mineflayer scripts."
+      content="Free desktop app for running Minecraft bots. 26 built-in scripts, local AI that chats and takes orders, a script studio, and Windows, Linux and macOS builds."
     />
     <meta
       property="og:image"
@@ -166,76 +166,79 @@
       <h1>FAQ</h1>
 
       <div>
-        <h2>1. What is your Privacy Policy?</h2>
+        <h2>1. What is MCBP?</h2>
         <p>
-          MCBP respects your privacy. The app runs on your computer, has no
-          analytics, and does not send anything to the developer. Your settings,
-          custom scripts, and cached login tokens stay on your device and are
-          only used to connect your bot to Minecraft servers.
-        </p>
-        <a href="privacy">View Privacy Policy</a>
-      </div>
-
-      <div>
-        <h2>2. What is MCBP?</h2>
-        <p>
-          MCBP stands for <i>Minecraft Bot Panel</i>. It is a desktop app for
-          creating and managing Minecraft Java Edition bots, toggling built-in
-          automation scripts, and running your own custom Mineflayer scripts
-          from a simple dashboard.
+          MCBP is short for <i>Minecraft Bot Panel</i>. It's a desktop app that
+          lets you run a Minecraft Java Edition bot without writing any code.
+          Log in, join a server, and then drive it yourself, flip on one of the
+          built-in scripts, or just tell it what to do in chat.
         </p>
       </div>
 
       <div>
-        <h2>3. What are its main features?</h2>
+        <h2>2. What can it actually do?</h2>
         <p>
-          MCBP includes <strong>Microsoft</strong> and
-          <strong>Offline</strong> login, direct <strong>WASD</strong> /
-          on-screen control pad movement with a live nearby entity
-          <strong>Radar</strong>, an interactive
-          <strong>46-Slot Inventory</strong> with one-click
-          <strong>Auto-Gear</strong>, 13 built-in automation scripts
-          (<strong>AntiAFK</strong>, <strong>AutoArmor</strong>,
-          <strong>AutoEat</strong>, <strong>AutoTool</strong>,
-          <strong>AutoTotem</strong>, <strong>ClearInv</strong>,
-          <strong>Follow</strong>, <strong>GoTo</strong>,
-          <strong>Guard</strong>, <strong>HumanAI</strong>,
-          <strong>KillAura</strong>, <strong>Mine</strong>, and
-          <strong>Spam</strong>), automatic
-          <strong>Mineflayer Version Sync</strong>, live server
-          <strong>Chat</strong> (with <code>!</code> bot commands) and
-          <strong>Logs</strong> panels, and custom <i>.js</i> scripts and
-          <i>theme.css</i> styles.
+          Quite a lot. You get <strong>Microsoft</strong> and
+          <strong>Offline</strong> login, <strong>WASD</strong> control with a
+          live radar of nearby players, mobs and signs, and a
+          <strong>46-slot inventory</strong> that also shows chests, shops and
+          server menus you can click through. On top of that there are
+          <strong>26 built-in scripts</strong>: farming, fishing, mining,
+          tunneling, building, chest looting, auto-eat, auto-armor, KillAura,
+          Guard, Follow, AutoReconnect, a full <strong>GearUp</strong> from wood
+          to diamond, a <strong>Survival</strong> mode that just plays on its
+          own, and more. Chat comes with all its colors, plus
+          <code>!</code> commands for the bot.
         </p>
       </div>
 
       <div>
-        <h2>4. How do I use it or write custom scripts?</h2>
+        <h2>3. Does it have AI?</h2>
         <p>
-          The app pairs an Electron dashboard with <i>mineflayer</i> and
-          <i>mineflayer-pathfinder</i>. You can toggle built-in scripts right
-          from the panel, drive the bot or manage its inventory directly, drop
-          your own <i>.js</i> files into <i>custom/scripts/</i>, or restyle the
-          app with <i>custom/theme.css</i>.
+          Yep, and it runs on your own PC, no API keys or subscriptions. Click
+          <strong>Auto-Setup</strong> in the AI tab and it grabs
+          <strong>Ollama</strong> and a model that fits your hardware. The bot
+          can then chat like a normal player (paced so anti-spam plugins leave
+          it alone), and with <strong>Actions</strong> on, players can ask it to
+          "follow me" or "mine 10 oak logs" and it'll actually do it. You decide
+          who's allowed to give it orders.
+        </p>
+      </div>
+
+      <div>
+        <h2>4. Can I make my own scripts?</h2>
+        <p>
+          Sure. The <strong>Studio</strong> tab has templates, the Mineflayer
+          docs built right in, and can write a script for you from a plain
+          description using your local AI. Or drop your own <i>.js</i> files
+          into <i>custom/scripts/</i>. Want different colors? Edit
+          <i>custom/theme.css</i>.
         </p>
         <a href="docs">View Documentation</a>
       </div>
 
       <div>
-        <h2>
-          5. Which operating systems and Minecraft versions are supported?
-        </h2>
+        <h2>5. Which systems and Minecraft versions work?</h2>
         <p>
-          MCBP natively supports both <strong>Windows</strong> and
-          <strong>Linux</strong> (64-bit) without needing Node.js installed.
-          Ready-made builds are available as a Windows setup installer
-          (<i>.exe</i>), Linux <i>.AppImage</i>, and portable <i>.zip</i>
-          archives—the <strong>Download Manager</strong> above automatically
-          detects your system and recommends the best package. It supports
-          Minecraft Java Edition from <strong>1.8</strong> up to the newest
-          release supported by PrismarineJS, and leaving the version input on
-          <strong>Auto</strong> detects the server's version automatically.
+          <strong>Windows</strong>, <strong>Linux</strong> (deb, rpm, pacman,
+          AppImage or tar.gz) and <strong>macOS</strong> (Intel and Apple
+          Silicon). You don't need Node.js. The Download button picks the right
+          file for you. Minecraft Java Edition works from
+          <strong>1.8</strong> up to the newest version Mineflayer supports, and
+          the app keeps Mineflayer updated on its own, so new versions usually
+          work without an MCBP update. Leave the version on
+          <strong>Auto</strong> and it'll detect it.
         </p>
+      </div>
+
+      <div>
+        <h2>6. Is it free? What about my data?</h2>
+        <p>
+          It's free and open source (GPL-3.0). There's no analytics and nothing
+          gets sent to me. Your logins, settings, scripts, chat logs and AI
+          models all stay on your computer.
+        </p>
+        <a href="privacy">View Privacy Policy</a>
       </div>
     </section>
 
@@ -269,11 +272,7 @@
 
         <h1 id="dm-title">Download</h1>
 
-        <div
-          id="dm-os-tabs"
-          role="tablist"
-          aria-label="Operating system"
-        ></div>
+        <div id="dm-os-tabs" role="tablist" aria-label="Operating system"></div>
 
         <div id="dm-asset-list" role="list"></div>
 
