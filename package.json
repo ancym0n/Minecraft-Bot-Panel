@@ -5,12 +5,13 @@
   "main": "index.js",
   "scripts": {
     "start": "electron .",
-    "make": "electron-builder --linux AppImage zip --win nsis zip --x64",
-    "make:linux": "electron-builder --linux AppImage zip --x64",
-    "make:win": "electron-builder --win nsis zip --x64",
+    "make": "node build/make.js",
+    "make:linux": "node build/make.js linux",
+    "make:win": "node build/make.js win",
     "update:mineflayer": "node src/js/syncVersions.js",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "make:mac": "node build/make.js mac"
   },
   "keywords": [],
   "author": {
@@ -20,9 +21,12 @@
   "license": "GPL-3.0-only",
   "description": "GUI-based Minecraft bot manager with custom script creation",
   "dependencies": {
+    "fzstd": "^0.1.1",
     "minecraft-data": "^3.119.0",
     "mineflayer": "^4.39.0",
-    "mineflayer-pathfinder": "^2.4.5"
+    "mineflayer-pathfinder": "^2.4.5",
+    "npm": "^10.9.10",
+    "tar": "^7.5.23"
   },
   "devDependencies": {
     "electron": "^34.0.2",
@@ -33,7 +37,7 @@
   "build": {
     "appId": "com.ancymon.minecraft-bot-panel",
     "productName": "Minecraft Bot Panel",
-    "copyright": "Copyright © ancymon",
+    "copyright": "Copyright \u00a9 ancymon",
     "directories": {
       "output": "dist",
       "buildResources": "build"
@@ -57,12 +61,19 @@
     "linux": {
       "target": [
         "AppImage",
-        "zip"
+        "deb",
+        "rpm",
+        "pacman",
+        "tar.gz"
       ],
       "icon": "build/logo.png",
       "category": "Utility",
-      "maintainer": "ancymon",
+      "maintainer": "ancymon <ancym0n@users.noreply.github.com>",
+      "vendor": "ancymon",
+      "synopsis": "Minecraft bot manager with scripts and local AI",
+      "description": "GUI-based Minecraft bot manager with custom script creation",
       "syncDesktopName": true,
+      "executableName": "minecraft-bot-panel",
       "executableArgs": [
         "--no-sandbox"
       ]
@@ -99,6 +110,71 @@
     "electronLanguages": [
       "en-US"
     ],
-    "compression": "normal"
+    "compression": "normal",
+    "deb": {
+      "depends": [
+        "libgtk-3-0 | libgtk-3-0t64",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0 | libatspi2.0-0t64",
+        "libuuid1",
+        "libsecret-1-0",
+        "libasound2 | libasound2t64",
+        "libgbm1"
+      ],
+      "priority": "optional"
+    },
+    "rpm": {
+      "depends": [
+        "(gtk3 or libgtk-3-0)",
+        "(nss or mozilla-nss)",
+        "xdg-utils"
+      ],
+      "fpm": [
+        "--rpm-rpmbuild-define=_build_id_links none"
+      ]
+    },
+    "pacman": {
+      "depends": [
+        "gtk3",
+        "nss",
+        "libxss",
+        "libxtst",
+        "xdg-utils",
+        "at-spi2-core",
+        "alsa-lib",
+        "libsecret"
+      ]
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "build/logo.png",
+      "category": "public.app-category.utilities",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "artifactName": "MCBPv${version}-mac.${arch}.${ext}"
+    },
+    "publish": null
   }
 }

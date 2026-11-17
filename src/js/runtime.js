@@ -90,6 +90,35 @@ function findExecutable(binaryName) {
   return null;
 }
 
+// npm ships inside the app and runs on Electron's own Node (it can read
+// straight from app.asar), so updates work even without Node.js installed.
+// A system npm is only used as a fallback.
+function resolveNpmCommand() {
+  try {
+    const cli = require.resolve("npm/bin/npm-cli.js");
+    if (fs.existsSync(cli)) {
+      return {
+        cmd: process.execPath,
+        prefixArgs: [cli],
+        env: { ELECTRON_RUN_AS_NODE: "1" },
+        shell: false,
+      };
+    }
+  } catch (_) {}
+  const npmBin = findExecutable(
+    process.platform === "win32" ? "npm.cmd" : "npm",
+  );
+  if (npmBin) {
+    return {
+      cmd: npmBin,
+      prefixArgs: [],
+      env: {},
+      shell: process.platform === "win32",
+    };
+  }
+  return null;
+}
+
 function readPkgVersion(baseDir, pkgName) {
   try {
     const pkgJson = path.join(baseDir, "node_modules", pkgName, "package.json");
@@ -347,11 +376,9 @@ async function checkNpmLatest() {
 
 function runNpmInstall(targetDir, pkgSpecs, onProgress) {
   return new Promise((resolve, reject) => {
-    const npmBin = findExecutable(
-      process.platform === "win32" ? "npm.cmd" : "npm",
-    );
-    if (!npmBin) {
-      return reject(new Error("npm not found on system PATH"));
+    const npm = resolveNpmCommand();
+    if (!npm) {
+      return reject(new Error("npm is not available"));
     }
     fs.mkdirSync(targetDir, { recursive: true });
     const pkgJsonPath = path.join(targetDir, "package.json");
@@ -378,12 +405,16 @@ function runNpmInstall(targetDir, pkgSpecs, onProgress) {
       "--no-audit",
       "--no-fund",
       "--prefer-online",
+      "--ignore-scripts",
+      "--no-update-notifier",
+      "--loglevel=error",
       ...pkgSpecs,
     ];
 
     const extraDirs = getExtraSearchDirs().join(path.delimiter);
     const childEnv = {
       ...process.env,
+      ...npm.env,
       PATH: [process.env.PATH || "", extraDirs]
         .filter(Boolean)
         .join(path.delimiter),
@@ -392,11 +423,11 @@ function runNpmInstall(targetDir, pkgSpecs, onProgress) {
       delete childEnv.LD_LIBRARY_PATH;
     }
 
-    const child = spawn(npmBin, args, {
+    const child = spawn(npm.cmd, [...npm.prefixArgs, ...args], {
       cwd: targetDir,
       windowsHide: true,
       env: childEnv,
-      shell: process.platform === "win32",
+      shell: npm.shell,
     });
 
     let tail = "";
@@ -556,10 +587,8 @@ async function syncLatestMineflayer({ onLog, onUpdated, force = false } = {}) {
     }
 
     if (toUpdate.length > 0) {
-      const npmBin = findExecutable(
-        process.platform === "win32" ? "npm.cmd" : "npm",
-      );
-      if (!npmBin) {
+      if (!resolveNpmCommand()) {
+        if (onLog) onLog("Mineflayer update skipped: npm is not available");
         return current;
       }
       if (onLog) {

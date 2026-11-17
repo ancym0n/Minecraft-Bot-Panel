@@ -411,6 +411,105 @@ function httpJsonRequest(
   });
 }
 
+// Streams a URL to disk (follows redirects) without needing curl.
+function downloadFile(url, dest, onProgress = () => {}, redirects = 6) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(
+      url,
+      { headers: { "User-Agent": "minecraft-bot-panel" }, timeout: 30000 },
+      (res) => {
+        if (
+          res.statusCode >= 300 &&
+          res.statusCode < 400 &&
+          res.headers.location &&
+          redirects > 0
+        ) {
+          res.resume();
+          const next = new URL(res.headers.location, url).toString();
+          resolve(downloadFile(next, dest, onProgress, redirects - 1));
+          return;
+        }
+        if (res.statusCode !== 200) {
+          res.resume();
+          reject(new Error(`download failed (HTTP ${res.statusCode})`));
+          return;
+        }
+        const total = Number(res.headers["content-length"]) || 0;
+        const tmp = `${dest}.part`;
+        const out = fs.createWriteStream(tmp);
+        let got = 0;
+        let lastPct = -1;
+        res.on("data", (chunk) => {
+          got += chunk.length;
+          const pct = total ? Math.floor((got / total) * 100) : 0;
+          if (pct !== lastPct) {
+            lastPct = pct;
+            onProgress(
+              total ? got / total : 0,
+              Math.round(got / 1048576),
+              Math.round(total / 1048576),
+            );
+          }
+        });
+        res.pipe(out);
+        out.on("finish", () =>
+          out.close(() => {
+            try {
+              fs.renameSync(tmp, dest);
+              resolve(dest);
+            } catch (err) {
+              reject(err);
+            }
+          }),
+        );
+        const fail = (err) => {
+          out.destroy();
+          fs.rmSync(tmp, { force: true });
+          reject(err);
+        };
+        res.on("error", fail);
+        out.on("error", fail);
+      },
+    );
+    req.on("timeout", () => req.destroy(new Error("connection timed out")));
+    req.on("error", reject);
+  });
+}
+
+// .tar.zst / .tgz extraction: system tar when it can, pure JS otherwise,
+// so it works on any distro (even without zstd installed).
+async function extractArchive(archive, dir) {
+  const tar = require("tar");
+  if (!archive.endsWith(".zst")) {
+    await tar.x({ file: archive, cwd: dir });
+    return;
+  }
+  const sys = await execFilePromise(
+    "tar",
+    ["--zstd", "-xf", archive, "-C", dir],
+    {
+      timeout: 600000,
+    },
+  );
+  if (sys.ok) return;
+  const { Readable } = require("stream");
+  const { pipeline } = require("stream/promises");
+  const { Decompress } = require("fzstd");
+  async function* inflate() {
+    const ready = [];
+    const zstd = new Decompress((chunk) => ready.push(Buffer.from(chunk)));
+    for await (const chunk of fs.createReadStream(archive, {
+      highWaterMark: 1 << 20,
+    })) {
+      zstd.push(chunk);
+      while (ready.length) yield ready.shift();
+    }
+    zstd.push(new Uint8Array(0), true);
+    while (ready.length) yield ready.shift();
+  }
+  await pipeline(Readable.from(inflate()), tar.x({ cwd: dir }));
+}
+
 class OllamaManager {
   constructor() {
     this.host = process.env.OLLAMA_HOST || DEFAULT_HOST;
@@ -561,9 +660,14 @@ class OllamaManager {
             "/usr/local/bin/ollama",
             "/usr/bin/ollama",
             "/bin/ollama",
+            "/opt/homebrew/bin/ollama",
+            "/Applications/Ollama.app/Contents/Resources/ollama",
             path.join(os.homedir(), ".local", "bin", "ollama"),
             this.userDataDir
               ? path.join(this.userDataDir, "ollama", "bin", "ollama")
+              : "",
+            this.userDataDir
+              ? path.join(this.userDataDir, "ollama", "ollama")
               : "",
           ];
 
@@ -836,55 +940,51 @@ class OllamaManager {
       };
     }
 
-    if (process.platform === "linux") {
-      onProgress({
-        stage: "installing",
-        message: "Downloading Ollama for Linux (user-local)...",
-        percent: 10,
-      });
+    if (process.platform === "linux" || process.platform === "darwin") {
+      const isMac = process.platform === "darwin";
       const arch = os.arch() === "arm64" ? "arm64" : "amd64";
       const targetDir = path.join(this.userDataDir || os.tmpdir(), "ollama");
-      fs.mkdirSync(targetDir, { recursive: true });
-      const tgzPath = path.join(targetDir, `ollama-linux-${arch}.tgz`);
-      const downloadUrl = `https://ollama.com/download/ollama-linux-${arch}.tgz`;
-
-      const dl = await execFilePromise(
-        "curl",
-        ["-fL", "--max-time", "300", "-o", tgzPath, downloadUrl],
-        { timeout: 310000 },
-      );
-      if (dl.ok && fs.existsSync(tgzPath)) {
+      const fileName = isMac
+        ? "ollama-darwin.tgz"
+        : `ollama-linux-${arch}.tar.zst`;
+      const archive = path.join(targetDir, fileName);
+      const binPath = isMac
+        ? path.join(targetDir, "ollama")
+        : path.join(targetDir, "bin", "ollama");
+      try {
+        fs.mkdirSync(targetDir, { recursive: true });
+        await downloadFile(
+          `https://ollama.com/download/${fileName}`,
+          archive,
+          (frac, mb, totalMb) =>
+            onProgress({
+              stage: "installing",
+              message: `Downloading Ollama ${mb} / ${totalMb || "?"} MB...`,
+              percent: Math.round(5 + frac * 75),
+            }),
+        );
         onProgress({
           stage: "extracting",
-          message: "Extracting Ollama binary...",
-          percent: 65,
+          message: "Unpacking Ollama...",
+          percent: 85,
         });
-        const untar = await execFilePromise(
-          "tar",
-          ["-xzf", tgzPath, "-C", targetDir],
-          { timeout: 60000 },
-        );
-        try {
-          fs.rmSync(tgzPath, { force: true });
-        } catch (_) {}
-        const binCandidate = path.join(targetDir, "bin", "ollama");
-        if (untar.ok && fs.existsSync(binCandidate)) {
-          try {
-            fs.chmodSync(binCandidate, 0o755);
-          } catch (_) {}
-          return { ok: true, binPath: binCandidate };
-        }
+        await extractArchive(archive, targetDir);
+        fs.chmodSync(binPath, 0o755);
+        return { ok: true, binPath };
+      } catch (err) {
+        return {
+          ok: false,
+          error: `Could not install Ollama automatically (${err.message}). Install it from ollama.com/download and click Refresh.`,
+        };
+      } finally {
+        fs.rmSync(archive, { force: true });
+        fs.rmSync(`${archive}.part`, { force: true });
       }
-      return {
-        ok: false,
-        error:
-          "Could not download Ollama automatically. Run 'curl -fsSL https://ollama.com/install.sh | sh' or install package 'ollama'.",
-      };
     }
 
     return {
       ok: false,
-      error: "Automatic binary installation is not supported on this OS.",
+      error: "Automatic Ollama install is not supported on this OS.",
     };
   }
 
@@ -1685,5 +1785,7 @@ module.exports = {
   splitIntoMessages,
   cleanModelText,
   parseTextToolCalls,
+  downloadFile,
+  extractArchive,
   supportsTools,
 };

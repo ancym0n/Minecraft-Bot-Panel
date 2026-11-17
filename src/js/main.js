@@ -76,6 +76,10 @@ document.addEventListener("click", (event) => {
     toast.hidden = false;
   });
   later.addEventListener("click", () => {
+    if (install.hidden) {
+      toast.hidden = true;
+      return;
+    }
     localStorage.setItem(skipKey, version);
     toast.hidden = true;
   });
@@ -90,6 +94,10 @@ document.addEventListener("click", (event) => {
   window.api.onUpdateDone((result) => {
     install.disabled = later.disabled = false;
     if (result === "opened") toast.hidden = true;
-    else text.textContent = "Installing update...";
+    else if (result === "manual") {
+      text.textContent = "Downloaded, open the file to finish updating";
+      install.hidden = true;
+      later.textContent = "Close";
+    } else text.textContent = "Installing update...";
   });
 })();
