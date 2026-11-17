@@ -1,0 +1,48 @@
+#banner {
+  position: relative;
+  width: min(88%, 22rem);
+  display: grid;
+  justify-items: center;
+  align-items: center;
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 0.25rem 0 1.15rem;
+  opacity: 0;
+  animation: mcbpLoadIn 0.45s var(--spring-ease) 0.04s forwards;
+}
+
+#banner-logo {
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  margin: 0;
+  width: 100%;
+}
+
+#banner img {
+  width: 100%;
+  max-width: 22rem;
+  display: block;
+  filter: drop-shadow(0 0 12px rgba(145, 113, 248, 0.42))
+    drop-shadow(0 0.28rem 0 rgba(10, 8, 16, 0.65));
+  transition:
+    transform 0.3s var(--spring-ease),
+    filter 0.3s ease;
+}
+
+#version {
+  position: absolute;
+  bottom: 0;
+  right: 0.2rem;
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 800;
+  color: var(--main-color);
+  letter-spacing: 0.02em;
+}
