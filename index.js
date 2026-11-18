@@ -37,6 +37,11 @@ const {
   resolveSupportedVersion,
   resolveVersionFromKickOrError,
 } = require("./src/js/botUtils");
+const {
+  needsViaProxyBridge,
+  pingServerProtocol,
+} = require("./src/js/viaAdapter");
+const viaProxyBridge = require("./src/js/viaProxyBridge");
 const { ollamaManager } = require("./src/js/ollamaManager");
 const { aiBrain } = require("./src/js/aiBrain");
 const { proxyManager } = require("./src/js/proxyManager");
@@ -2672,6 +2677,16 @@ function loadAllScripts() {
   clearLog(customLoading);
 }
 
+let activeViaBridge = null;
+
+function stopActiveViaBridge() {
+  if (!activeViaBridge) return;
+  try {
+    activeViaBridge.stop();
+  } catch (_) {}
+  activeViaBridge = null;
+}
+
 function disconnectBot(isManual = true) {
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
@@ -2690,6 +2705,7 @@ function disconnectBot(isManual = true) {
     } catch (_) {}
     bot = null;
   }
+  stopActiveViaBridge();
   stopTelemetryLoop();
   sendToRenderer("connection-state", { state: "disconnected" });
 }
@@ -3466,12 +3482,75 @@ function registerIpcHandlers() {
       const { mineflayer, mcData, pathfinder, Movements, goals } = libs;
 
       const rawVersion = String(server.version || "").trim();
-      const normalizedVersion = resolveSupportedVersion(rawVersion, mcData);
+      let normalizedVersion = resolveSupportedVersion(rawVersion, mcData);
 
       const isMicrosoft = server.auth === "microsoft";
+      const useProxy =
+        typeof server.useProxy === "boolean"
+          ? server.useProxy
+          : Boolean(proxyManager.config.enabled);
+
+      // Detect MC 26.2 (776) / 26.3 (777) servers even when version is set to Auto,
+      // and bridge through ViaProxy when available (with seamless fallback to native JS shim).
+      let viaTarget = needsViaProxyBridge(rawVersion);
+      if (!viaTarget.needed && !normalizedVersion && !useProxy) {
+        const pingRes = await pingServerProtocol(address.ip, address.port, {
+          timeoutMs: 2500,
+          scopedRequire: libs.scopedRequire,
+        });
+        if (pingRes.ok) {
+          viaTarget = needsViaProxyBridge(
+            pingRes.protocol || pingRes.versionName,
+          );
+          if (viaTarget.needed && !normalizedVersion) {
+            normalizedVersion = resolveSupportedVersion(
+              viaTarget.targetVersion,
+              mcData,
+            );
+          }
+        }
+      }
+
+      let connectHost = address.ip;
+      let connectPort = address.port;
+      if (
+        viaTarget.needed &&
+        !isMicrosoft &&
+        !useProxy &&
+        !server._skipViaProxy
+      ) {
+        log(
+          `ViaVersion: MC ${viaTarget.targetVersion} detected — starting local ViaProxy bridge (26.1 ⇄ ${viaTarget.targetVersion})...`,
+        );
+        const bridge = await viaProxyBridge.startBridge({
+          targetHost: address.ip,
+          targetPort: address.port,
+          targetVersion: viaTarget.targetVersion,
+          cacheDir: path.join(app.getPath("userData"), "viaproxy"),
+          log: (t) => log(t),
+        });
+        if (bridge.ok) {
+          activeViaBridge = bridge;
+          connectHost = bridge.host;
+          connectPort = bridge.port;
+          normalizedVersion = bridge.clientVersion;
+          log(
+            `ViaVersion: ViaProxy bridge ready on ${bridge.host}:${bridge.port} (MC ${bridge.clientVersion} ⇄ MC ${bridge.targetVersion})`,
+          );
+        } else {
+          log(
+            `ViaVersion: ViaProxy unavailable (${bridge.error}) — using built-in MC ${viaTarget.targetVersion} protocol shim`,
+          );
+          normalizedVersion = resolveSupportedVersion(
+            viaTarget.targetVersion,
+            mcData,
+          );
+        }
+      }
+
       const botOptions = {
-        host: address.ip,
-        port: address.port,
+        host: connectHost,
+        port: connectPort,
         version: normalizedVersion,
         username: isMicrosoft
           ? sessionState.email || server.username || "MCBP_Account"
@@ -3479,10 +3558,6 @@ function registerIpcHandlers() {
         auth: isMicrosoft ? "microsoft" : "offline",
       };
 
-      const useProxy =
-        typeof server.useProxy === "boolean"
-          ? server.useProxy
-          : Boolean(proxyManager.config.enabled);
       let activeProxy = null;
       if (useProxy) {
         activeProxy = proxyManager.pickBestProxy();
@@ -4829,6 +4904,8 @@ if (gotLock) {
 }
 
 app.on("before-quit", () => {
+  stopActiveViaBridge();
+  viaProxyBridge.stopAllBridges();
   sessionLogger.finalize();
 });
 
@@ -4836,6 +4913,7 @@ app.on("window-all-closed", () => {
   sessionLogger.finalize();
   closeMsaPopup();
   disconnectBot();
+  viaProxyBridge.stopAllBridges();
   if (process.platform !== "darwin") {
     app.quit();
   }

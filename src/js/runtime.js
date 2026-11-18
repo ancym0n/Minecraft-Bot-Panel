@@ -170,7 +170,9 @@ function createScopedRequire(baseDir) {
 function loadLibraries() {
   const baseDir = selectActiveBaseDir();
   const req = createScopedRequire(baseDir);
+  const { installViaVersionProtocolShims } = require("./viaAdapter");
   try {
+    installViaVersionProtocolShims(req);
     const mineflayer = req("mineflayer");
     const mcData = req("minecraft-data");
     const pathfinderPkg = req("mineflayer-pathfinder");
@@ -186,6 +188,7 @@ function loadLibraries() {
     }
     const libs = {
       baseDir,
+      scopedRequire: req,
       mineflayer,
       mcData,
       Vec3,
@@ -198,6 +201,7 @@ function loadLibraries() {
     global.mcbpRuntime = libs;
     return libs;
   } catch (_) {
+    installViaVersionProtocolShims(require);
     const mineflayer = require("mineflayer");
     const mcData = require("minecraft-data");
     const pathfinderPkg = require("mineflayer-pathfinder");
@@ -209,6 +213,7 @@ function loadLibraries() {
     } catch (_) {}
     const libs = {
       baseDir: appRoot(),
+      scopedRequire: require,
       mineflayer,
       mcData,
       Vec3,

@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "electron .",
+    "test": "node --test --test-force-exit test/*.test.js",
     "make": "node build/make.js",
     "make:linux": "node build/make.js linux",
     "make:win": "node build/make.js win",

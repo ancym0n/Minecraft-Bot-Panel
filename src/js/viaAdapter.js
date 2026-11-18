@@ -1,12 +1,29 @@
 // ViaVersion-style protocol compatibility layer & Anti-Cheat FakePlayer / NPC detector for Mineflayer.
-// Bridges protocol differences across MC 1.8 -> 1.21.x -> 26.1+ and shields against PartialReadError kicks.
+// Bridges protocol differences across MC 1.8 -> 1.21.x -> 26.1 -> 26.2 (776) -> 26.3 (777),
+// emits client tick_end packets on 1.21.2+/26.x to prevent 26.3 invalid_player_movement kicks,
+// and shields against PartialReadError kicks.
 
-const { loadLibraries } = require("./runtime");
+const NATIVE_MAX_PROTOCOL = 775; // MC 26.1 / 26.1.1 / 26.1.2
+const NATIVE_MAX_VERSION = "26.1";
+
+// Virtual protocol definitions registered into minecraft-data / minecraft-protocol / mineflayer
+// so MC 26.2 (proto 776) and MC 26.3 (proto 777) work cleanly without upstream package lag.
+const VIA_SHIM_VERSIONS = [
+  { version: "26.2", protocol: 776, dataVersion: 4903, baseVersion: "26.1" },
+  { version: "26.3", protocol: 777, dataVersion: 5023, baseVersion: "26.1" },
+];
 
 // Known protocol numbers for modern versions & snapshots so we can bridge newer servers
 // onto the closest supported minecraft-data schema.
 const PROTOCOL_FALLBACK_MAP = [
-  { minProto: 770, targetVersion: "26.1" },
+  { minProto: 777, targetVersion: "26.3" },
+  { minProto: 776, targetVersion: "26.2" },
+  { minProto: 775, targetVersion: "26.1" },
+  { minProto: 774, targetVersion: "1.21.11" },
+  { minProto: 773, targetVersion: "1.21.9" },
+  { minProto: 772, targetVersion: "1.21.8" },
+  { minProto: 771, targetVersion: "1.21.6" },
+  { minProto: 770, targetVersion: "1.21.5" },
   { minProto: 769, targetVersion: "1.21.4" },
   { minProto: 768, targetVersion: "1.21.3" },
   { minProto: 767, targetVersion: "1.21.1" },
@@ -26,10 +43,217 @@ const PROTOCOL_FALLBACK_MAP = [
   { minProto: 47, targetVersion: "1.8.9" },
 ];
 
+// Registers runtime protocol shims for MC 26.2 (776) and MC 26.3 (777) into
+// minecraft-data, minecraft-protocol, and mineflayer BEFORE mineflayer loads its
+// version table. Safe to call repeatedly (idempotent).
+function installViaVersionProtocolShims(scopedRequire = require) {
+  const req = typeof scopedRequire === "function" ? scopedRequire : require;
+  const shimmedVersions = [];
+
+  try {
+    const mcData = req("minecraft-data");
+    const dataMod = req("minecraft-data/data.js");
+    const pcData = dataMod?.pc;
+
+    if (pcData) {
+      for (const spec of VIA_SHIM_VERSIONS) {
+        const base = pcData[spec.baseVersion];
+        if (!base) continue;
+
+        if (!pcData[spec.version]) {
+          const clone = Object.create(null);
+          for (const key of Object.keys(base)) {
+            const desc = Object.getOwnPropertyDescriptor(base, key);
+            if (key === "version") {
+              Object.defineProperty(clone, "version", {
+                enumerable: true,
+                configurable: true,
+                get: () => ({
+                  version: spec.protocol,
+                  minecraftVersion: spec.version,
+                  majorVersion: spec.baseVersion,
+                  releaseType: "release",
+                }),
+              });
+            } else if (desc) {
+              Object.defineProperty(clone, key, desc);
+            }
+          }
+          pcData[spec.version] = clone;
+          shimmedVersions.push(spec.version);
+        }
+
+        // Ensure protocolVersions metadata exists even on older minecraft-data installs.
+        if (
+          mcData.versionsByMinecraftVersion?.pc &&
+          !mcData.versionsByMinecraftVersion.pc[spec.version]
+        ) {
+          const meta = {
+            minecraftVersion: spec.version,
+            version: spec.protocol,
+            dataVersion: spec.dataVersion,
+            usesNetty: true,
+            majorVersion: spec.version,
+            releaseType: "release",
+          };
+          mcData.versionsByMinecraftVersion.pc[spec.version] = meta;
+          if (mcData.postNettyVersionsByProtocolVersion?.pc) {
+            mcData.postNettyVersionsByProtocolVersion.pc[spec.protocol] = [meta];
+          }
+        }
+
+        if (
+          Array.isArray(mcData.supportedVersions?.pc) &&
+          !mcData.supportedVersions.pc.includes(spec.version)
+        ) {
+          mcData.supportedVersions.pc.push(spec.version);
+        }
+      }
+    }
+  } catch (_) {}
+
+  try {
+    const nmpVer = req("minecraft-protocol/src/version");
+    if (Array.isArray(nmpVer?.supportedVersions)) {
+      for (const spec of VIA_SHIM_VERSIONS) {
+        if (!nmpVer.supportedVersions.includes(spec.version)) {
+          nmpVer.supportedVersions.push(spec.version);
+        }
+      }
+    }
+  } catch (_) {}
+
+  try {
+    const mfVer = req("mineflayer/lib/version");
+    if (Array.isArray(mfVer?.testedVersions)) {
+      for (const spec of VIA_SHIM_VERSIONS) {
+        if (!mfVer.testedVersions.includes(spec.version)) {
+          mfVer.testedVersions.push(spec.version);
+        }
+      }
+      mfVer.latestSupportedVersion =
+        mfVer.testedVersions[mfVer.testedVersions.length - 1];
+    }
+  } catch (_) {}
+
+  return {
+    shimmedVersions,
+    allViaVersions: VIA_SHIM_VERSIONS.map((v) => v.version),
+  };
+}
+
+// Determines whether a requested version or server protocol number exceeds
+// native Mineflayer 26.1 (775) wire schemas and benefits from a ViaProxy bridge.
+function needsViaProxyBridge(versionOrProto) {
+  if (typeof versionOrProto === "number" && Number.isFinite(versionOrProto)) {
+    if (versionOrProto > NATIVE_MAX_PROTOCOL) {
+      const mapped = PROTOCOL_FALLBACK_MAP.find(
+        (r) => versionOrProto >= r.minProto,
+      );
+      return {
+        needed: true,
+        targetVersion: mapped ? mapped.targetVersion : "26.3",
+        protocol: versionOrProto,
+      };
+    }
+    return { needed: false, targetVersion: null, protocol: versionOrProto };
+  }
+
+  const raw = String(versionOrProto || "").trim();
+  if (!raw || /^auto$/i.test(raw)) {
+    return { needed: false, targetVersion: null, protocol: null };
+  }
+  const m = raw.match(/\b(26)\.(\d+)(?:\.(\d+))?\b/);
+  if (m) {
+    const minor = Number(m[2]);
+    if (minor >= 2) {
+      const targetVersion = minor >= 3 ? "26.3" : "26.2";
+      const spec = VIA_SHIM_VERSIONS.find((v) => v.version === targetVersion);
+      return {
+        needed: true,
+        targetVersion,
+        protocol: spec ? spec.protocol : 776,
+      };
+    }
+  }
+  const mFuture = raw.match(/\b(\d+)\.(\d+)(?:\.(\d+))?\b/);
+  if (mFuture && Number(mFuture[1]) > 26) {
+    return { needed: true, targetVersion: mFuture[0], protocol: null };
+  }
+  return { needed: false, targetVersion: null, protocol: null };
+}
+
+// Lightweight Server List Ping (SLP) to inspect a server's exact protocol version
+// before Mineflayer connects so we can decide between native 26.1, ViaProxy, or shimmed 26.2/26.3.
+function pingServerProtocol(
+  host,
+  port = 25565,
+  { timeoutMs = 3000, scopedRequire = require } = {},
+) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (res) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(res);
+    };
+    const timer = setTimeout(
+      () => finish({ ok: false, error: "Ping timeout" }),
+      timeoutMs,
+    );
+    try {
+      const req = typeof scopedRequire === "function" ? scopedRequire : require;
+      const nmp = req("minecraft-protocol");
+      const mcData = req("minecraft-data");
+      nmp.ping(
+        {
+          host,
+          port: Number(port) || 25565,
+          closeTimeout: timeoutMs,
+          noPongTimeout: Math.min(1500, timeoutMs),
+        },
+        (err, response) => {
+          if (err || !response) {
+            return finish({
+              ok: false,
+              error: err?.message || "Ping failed",
+            });
+          }
+          const protocol = Number(response?.version?.protocol) || null;
+          const versionName = String(response?.version?.name || "").trim();
+          let resolvedVersion = null;
+          if (protocol) {
+            const row = PROTOCOL_FALLBACK_MAP.find((r) => protocol >= r.minProto);
+            if (row) {
+              resolvedVersion = resolveSupportedVersion(
+                row.targetVersion,
+                mcData,
+              );
+            }
+          }
+          if (!resolvedVersion && versionName) {
+            resolvedVersion = resolveSupportedVersion(versionName, mcData);
+          }
+          finish({
+            ok: true,
+            protocol,
+            versionName,
+            resolvedVersion,
+          });
+        },
+      );
+    } catch (err) {
+      finish({ ok: false, error: err?.message || String(err) });
+    }
+  });
+}
+
 function resolveSupportedVersion(rawVersion, mcDataModule = null) {
   let mcData = mcDataModule;
   if (!mcData) {
     try {
+      const { loadLibraries } = require("./runtime");
       mcData = loadLibraries().mcData;
     } catch (_) {}
   }
@@ -40,7 +264,7 @@ function resolveSupportedVersion(rawVersion, mcDataModule = null) {
       if (mcData(clean)) return clean;
     } catch (_) {}
   }
-  // Extract semantic version from server brand strings like "Paper 1.21.7", "Velocity 1.7.2-1.21.6", "26.2"
+  // Extract semantic version from server brand strings like "Paper 1.21.7", "Purpur 26.3", "Velocity 1.7.2-26.2"
   const verMatch = clean.match(/(\d+\.\d+(?:\.\d+)?)/g);
   if (verMatch && verMatch.length > 0) {
     const candidate = verMatch[verMatch.length - 1];
@@ -48,17 +272,30 @@ function resolveSupportedVersion(rawVersion, mcDataModule = null) {
       try {
         if (mcData(candidate)) return candidate;
       } catch (_) {}
-      // Try major.minor fallback (e.g. 1.21.8 -> 1.21.4 or 26.2 -> 26.1)
       const parts = candidate.split(".");
-      if (parts[0] === "26") return "26.1";
-      if (parts[0] === "1" && Number(parts[1]) >= 21) return "26.1";
+      const major = Number(parts[0]);
+      const minor = Number(parts[1]);
+      if (major >= 26) {
+        if (major > 26 || minor >= 3) {
+          try {
+            if (mcData("26.3")) return "26.3";
+          } catch (_) {}
+        }
+        if (minor === 2) {
+          try {
+            if (mcData("26.2")) return "26.2";
+          } catch (_) {}
+        }
+        return "26.1";
+      }
+      if (major === 1 && minor >= 21) return "26.1";
       const majorMinor = `${parts[0]}.${parts[1]}`;
       try {
         if (mcData(majorMinor)) return majorMinor;
       } catch (_) {}
     }
   }
-  return "26.1";
+  return NATIVE_MAX_VERSION;
 }
 
 function resolveVersionFromKickOrError(errText, mcDataModule = null) {
@@ -131,6 +368,32 @@ function attachViaVersionAdapter(bot, { log = null } = {}) {
     patchSupportFeatures();
     if (bot._client) wireClient(bot._client);
   });
+
+  // MC 1.21.2+ and especially MC 26.3 strictly enforce one movement packet per client tick
+  // and reset the counter on serverbound `tick_end`. Mineflayer 4.39.0 omits `tick_end`,
+  // causing ~1.5s `invalid_player_movement` kicks on 26.3 servers (PrismarineJS/mineflayer#4189).
+  if (!bot._mcbpTickEndAttached) {
+    bot._mcbpTickEndAttached = true;
+    bot.on("physicsTick", () => {
+      const client = bot._client;
+      if (!client || client.state !== "play" || typeof client.write !== "function") {
+        return;
+      }
+      const needsTickEnd =
+        (typeof bot.supportFeature === "function" &&
+          bot.supportFeature("sendsClientTickEndPacket")) ||
+        Number(bot.protocolVersion || 0) >= 768;
+      if (!needsTickEnd) return;
+      const hasTickEndPacket = Boolean(
+        bot.registry?.protocol?.play?.toServer?.types?.packet_tick_end ||
+          client.serializer?.proto?.types?.packet_tick_end,
+      );
+      if (!hasTickEndPacket) return;
+      try {
+        client.write("tick_end", {});
+      } catch (_) {}
+    });
+  }
 
   // Make bot.findBlocks and bot.findBlock forgiving for custom AI-generated scripts:
   // - Accepts `find:` / `block:` / `type:` aliases for `matching:`
@@ -381,7 +644,13 @@ function isRealPlayerName(bot, username) {
 }
 
 module.exports = {
+  NATIVE_MAX_PROTOCOL,
+  NATIVE_MAX_VERSION,
+  VIA_SHIM_VERSIONS,
   PROTOCOL_FALLBACK_MAP,
+  installViaVersionProtocolShims,
+  needsViaProxyBridge,
+  pingServerProtocol,
   resolveSupportedVersion,
   resolveVersionFromKickOrError,
   attachViaVersionAdapter,
