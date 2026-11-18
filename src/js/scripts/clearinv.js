@@ -1,3 +1,5 @@
+const { cleanCraftingGrid } = require("../botUtils");
+
 const info = {
   name: "ClearInv",
   default: { interval: 1000 },
@@ -20,8 +22,9 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   const repeat = await getOption("repeat", info.name);
   let isDropping = false;
 
-  function dropAllItems() {
+  async function dropAllItems() {
     if (!bot || !bot.inventory || isDropping) return;
+    await cleanCraftingGrid(bot);
     const items = bot.inventory.items();
 
     if (items.length === 0) {
@@ -31,27 +34,21 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
     }
 
     isDropping = true;
-    let i = 0;
-
-    function dropNext() {
-      if (!bot || !bot.inventory || i >= items.length) {
-        isDropping = false;
-        clearLog("Dropped all items (Total: ");
-        log(`Dropped all items (Total: ${items.length})`);
-        return;
+    let dropped = 0;
+    try {
+      for (const item of items) {
+        if (!bot || !bot.inventory) break;
+        await bot.tossStack(item).catch(() => {});
+        dropped++;
       }
-
-      const item = items[i];
-      bot.tossStack(item, () => {
-        i++;
-        dropNext();
-      });
+      clearLog("Dropped all items (Total: ");
+      log(`Dropped all items (Total: ${dropped})`);
+    } finally {
+      isDropping = false;
     }
-
-    dropNext();
   }
 
-  dropAllItems();
+  await dropAllItems();
   if (repeat === "on") {
     await scriptRepeater(dropAllItems, info.default.interval);
   }

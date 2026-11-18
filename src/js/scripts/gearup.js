@@ -6,6 +6,9 @@ const {
   smartDig,
   configureSmartMovements,
   clearPathfinderGoal,
+  attachCraftingFix,
+  cleanCraftingGrid,
+  escapeHazardsAndObstructions,
 } = require("../botUtils");
 
 const info = {
@@ -122,39 +125,184 @@ function hasItemOrHigherTier(bot, baseSuffix, minTier) {
   );
 }
 
+function isBlockFaceOpen(b) {
+  if (!b) return true;
+  if (b.boundingBox === "empty") return true;
+  const n = String(b.name || "");
+  return (
+    n === "air" ||
+    n === "cave_air" ||
+    n === "void_air" ||
+    n === "water" ||
+    n === "short_grass" ||
+    n === "tall_grass" ||
+    n === "fern" ||
+    n === "snow"
+  );
+}
+
 function findBlockByNames(bot, names, maxDistance = 64) {
   if (!bot || !bot.registry) return null;
   const ids = names
     .map((n) => bot.registry.blocksByName[n]?.id)
     .filter((id) => typeof id === "number");
   if (ids.length === 0) return null;
-  return bot.findBlock({
+  const skipped = bot._mcbpGearSkippedBlocks;
+  const protectedBlocks = bot._mcbpProtectedBlocks;
+  const now = Date.now();
+  if (skipped && skipped.size > 0) {
+    for (const [k, exp] of skipped.entries()) {
+      if (now > exp) skipped.delete(k);
+    }
+  }
+  const positions = bot.findBlocks({
     matching: ids,
     maxDistance,
+    count: 64,
   });
+  if (!positions || !positions.length) return null;
+
+  const botPos = bot.entity?.position;
+  const botFloorX = botPos ? Math.floor(botPos.x) : null;
+  const botFloorY = botPos ? Math.floor(botPos.y) : null;
+  const botFloorZ = botPos ? Math.floor(botPos.z) : null;
+
+  let bestPos = null;
+  let bestScore = -Infinity;
+
+  for (const p of positions) {
+    const k = `${p.x},${p.y},${p.z}`;
+    const colKey = `col:${p.x},${p.z}`;
+    if (skipped?.has(k) || skipped?.has(colKey)) continue;
+    if (protectedBlocks?.has(k)) continue;
+    // Never pick a block directly underneath the bot's own feet (prevents digging a 1x1 pit straight down!)
+    if (botPos && p.x === botFloorX && p.z === botFloorZ && p.y < botFloorY) {
+      continue;
+    }
+
+    if (!botPos || typeof p.offset !== "function") {
+      return bot.blockAt(p);
+    }
+
+    const dist = p.distanceTo(botPos);
+    const dy = p.y - botFloorY;
+    let score = -dist;
+
+    // Prefer blocks near our current Y level (-2 to +4)
+    if (dy >= -2 && dy <= 4) {
+      score += 25;
+    } else if (dy > 6) {
+      score -= (dy - 6) * 12;
+    } else if (dy < -4) {
+      score -= (-4 - dy) * 6;
+    }
+
+    // Prefer exposed blocks (cliff face, cave wall, tree trunk) over buried blocks
+    let exposed = false;
+    for (const [ox, oy, oz] of [
+      [0, 1, 0],
+      [1, 0, 0],
+      [-1, 0, 0],
+      [0, 0, 1],
+      [0, 0, -1],
+    ]) {
+      const nb = bot.blockAt(p.offset(ox, oy, oz));
+      if (isBlockFaceOpen(nb)) {
+        exposed = true;
+        break;
+      }
+    }
+    if (exposed) score += 35;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestPos = p;
+    }
+  }
+
+  return bestPos ? bot.blockAt(bestPos) : null;
 }
 
 async function moveNearAndDig(bot, goals, block, stepLog) {
   if (!bot || !block || !bot.entity) return false;
   const pos = block.position;
   const dist = pos.distanceTo(bot.entity.position);
+  const goalKey = `${pos.x},${pos.y},${pos.z}`;
+
+  const markUnreachable = (ttlMs = 60000) => {
+    if (!bot._mcbpGearSkippedBlocks) bot._mcbpGearSkippedBlocks = new Map();
+    const exp = Date.now() + ttlMs;
+    bot._mcbpGearSkippedBlocks.set(goalKey, exp);
+    // Also skip the entire vertical column (and 1-block neighbors) so we don't
+    // waste time trying y+1, y+2, y+3 of the same unreachable tree/vein!
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        bot._mcbpGearSkippedBlocks.set(`col:${pos.x + dx},${pos.z + dz}`, exp);
+      }
+    }
+  };
 
   if (dist > 4.4) {
+    let targetChanged = false;
+    if (bot._mcbpGearGoalKey === goalKey) {
+      const elapsed = Date.now() - (bot._mcbpGearGoalSince || 0);
+      if (elapsed > 8500 || (bot._mcbpGearNoPathCount || 0) >= 2) {
+        markUnreachable(60000);
+        bot._mcbpGearGoalKey = "";
+        bot._mcbpGearNoPathCount = 0;
+        clearPathfinderGoal(bot);
+        stepLog(
+          `Skipping unreachable ${block.name} at (${pos.x}, ${pos.y}, ${pos.z}), trying another...`,
+        );
+        await escapeHazardsAndObstructions(bot, { log: stepLog });
+        return false;
+      }
+    } else {
+      bot._mcbpGearGoalKey = goalKey;
+      bot._mcbpGearGoalSince = Date.now();
+      bot._mcbpGearNoPathCount = 0;
+      targetChanged = true;
+    }
     stepLog(
       `Walking to ${block.name} at (${pos.x}, ${pos.y}, ${pos.z}) [${dist.toFixed(1)}m]`,
     );
-    const goalKey = `${pos.x},${pos.y},${pos.z}`;
-    if (bot._mcbpGearGoalKey !== goalKey || !bot.pathfinder.isMoving()) {
-      bot._mcbpGearGoalKey = goalKey;
-      bot.pathfinder.setGoal(new goals.GoalNear(pos.x, pos.y, pos.z, 2), false);
+    if (targetChanged || !bot.pathfinder.isMoving()) {
+      const goalObj = new goals.GoalNear(pos.x, pos.y, pos.z, 2);
+      const onPathCheck = (results) => {
+        if (!results || bot._mcbpGearGoalKey !== goalKey) return;
+        if (results.status === "noPath") {
+          bot._mcbpGearNoPathCount = (bot._mcbpGearNoPathCount || 0) + 1;
+          const inProt =
+            bot._mcbpProtectedZoneUntil &&
+            Date.now() < bot._mcbpProtectedZoneUntil;
+          if (
+            bot._mcbpGearNoPathCount === 1 &&
+            !inProt &&
+            bot.pathfinder?.movements &&
+            !bot.pathfinder.movements.canDig
+          ) {
+            bot.pathfinder.movements.canDig = true;
+          }
+        }
+      };
+      bot.once("path_update", onPathCheck);
+      bot.pathfinder.setGoal(goalObj, false);
     }
     return false;
   }
 
   bot._mcbpGearGoalKey = "";
+  bot._mcbpGearNoPathCount = 0;
   clearPathfinderGoal(bot);
   stepLog(`Mining ${block.name} at (${pos.x}, ${pos.y}, ${pos.z})...`);
-  await smartDig(bot, block, { autoTool: true, saveLowDurability: false });
+  const dug = await smartDig(bot, block, {
+    autoTool: true,
+    saveLowDurability: false,
+  });
+  if (dug === false) {
+    markUnreachable(45000);
+    return false;
+  }
 
   // Brief walk toward block position to pick up dropped item
   bot.pathfinder.setGoal(new goals.GoalNear(pos.x, pos.y, pos.z, 1), false);
@@ -165,16 +313,23 @@ async function moveNearAndDig(bot, goals, block, stepLog) {
 
 async function craftItemByName(bot, itemName, count = 1, craftingTable = null) {
   if (!bot || !bot.registry) return false;
+  attachCraftingFix(bot);
+  await cleanCraftingGrid(bot);
   const itemType = bot.registry.itemsByName[itemName];
   if (!itemType) return false;
   const recipes = bot.recipesFor(itemType.id, null, 1, craftingTable);
   if (!recipes || recipes.length === 0) return false;
-  await bot.craft(recipes[0], count, craftingTable);
-  return true;
+  try {
+    await bot.craft(recipes[0], count, craftingTable);
+    return true;
+  } finally {
+    await cleanCraftingGrid(bot);
+  }
 }
 
 async function craftAnyPlanks(bot) {
   if (!bot || !bot.registry) return false;
+  await cleanCraftingGrid(bot);
   const logItem = bot.inventory
     .items()
     .find((i) => LOG_NAMES.includes(i.name) || i.name.endsWith("_log"));
@@ -186,7 +341,7 @@ async function craftAnyPlanks(bot) {
 
 async function ensureCraftingTablePlaced(bot, goals, stepLog) {
   if (!bot || !bot.registry) return null;
-  const existing = findBlockByNames(bot, ["crafting_table"], 5);
+  const existing = findBlockByNames(bot, ["crafting_table"], 24);
   if (existing) {
     const d = existing.position.distanceTo(bot.entity.position);
     if (d > 3.8) {
@@ -197,18 +352,27 @@ async function ensureCraftingTablePlaced(bot, goals, stepLog) {
           existing.position.z,
           2,
         ),
-        true,
+        false,
       );
-      await new Promise((r) => setTimeout(r, 600));
+      const waitStart = Date.now();
+      while (
+        Date.now() - waitStart < 5000 &&
+        existing.position.distanceTo(bot.entity.position) > 3.8
+      ) {
+        await new Promise((r) => setTimeout(r, 200));
+      }
       clearPathfinderGoal(bot);
     }
-    return existing;
+    if (existing.position.distanceTo(bot.entity.position) <= 4.3) {
+      return existing;
+    }
   }
 
   if (countByName(bot, "crafting_table") === 0) {
-    if (countPlanks(bot) < 4 && countLogs(bot) > 0) {
+    while (countPlanks(bot) < 8 && countLogs(bot) > 0) {
       stepLog("Crafting planks from logs for crafting_table...");
-      await craftAnyPlanks(bot);
+      const ok = await craftAnyPlanks(bot);
+      if (!ok) break;
     }
     if (countPlanks(bot) >= 4) {
       stepLog("Crafting crafting_table...");
@@ -227,38 +391,66 @@ async function ensureCraftingTablePlaced(bot, goals, stepLog) {
 
 async function placeBlockNearby(bot, item, blockName, stepLog) {
   if (!bot || !bot.entity || !item) return false;
-  await bot.equip(item, "hand");
-  const pos = bot.entity.position.floored();
-  const offsets = [
-    [1, 0, 0],
-    [-1, 0, 0],
-    [0, 0, 1],
-    [0, 0, -1],
-    [1, 0, 1],
-    [-1, 0, -1],
-    [1, 0, -1],
-    [-1, 0, 1],
-  ];
+  const { Vec3 } = loadLibraries();
+  const botPos = bot.entity.position;
+  const base = botPos.floored();
+  const candidates = [];
 
-  for (const [ox, oy, oz] of offsets) {
-    const targetFloor = bot.blockAt(pos.offset(ox, oy - 1, oz));
-    const targetSpace = bot.blockAt(pos.offset(ox, oy, oz));
-    if (
-      targetFloor &&
-      targetFloor.boundingBox === "block" &&
-      targetSpace &&
-      targetSpace.name === "air"
-    ) {
-      try {
-        stepLog(
-          `Placing ${blockName} at (${targetSpace.position.x}, ${targetSpace.position.y}, ${targetSpace.position.z})...`,
+  for (const oy of [0, 1, -1]) {
+    for (let ox = -2; ox <= 2; ox++) {
+      for (let oz = -2; oz <= 2; oz++) {
+        if (ox === 0 && oz === 0) continue;
+        const spacePos = base.offset(ox, oy, oz);
+        const horizDist = Math.hypot(
+          spacePos.x + 0.5 - botPos.x,
+          spacePos.z + 0.5 - botPos.z,
         );
-        await bot.lookAt(targetFloor.position.offset(0.5, 1, 0.5), true);
-        await bot.placeBlock(targetFloor, { x: 0, y: 1, z: 0 });
-        await new Promise((r) => setTimeout(r, 250));
-        return true;
-      } catch (_) {}
+        const fullDist = spacePos.offset(0.5, 0.5, 0.5).distanceTo(botPos);
+        if (horizDist < 1.15 || fullDist > 3.8) continue;
+        const targetFloor = bot.blockAt(spacePos.offset(0, -1, 0));
+        const targetSpace = bot.blockAt(spacePos);
+        if (!targetFloor || targetFloor.boundingBox !== "block" || !targetSpace)
+          continue;
+        const isAir =
+          targetSpace.name === "air" ||
+          targetSpace.name === "cave_air" ||
+          targetSpace.name === "void_air";
+        const isCover =
+          !isAir &&
+          (targetSpace.boundingBox === "empty" ||
+            targetSpace.name === "snow" ||
+            targetSpace.name.endsWith("_leaves"));
+        if (!isAir && !isCover) continue;
+        candidates.push({
+          targetFloor,
+          targetSpace,
+          isAir,
+          score: (isAir ? 0 : 10) + Math.abs(oy) * 2 + horizDist,
+        });
+      }
     }
+  }
+
+  candidates.sort((a, b) => a.score - b.score);
+
+  for (const cand of candidates.slice(0, 6)) {
+    const { targetFloor, targetSpace, isAir } = cand;
+    try {
+      if (!isAir) {
+        await bot.dig(targetSpace, true).catch(() => {});
+        await new Promise((r) => setTimeout(r, 120));
+      }
+      const freshItem =
+        bot.inventory.items().find((i) => i.name === item.name) || item;
+      await bot.equip(freshItem, "hand");
+      stepLog(
+        `Placing ${blockName} at (${targetSpace.position.x}, ${targetSpace.position.y}, ${targetSpace.position.z})...`,
+      );
+      await bot.lookAt(targetFloor.position.offset(0.5, 1, 0.5), true);
+      await bot.placeBlock(targetFloor, new Vec3(0, 1, 0));
+      await new Promise((r) => setTimeout(r, 250));
+      return true;
+    } catch (_) {}
   }
   return false;
 }
@@ -276,9 +468,20 @@ async function ensureSticksAndPlanks(bot, minSticks, minPlanks, stepLog) {
   }
 }
 
-async function smeltIronInFurnace(bot, goals, neededIngots, stepLog) {
+async function smeltInFurnace(
+  bot,
+  goals,
+  {
+    inputNames = ["raw_iron", "iron_ore", "deepslate_iron_ore"],
+    outputName = "iron_ingot",
+    neededCount = 1,
+    stepLog = () => {},
+  } = {},
+) {
   if (!bot || !bot.registry) return false;
-  let furnaceBlock = findBlockByNames(bot, ["furnace", "blast_furnace"], 6);
+  attachCraftingFix(bot);
+  await cleanCraftingGrid(bot);
+  let furnaceBlock = findBlockByNames(bot, ["furnace", "blast_furnace"], 24);
 
   if (!furnaceBlock) {
     if (countByName(bot, "furnace") === 0) {
@@ -306,63 +509,139 @@ async function smeltIronInFurnace(bot, goals, neededIngots, stepLog) {
         furnaceBlock.position.z,
         2,
       ),
-      true,
+      false,
     );
-    return false;
+    const walkStart = Date.now();
+    while (
+      Date.now() - walkStart < 5000 &&
+      furnaceBlock.position.distanceTo(bot.entity.position) > 3.8
+    ) {
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    clearPathfinderGoal(bot);
+    if (furnaceBlock.position.distanceTo(bot.entity.position) > 4.3) {
+      return false;
+    }
   }
 
   clearPathfinderGoal(bot);
-  const rawIron = bot.inventory
-    .items()
-    .find(
-      (i) =>
-        i.name === "raw_iron" ||
-        i.name === "iron_ore" ||
-        i.name === "deepslate_iron_ore",
-    );
-  if (!rawIron) return false;
+  const findInput = () =>
+    bot.inventory.items().find((i) => inputNames.includes(i.name));
+  const rawInput = findInput();
 
-  const fuelItem = bot.inventory
-    .items()
-    .find(
-      (i) =>
-        i.name === "coal" ||
-        i.name === "charcoal" ||
-        i.name.endsWith("_planks") ||
-        LOG_NAMES.includes(i.name),
-    );
-  if (!fuelItem) {
-    stepLog("Need fuel (coal, planks, or logs) to smelt iron...");
-    return false;
+  // Convert 1 log into 4 planks if we have no coal/planks fuel
+  if (
+    !bot.inventory
+      .items()
+      .some(
+        (i) =>
+          i.name === "coal" ||
+          i.name === "charcoal" ||
+          i.name.endsWith("_planks"),
+      ) &&
+    countLogs(bot) > 0
+  ) {
+    await craftAnyPlanks(bot);
   }
 
+  const findFuel = () =>
+    bot.inventory
+      .items()
+      .find(
+        (i) =>
+          i.name === "coal" ||
+          i.name === "charcoal" ||
+          i.name === "blaze_rod" ||
+          i.name === "lava_bucket" ||
+          i.name.endsWith("_planks") ||
+          LOG_NAMES.includes(i.name),
+      );
+  const fuelItem = findFuel();
+
+  const initialCount = countByName(bot, outputName);
+  const targetTotal = initialCount + Math.max(1, neededCount);
+
   stepLog(
-    `Smelting ${rawIron.name} in furnace using ${fuelItem.name} (need ${neededIngots} more iron_ingot)...`,
+    `Smelting ${rawInput ? rawInput.name : outputName} in furnace${fuelItem ? ` using ${fuelItem.name}` : ""} (target +${neededCount} ${outputName})...`,
   );
   try {
     const furnace = await bot.openFurnace(furnaceBlock);
-    if (!furnace.fuelItem() && fuelItem) {
-      await furnace.putFuel(fuelItem.type, null, Math.min(fuelItem.count, 8));
+    try {
+      if (furnace.outputItem()) {
+        await furnace.takeOutput().catch(() => {});
+      }
+      if (!furnace.fuelItem() && fuelItem) {
+        await furnace
+          .putFuel(fuelItem.type, null, Math.min(fuelItem.count, 20))
+          .catch(() => {});
+      }
+      const curIn = furnace.inputItem();
+      const freshIn = findInput();
+      if (!curIn && freshIn) {
+        await furnace
+          .putInput(
+            freshIn.type,
+            null,
+            Math.min(freshIn.count, Math.max(1, neededCount)),
+          )
+          .catch(() => {});
+      }
+
+      const maxWaitMs = Math.max(1, Math.min(32, neededCount)) * 11200 + 2500;
+      const startWait = Date.now();
+      while (Date.now() - startWait < maxWaitMs) {
+        await new Promise((r) => setTimeout(r, 900));
+        if (furnace.outputItem()) {
+          await furnace.takeOutput().catch(() => {});
+          if (countByName(bot, outputName) >= targetTotal) break;
+        }
+        const inSlot = furnace.inputItem();
+        if (!inSlot && !furnace.outputItem()) {
+          const moreIn = findInput();
+          const remaining = targetTotal - countByName(bot, outputName);
+          if (moreIn && remaining > 0) {
+            await furnace
+              .putInput(moreIn.type, null, Math.min(moreIn.count, remaining))
+              .catch(() => {});
+          } else {
+            break;
+          }
+        }
+        if (!furnace.fuelItem() && (!furnace.fuel || furnace.fuel <= 0)) {
+          const moreFuel = findFuel();
+          if (moreFuel) {
+            await furnace
+              .putFuel(moreFuel.type, null, Math.min(moreFuel.count, 4))
+              .catch(() => {});
+          }
+        }
+      }
+      if (furnace.outputItem()) {
+        await furnace.takeOutput().catch(() => {});
+      }
+    } finally {
+      furnace.close();
     }
-    if (!furnace.inputItem() && rawIron) {
-      await furnace.putInput(
-        rawIron.type,
-        null,
-        Math.min(rawIron.count, neededIngots),
-      );
-    }
-    await new Promise((r) => setTimeout(r, 3200));
-    if (furnace.outputItem()) {
-      await furnace.takeOutput();
+    const afterCount = countByName(bot, outputName);
+    if (afterCount > initialCount) {
       stepLog(
-        `Collected iron_ingot from furnace (now have ${countByName(bot, "iron_ingot")})`,
+        `Collected ${afterCount - initialCount}x ${outputName} from furnace (now have ${afterCount})`,
       );
+      return true;
     }
-    furnace.close();
-    return true;
+    return false;
   } catch (_) {
     return false;
   }
+}
+
+async function smeltIronInFurnace(bot, goals, neededIngots, stepLog) {
+  return smeltInFurnace(bot, goals, {
+    inputNames: ["raw_iron", "iron_ore", "deepslate_iron_ore"],
+    outputName: "iron_ingot",
+    neededCount: neededIngots,
+    stepLog,
+  });
 }
 
 async function script(bot, log, clearLog, getOption, scriptRepeater) {
@@ -376,7 +655,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   let busy = false;
   bot._mcbpSprintJump = true;
   configureSmartMovements(bot, mcData, Movements, {
-    canDig: true,
+    canDig: false,
     allowSprinting: true,
     allowParkour: true,
   });
@@ -439,6 +718,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
         await ensureSticksAndPlanks(bot, 4, 6, stepLog);
         const table = await ensureCraftingTablePlaced(bot, goals, stepLog);
         if (!table) return;
+        await ensureSticksAndPlanks(bot, 4, 4, stepLog);
         stepLog("Crafting wooden_pickaxe...");
         await craftItemByName(bot, "wooden_pickaxe", 1, table);
         await equipBestWeapon(bot);
@@ -722,4 +1002,11 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
 module.exports = {
   info,
   script,
+  craftItemByName,
+  craftAnyPlanks,
+  ensureCraftingTablePlaced,
+  ensureSticksAndPlanks,
+  placeBlockNearby,
+  smeltInFurnace,
+  smeltIronInFurnace,
 };

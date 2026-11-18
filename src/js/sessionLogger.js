@@ -147,6 +147,7 @@ class SessionLogger {
   finalize() {
     this.flush();
     if (!this.initialized || !this.currentFilePath) return;
+    this.initialized = false;
     try {
       const collectedLines = [];
       for (const [key, info] of this.collectedSummary.entries()) {

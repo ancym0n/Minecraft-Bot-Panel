@@ -4,6 +4,7 @@ const {
   equipBestWeapon,
   tryCombatEat,
   performPvpAttack,
+  isLikelyNpcOrFakePlayer,
 } = require("../botUtils");
 
 const info = {
@@ -113,7 +114,8 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
         if (dist > range) continue;
 
         const kind = String(entity.kind || "").toLowerCase();
-        const isPlayer = entity.type === "player";
+        const isPlayer =
+          entity.type === "player" && !isLikelyNpcOrFakePlayer(bot, entity);
         const hostile = isHostile(entity);
         const isPassive =
           !isPlayer &&

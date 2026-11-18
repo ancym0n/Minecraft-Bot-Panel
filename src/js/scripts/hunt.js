@@ -125,8 +125,18 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
 
       const dist = bot.entity.position.distanceTo(target.position);
       const label = target.username || targetName || "player";
+      const inNoPvp = Boolean(
+        bot._mcbpNoPvpUntil &&
+        Date.now() < bot._mcbpNoPvpUntil &&
+        (!bot._mcbpNoPvpPos ||
+          bot.entity.position.distanceTo(bot._mcbpNoPvpPos) <= 14),
+      );
       clearLog("Hunt status:");
-      log(`Hunt status: Hunting ${label} (${dist.toFixed(1)}m)`);
+      log(
+        inNoPvp
+          ? `Hunt status: Following ${label} (${dist.toFixed(1)}m · no-PvP zone)`
+          : `Hunt status: Hunting ${label} (${dist.toFixed(1)}m)`,
+      );
 
       if (dist > 2.2) {
         setDynamicFollowGoal(bot, goals, target, 1.8);
@@ -134,7 +144,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
         clearPathfinderGoal(bot);
       }
 
-      if (dist <= 4.3 && !isBotEating(bot)) {
+      if (!inNoPvp && dist <= 4.3 && !isBotEating(bot)) {
         await performPvpAttack(bot, target, {
           useCrits,
           maxRange: 4.3,
