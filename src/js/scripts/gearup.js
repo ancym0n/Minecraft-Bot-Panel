@@ -1181,7 +1181,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
           netherite: 5,
         }[targetTier] ?? 4;
 
-      // Keep the AI Brain ("Mózg" AI) synchronized with the full live GearUp plan
+      // Keep the AI Brain synchronized with the full live GearUp plan
       const planSnap = buildGearUpPlanSnapshot(bot, targetTier, {
         wantTools,
         wantArmor,

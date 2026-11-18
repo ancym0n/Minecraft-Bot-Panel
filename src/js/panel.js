@@ -3276,7 +3276,7 @@ if (window.api?.onOllamaProgress) {
 
 refreshOllamaUi();
 
-// --- AI Brain ("Mózg" AI) Live Status UI ---
+// --- AI Brain Live Status UI ---
 const aiBrainGoalBadge = $id("ai-brain-goal-badge");
 const aiBrainStep = $id("ai-brain-step");
 const aiBrainPlanList = $id("ai-brain-plan-list");

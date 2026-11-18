@@ -23,7 +23,7 @@ const RECOMMENDED_MODELS = [
     tags: ["chat", "tools"],
     badges: ["accuracy", "logic", "chat"],
     think: true,
-    desc: "Best small all-rounder, Polish/English chat & reliable tool calling",
+    desc: "Best small all-rounder, natural chat & reliable tool calling",
   },
   {
     name: "llama3.2:1b",
@@ -64,7 +64,7 @@ const RECOMMENDED_MODELS = [
     tier: "balanced",
     tags: ["chat"],
     badges: ["chat", "logic"],
-    desc: "Most human-sounding gamer replies (PL/EN) in its size class",
+    desc: "Most human-sounding gamer replies in its size class",
   },
   {
     name: "phi4-mini",
@@ -125,7 +125,7 @@ const RECOMMENDED_MODELS = [
     tier: "heavy",
     tags: ["chat", "tools"],
     badges: ["chat", "accuracy"],
-    desc: "Natural European/Polish slang & low-assistant-slop chat",
+    desc: "Natural gamer slang & low-assistant-slop chat",
   },
   {
     name: "deepseek-r1:7b",
@@ -146,7 +146,7 @@ const RECOMMENDED_MODELS = [
     tier: "heavy",
     tags: ["chat"],
     badges: ["chat", "logic"],
-    desc: "Best human-like conversation & Polish fluency for strong GPUs",
+    desc: "Best human-like conversation & multilingual fluency for strong GPUs",
   },
   {
     name: "qwen3:14b",
@@ -392,17 +392,17 @@ function isThinkingOutLoud(text) {
       t,
     ) ||
     /\b(don'?t|do not) (understand|know) what you mean by\b/i.test(t) ||
-    /^\s*(think|thought|thinking|plan|reasoning|analysis|internal|my\s+thought|mój\s+plan|myślę|analiza)\s*[:\-]/i.test(
+    /^\s*(think|thought|thinking|plan|reasoning|analysis|internal|my\s+thought)\s*[:\-]/i.test(
       t,
     ) ||
-    /\b(it seems|seems like there|there was an issue|there was a problem|let'?s try|let me try|i'?ll try (again|to)|i should check|i need to check|try again with|i need to call|calling tool|wywołam funkcję|użyję narzędzia|trying unstuck|if not work|unstuck\.\s*now)\b/i.test(
+    /\b(it seems|seems like there|there was an issue|there was a problem|let'?s try|let me try|i'?ll try (again|to)|i should check|i need to check|try again with|i need to call|calling tool|trying unstuck|if not work|unstuck\.\s*now)\b/i.test(
       t,
     ) ||
     /["'`][^"'`]{2,40}["'`]\s*(and|,)\s*["'`]/.test(t)
   );
 }
 
-// Strips AI assistant enthusiasm, robotic Polish/English openers ("Jasne! Już próbuję znaleźć diamenty..."),
+// Strips AI assistant enthusiasm, robotic openers ("Sure! I am currently trying to find diamonds..."),
 // and converts replies into natural, casual human Minecraft player style.
 function stripAssistantSlop(
   rawText,
@@ -411,20 +411,16 @@ function stripAssistantSlop(
   let s = String(rawText || "").trim();
   if (!s) return "";
 
-  // Strip leaked bracketed/parenthesized thoughts or stage directions: [thinking...], *nods*, (myślę...)
+  // Strip leaked bracketed/parenthesized thoughts or stage directions: [thinking...], *nods*, (note...)
   s = s
     .replace(/\[(?:thought|thinking|plan|reasoning|note|ai|system)[^\]]*\]/gi, " ")
     .replace(/\((?:thought|thinking|plan|reasoning|note)[^)]*\)/gi, " ")
     .replace(/\*[^*]{1,40}\*/g, " ")
     .trim();
 
-  // Strip Polish & English AI-assistant enthusiastic openers ("Jasne!", "Oczywiście!", "Pewnie!", "Sure!", "Of course!", "Certainly!")
+  // Strip AI-assistant enthusiastic openers ("Sure!", "Of course!", "Certainly!", "Gladly!")
   for (let i = 0; i < 3; i++) {
     const next = s
-      .replace(
-        /^\s*(?:jasne|oczywiście(?:,?\s+że\s+tak)?|pewnie|chętnie|z\s+przyjemnością|z\s+miłą\s+chęcią|już\s+się\s+robi|nie\s+ma\s+sprawy|nie\s+ma\s+problemu|bez\s+problemu|rozumiem|dobrze|naturalnie|jak\s+najbardziej)[!.,:\s]+/i,
-        "",
-      )
       .replace(
         /^\s*(?:sure(?:\s+thing)?|certainly|of\s+course|absolutely|gladly|right\s+away|no\s+problem(?:\s+at\s+all)?|understood|affirmative|roger\s+that|i'?d\s+be\s+happy\s+to|i\s+will\s+gladly|i\s+can\s+certainly)[!.,:\s]+/i,
         "",
@@ -434,23 +430,13 @@ function stripAssistantSlop(
     s = next;
   }
 
-  // Rewrite robotic Polish/English "Już próbuję znaleźć X" / "I am currently trying to find X" into natural player speech
+  // Rewrite robotic "I am currently trying to find X" into natural player speech
   s = s
-    .replace(
-      /\bjuż\s+(?:próbuję|staram\s+się)\s+(?:znaleźć|wykopać|zrobić|zebrać)\s+/gi,
-      "szukam ",
-    )
-    .replace(/\bjuż\s+(?:próbuję|zaczynam)\s+/gi, "zaczynam ")
-    .replace(/\bpostaram\s+się\s+jak\s+najszybciej\s+/gi, "zaraz ")
     .replace(
       /\bi\s+am\s+(?:currently\s+)?(?:trying|attempting)\s+to\s+(?:find|mine|locate|craft)\s+/gi,
       "looking for ",
     )
     .replace(/\bi\s+will\s+now\s+(?:proceed\s+to|try\s+to|attempt\s+to)\s+/gi, "gonna ")
-    .replace(/\bczy\s+mogę\s+w\s+czymś\s+jeszcze\s+pomóc\??/gi, "")
-    .replace(/\bw\s+czym\s+mogę\s+(?:ci\s+)?pomóc\??/gi, "")
-    .replace(/\bdaj\s+znać,?\s+jeśli\s+czegoś\s+potrzebujesz[.!]*/gi, "")
-    .replace(/\bjako\s+(?:ai|sztuczna\s+inteligencja|bot|asystent)[^.!?]*[.!?]*/gi, "")
     .replace(/\bas\s+an?\s+(?:ai|artificial\s+intelligence|bot|assistant|language\s+model)[^.!?]*[.!?]*/gi, "")
     .trim();
 
@@ -485,7 +471,7 @@ function stripAssistantSlop(
       // Vocative after greeting: "hey Micheal" / "yo Micheal"
       s = s.replace(
         new RegExp(
-          `\\b(hey|hi|yo|cool|ok|okay|thanks|thx|dobra|spoko|siema|hej)\\s+@?${escSelf}(?=[.!?,;:\\s]|$)`,
+          `\\b(hey|hi|yo|cool|ok|okay|thanks|thx)\\s+@?${escSelf}(?=[.!?,;:\\s]|$)`,
           "gi",
         ),
         "$1",
@@ -511,21 +497,21 @@ function stripAssistantSlop(
       );
   }
 
-  // Enforce obey rule: never say "no" / "nah, idc" / "nie" to an obeyed player
+  // Enforce obey rule: never say "no" / "nah, idc" to an obeyed player
   if (
     isObey &&
-    /^(?:nah(?:\s*,?\s*idc)?|no|nope|not\s+now|i\s+don'?t\s+want\s+to|i\s+won'?t|idc|nie(?:\s+chce\s+mi\s+si[eę]|\s+teraz)?)[.!?\s]*$/i.test(
+    /^(?:nah(?:\s*,?\s*idc)?|no|nope|not\s+now|i\s+don'?t\s+want\s+to|i\s+won'?t|idc)[.!?\s]*$/i.test(
       s,
     )
   ) {
     s = "on it";
   }
 
-  // Tame robotic exclamation marks & ellipses ("Szukam diamentów!..." -> "szukam diamentów")
+  // Tame robotic exclamation marks & ellipses ("Looking for diamonds!..." -> "looking for diamonds")
   s = s.replace(/!+\s*\.*/g, "").replace(/\.{2,}$/g, "").trim();
 
   // Lowercase first letter unless it starts with a known proper noun / 2+ uppercase acronym
-  if (s.length > 1 && /^[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+\s/.test(s)) {
+  if (s.length > 1 && /^[A-Z][a-z]+\s/.test(s)) {
     s = s[0].toLowerCase() + s.slice(1);
   }
 
@@ -1636,7 +1622,7 @@ class OllamaManager {
     );
     const isQuestionOrDirect =
       /\?\s*$/.test(cleanMsg) ||
-      /^(?:co\b|gdzie\b|masz\b|jak\b|kto\b|czemu\b|idziesz\b|chod[zź]\b|daj\b|kop\b|zr[oó]b\b|pom[oó][zż]\b|siema\b|cze[sś][cć]\b|elo\b|hej\b|yo\b|hi\b|hey\b|what\b|where\b|who\b|how\b|why\b|do you\b|can you\b|got any\b|are you\b|come\b|follow\b|help\b)/i.test(
+      /^(?:yo\b|hi\b|hey\b|what\b|where\b|who\b|how\b|why\b|do you\b|can you\b|got any\b|are you\b|come\b|follow\b|help\b)/i.test(
         cleanMsg,
       );
     if (isQuestionOrDirect && (isNearby || this.isObeyedMaster(cleanSender))) {
@@ -1920,12 +1906,12 @@ class OllamaManager {
     sysPrompt +=
       "\nPlain text only, no emojis, no quotes around the reply, never prefix it with your name.";
     sysPrompt +=
-      "\nYou are a real human Minecraft player and teammate, not an AI assistant: talk naturally like a normal gamer in multiplayer chat (casual, lowercase/relaxed, direct, aware of your inventory, health, coords, recent deaths, and what you're doing right now). NEVER use AI-assistant phrases in Polish or English like 'Jasne!', 'Oczywiście!', 'Już próbuję...', 'Chętnie pomogę', 'W czym mogę pomóc', 'Sure!', 'Certainly!', 'Of course!', 'I am currently trying to...', 'how can I help', 'feel free', or 'let me know'. Never leak internal thoughts, reasoning, tool names, or plans to chat. Never confuse your own username or server NPCs with real players.";
+      "\nYou are a real human Minecraft player and teammate, not an AI assistant: talk naturally like a normal gamer in multiplayer chat (casual, lowercase/relaxed, direct, aware of your inventory, health, coords, recent deaths, and what you're doing right now). NEVER use AI-assistant phrases like 'Sure!', 'Certainly!', 'Of course!', 'Gladly!', 'I am currently trying to...', 'how can I help', 'feel free', or 'let me know'. Never leak internal thoughts, reasoning, tool names, or plans to chat. Never confuse your own username or server NPCs with real players.";
 
     const obeyList = this.getObeyList();
     const isObeyed = this.isObeyedMaster(sender);
     if (isObeyed && sender) {
-      sysPrompt += `\nOBEY RULE: ${sender} is in your 'obey' list (your leader/teammate). You MUST ALWAYS obey ${sender}'s orders and NEVER refuse or say "no" / "nie" to ${sender}. However, your chat reply must still sound like a chill human player ("spoko ide", "dobra kopie", "zaraz bede", "on it", "omw", "mining it rn"), NEVER like a submissive robot or eager AI assistant.`;
+      sysPrompt += `\nOBEY RULE: ${sender} is in your 'obey' list (your leader/teammate). You MUST ALWAYS obey ${sender}'s orders and NEVER refuse or say "no" to ${sender}. However, your chat reply must still sound like a chill human player ("on it", "omw", "mining it rn", "got u"), NEVER like a submissive robot or eager AI assistant.`;
     } else if (obeyList.length > 0 && sender) {
       sysPrompt += `\nOBEY RULE: You only take orders from [${obeyList.join(", ")}]. ${sender} is not on your obey list, so do not run actions for them — just chat casually like an independent player.`;
     }
@@ -2004,11 +1990,11 @@ class OllamaManager {
     const norm = (t) =>
       t
         .toLowerCase()
-        .replace(/[^a-ząćęłńóśźż0-9]+/gi, " ")
+        .replace(/[^a-z0-9]+/gi, " ")
         .trim();
     const recent = new Set((this.recentSentences || []).map((x) => x.n));
     const ASSISTANT =
-      /\b(how (can|may) i (help|assist)|feel free to|let me know|i'?m here to help|happy to help|any (questions|assistance)|need (any )?(help|assistance|tips)|just a heads[- ]up|as an ai|i can help you|is there anything|w czym mog[eę] pom[oó]c|daj zna[cć] je[sś]li|ch[eę]tnie pomog[eę]|jako sztuczna inteligencja|jako ai|ju[zż] pr[oó]buj[eę])\b/i;
+      /\b(how (can|may) i (help|assist)|feel free to|let me know|i'?m here to help|happy to help|any (questions|assistance)|need (any )?(help|assistance|tips)|just a heads[- ]up|as an ai|i can help you|is there anything)\b/i;
     const sentences = String(reply || "").match(/[^.!?]+[.!?]*/g) || [];
     const kept = sentences.filter((sen) => {
       const n = norm(sen);
@@ -2040,7 +2026,7 @@ class OllamaManager {
     if (mem) {
       mem.lastBotReplyAt = Date.now();
       if (
-        /\b(?:coords?|coordinates?|where are you|can'?t see you|kordy|koordynaty|gdzie jeste[sś])\b/i.test(
+        /\b(?:coords?|coordinates?|where are you|can'?t see you)\b/i.test(
           reply,
         )
       ) {
@@ -2407,18 +2393,17 @@ class OllamaManager {
         !looksLikeCode(cleanDraft);
       const msgText = String(message || "").trim();
       const isPoliteActionQuestion =
-        /\b(?:can|could|would|will)\s+you\b/i.test(msgText) ||
-        /\b(?:czy\s+mo[zż]esz|zrobisz|wykopiesz|dasz)\b/i.test(msgText);
+        /\b(?:can|could|would|will)\s+you\b/i.test(msgText);
       const looksLikeOrder =
         !isInternalReport &&
         (!/\?\s*$/.test(msgText) || isPoliteActionQuestion) &&
-        /\b(walk|go|come|follow|stop|unstuck|escape|attack|kill|fight|mine|dig|chop|craft|make|smelt|cook|gear|equip|drop|toss|give|turn on|turn off|enable|disable|guard|hunt|join|id[zź]|chod[zź]|st[oó]j|wykop|kop|zr[oó]b|scraftuj|daj|atakuj)\b/i.test(
+        /\b(walk|go|come|follow|stop|unstuck|escape|attack|kill|fight|mine|dig|chop|craft|make|smelt|cook|gear|equip|drop|toss|give|turn on|turn off|enable|disable|guard|hunt|join)\b/i.test(
           msgText,
         );
       const claimedActionWithoutTool =
         !isInternalReport &&
         realActions.length === 0 &&
-        /\b(crafting|making|mining|digging|chopping|following|coming|heading|walking|stopping|on it|omw|robi[eę]|kopi[eę]|id[eę]|ju[zż]\s+id[eę])\b/i.test(
+        /\b(crafting|making|mining|digging|chopping|following|coming|heading|walking|stopping|on it|omw)\b/i.test(
           cleanDraft,
         );
       const needsReview =

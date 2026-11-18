@@ -2309,7 +2309,7 @@ async function maybeSpontaneousChat() {
   const res = await ollamaManager
     .generateChatReply({
       sender: nearestPlayer,
-      message: `[Spontaneous chat moment — ${nearestPlayer} is nearby (${ctx.nearbyPlayers[0]}). Say one short, natural, casual gamer remark in the language used recently in chat (or English/Polish) about what you're doing right now, the time of day, or ask ${nearestPlayer} what they're up to. Keep it under 65 chars.]`,
+      message: `[Spontaneous chat moment — ${nearestPlayer} is nearby (${ctx.nearbyPlayers[0]}). Say one short, natural, casual gamer remark about what you're doing right now, the time of day, or ask ${nearestPlayer} what they're up to. Keep it under 65 chars.]`,
       botContext: ctx,
       bypassCooldown: false,
     })
@@ -4594,7 +4594,7 @@ function registerIpcHandlers() {
     sendToRenderer("update-done", result);
   });
 
-  // --- AI Brain ("Mózg" AI) IPC Handlers ---
+  // --- AI Brain IPC Handlers ---
   ipcMain.handle("ai-brain-get-status", () => aiBrain.getSnapshot(bot));
 
   // --- Proxy Manager IPC Handlers ---

@@ -346,32 +346,6 @@ function cleanLine(line, botName = "") {
   }
   s = s.replace(/\s+-\s+.*$/, "").trim();
   s = s.replace(/[.!?]+$/, "").trim();
-  // Common Polish chat commands ("idz za mna", "chodz tu", "stoj", "zrob kilof", "wykop drewno")
-  s = s
-    .replace(/^id[zź]\s+za\s+mn[aą](?=\s|$)/i, "follow me")
-    .replace(/^chod[zź]\s+(?:tu|tutaj|do\s+mnie)(?=\s|$)/i, "come to me")
-    .replace(/^(?:st[oó]j|zatrzymaj\s+si[eę]|przesta[nń])(?=\s|$)/i, "stop")
-    .replace(/^(?:ubierz|ekwipuj)\s+si[eę](?=\s|$)/i, "gear up")
-    .replace(
-      /^(?:odblokuj\s+si[eę]|wydosta[nń]\s+si[eę]|wyjd[zź]\s+z\s+dziury)(?=\s|$)/i,
-      "unstuck",
-    )
-    .replace(/^(?:wykop|kop|zbierz|nar[aą]b)\s+/i, "mine ")
-    .replace(/^(?:zr[oó]b|stw[oó]rz|scraftuj)\s+(?:sobie\s+)?/i, "craft ")
-    .replace(/^(?:przepal|upiecz)\s+/i, "smelt ")
-    .replace(/^(?:atakuj|zabij|bij)\s+/i, "attack ")
-    .replace(/^(?:bro[nń]|chro[nń])\s+/i, "guard ")
-    .replace(/^(?:zjedz|jedz)(?=\s|$)/i, "eat")
-    .replace(/^skocz(?=\s|$)/i, "jump")
-    .replace(/\bdrewniany\s+kilof\b/gi, "wooden_pickaxe")
-    .replace(/\bkamienny\s+kilof\b/gi, "stone_pickaxe")
-    .replace(/\b[zż]elazny\s+kilof\b/gi, "iron_pickaxe")
-    .replace(/\bdiamentowy\s+kilof\b/gi, "diamond_pickaxe")
-    .replace(/\bdrewniany\s+miecz\b/gi, "wooden_sword")
-    .replace(/\bkamienny\s+miecz\b/gi, "stone_sword")
-    .replace(/\b[zż]elazny\s+miecz\b/gi, "iron_sword")
-    .replace(/\bdrewno\b/gi, "oak_log")
-    .replace(/\bkamie[nń]\b/gi, "cobblestone");
   // Map "get out of this hole/pit/water/trap" or "climb out" to unstuck
   s = s.replace(
     /\b(?:get\s+out(?:\s+of\s+(?:here|this|the)\s+\w+|\s+of\s+here)?|climb\s+out(?:\s+of\s+\w+)?|dig\s+out\s+of\s+(?:this|the)\s+\w+)\b/gi,

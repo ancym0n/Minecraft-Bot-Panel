@@ -1,4 +1,4 @@
-// AI Brain ("Mózg" AI) — persistent working memory, goal/plan tracker, spatial landmarks,
+// AI Brain — persistent working memory, goal/plan tracker, spatial landmarks,
 // real-time problem-solving diagnostician, and self-querying Minecraft mechanics knowledge engine.
 
 const MINECRAFT_MECHANICS_KB = {
