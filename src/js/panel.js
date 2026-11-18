@@ -1394,7 +1394,11 @@ function createVirtualStream({
       renderWindow({ scrollToBottom: state.pinnedLive });
       return;
     }
-    container.appendChild(buildFrag(matching));
+    const liveFrag = buildFrag(matching);
+    if (state.pinnedLive && matching.length <= 6) {
+      for (const el of liveFrag.children) el.classList.add("line-enter");
+    }
+    container.appendChild(liveFrag);
     state.winEnd = getFiltered().length;
 
     if (state.pinnedLive) {

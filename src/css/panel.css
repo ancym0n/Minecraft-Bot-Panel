@@ -2347,8 +2347,13 @@ pre {
   gap: 0.5rem;
   padding: 0.12rem 0.3rem;
   border-radius: 6px;
-  animation: lineSlideIn 0.16s ease-out;
   transition: background-color 0.15s ease;
+}
+
+/* Only freshly streamed lines animate; history paging and rebuilds stay still */
+.log-line.line-enter,
+.chat-line.line-enter {
+  animation: lineSlideIn 0.16s ease-out;
 }
 
 .log-line:hover,
