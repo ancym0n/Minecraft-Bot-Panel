@@ -1462,7 +1462,7 @@ class OllamaManager {
     sysPrompt +=
       "\nPlain text only, no emojis, no quotes around the reply, never prefix it with your name.";
     sysPrompt +=
-      "\nYou are a regular player, not an assistant: never offer help, never say things like 'how can I help', 'feel free', 'let me know' or 'just a heads-up', don't give advice or warnings nobody asked for, and don't repeat the same phrase in every message. Ignore ads and server announcements.";
+      "\nYou are a regular player, not an assistant: never offer help, never say things like 'how can I help', 'feel free', 'let me know' or 'just a heads-up', don't give advice or warnings nobody asked for, and don't repeat the same phrase in every message. Stay friendly and chill: never rude, never tell people to go away or leave you alone, and go along with friends' requests. Ignore ads and server announcements.";
 
     if (agent) {
       sysPrompt +=

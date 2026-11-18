@@ -803,8 +803,18 @@ async function handleAiTaskDone(evt) {
 const AD_RE =
   /\/visit\b|\[ad\]|discord\.gg|https?:\/\/|www\.|\.(com|net|org|gg)\b|\bstore\b|\bshop\b|\bvote\b|\bgiveaway\b|\bper hour\b|\/hr\b|\bbuying\b|\bselling\b/i;
 
-async function handleAiChat(currentBot, text) {
-  const parsed = parseChatSenderAndMessage(text, currentBot.username);
+async function handleAiChat(currentBot, text, senderUuid) {
+  let parsed = parseChatSenderAndMessage(text, currentBot.username);
+  // Servers that hide the name in chat still send who wrote it.
+  const byUuid = senderUuid
+    ? Object.values(currentBot.players || {}).find(
+        (p) => p.uuid && p.uuid === senderUuid,
+      )?.username
+    : null;
+  if (byUuid) {
+    if (!parsed) parsed = { sender: byUuid, content: String(text).trim() };
+    else if (parsed.sender === "Player") parsed.sender = byUuid;
+  }
   if (!parsed || aiChatQueue.isBusy()) return;
   const me = String(currentBot.username || "").toLowerCase();
   if (parsed.sender.toLowerCase() === me) return;
@@ -824,7 +834,19 @@ async function handleAiChat(currentBot, text) {
       `(^|[^a-z0-9_])@?${me.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9_]|$)`,
       "i",
     ).test(parsed.content);
-  if (!addressed && AD_RE.test(parsed.content)) return;
+  const nick = me.length >= 5 ? me.slice(0, 4) : "";
+  const byNick =
+    Boolean(nick) &&
+    new RegExp(
+      `(^|[^a-z0-9_])${nick.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[a-z0-9_]*`,
+      "i",
+    ).test(parsed.content);
+  const trusted = String(ollamaManager.config.agentAllowedPlayers || "")
+    .toLowerCase()
+    .split(/[,\s]+/)
+    .includes(parsed.sender.toLowerCase());
+  const talkingToMe = addressed || byNick || trusted;
+  if (!talkingToMe && AD_RE.test(parsed.content)) return;
   if (
     !ollamaManager.shouldRespondToChat({
       sender: parsed.sender,
@@ -840,7 +862,7 @@ async function handleAiChat(currentBot, text) {
   const res = await runAiReply({
     sender: parsed.sender,
     message: parsed.content,
-    forceAgent: allMode && !addressed ? false : null,
+    forceAgent: allMode && !talkingToMe ? false : null,
   });
   if (bot !== currentBot) return;
   if (!res.ok) {
@@ -854,7 +876,7 @@ async function handleAiChat(currentBot, text) {
 
 // Server replies that matter to the bot: protected areas and chat checks.
 const DENIAL_RE =
-  /(can'?t|cannot|not allowed to|aren'?t allowed to|no permission to|don'?t have permission to)\s+(break|place|build|pvp|attack|hit|use|interact|open|mine|dig)\b|you can'?t (do that|pvp) here/i;
+  /(can'?t|cannot|not allowed to|aren'?t allowed to|no permission to|don'?t have permission to)\s+(break|place|build|pvp|attack|hit|harm|hurt|damage|use|interact|open|mine|dig)\b|you can'?t (do that|pvp) here/i;
 const MOVE_TO_CHAT_RE =
   /move before (using )?chat|cannot chat until you move|must move before|move to (be able to )?chat/i;
 
@@ -3249,7 +3271,7 @@ function registerIpcHandlers() {
         }, 120);
       });
 
-      currentBot.on("message", async (jsonMsg) => {
+      currentBot.on("message", async (jsonMsg, _position, senderUuid) => {
         if (bot !== currentBot) return;
         const payload = extractChatPayload(jsonMsg);
         if (payload.text || payload.motd) {
@@ -3264,7 +3286,7 @@ function registerIpcHandlers() {
           pushSessionLogStatus();
 
           if (ollamaManager.isActive()) {
-            handleAiChat(currentBot, payload.text || payload.motd);
+            handleAiChat(currentBot, payload.text || payload.motd, senderUuid);
           }
         }
       });
