@@ -24,9 +24,23 @@ const {
   clearPathfinderGoal,
   configureSmartMovements,
   scanNearbySigns,
+  refreshChatSession,
+  attachSubServerChatFix,
   attachSmartMovement,
+  isHostile,
+  extractCoordsFromText,
+  escapeHazardsAndObstructions,
+  attachRealTimeSelfPreservation,
+  isLikelyNpcOrFakePlayer,
+  isRealPlayerName,
+  attachViaVersionAdapter,
+  resolveSupportedVersion,
+  resolveVersionFromKickOrError,
 } = require("./src/js/botUtils");
 const { ollamaManager } = require("./src/js/ollamaManager");
+const { aiBrain } = require("./src/js/aiBrain");
+const { proxyManager } = require("./src/js/proxyManager");
+const { bottingManager } = require("./src/js/bottingManager");
 const { ChatQueue } = require("./src/js/chatQueue");
 const { createAiTools } = require("./src/js/aiTools");
 const { attachStuckWatchdog } = require("./src/js/stuckWatchdog");
@@ -598,11 +612,14 @@ function pushSessionLogStatus() {
   sendToRenderer("session-log-status", sessionLogger.getStatus());
 }
 
-function parseChatSenderAndMessage(plainText, botUsername = "") {
+const SYSTEM_CHAT_RE =
+  /^[A-Za-z0-9_.\-]{2,24}\s+(joined the game|left the game|lost connection|was (slain|shot|killed|blown up|pummeled|fireballed|impaled|squashed|pricked|stung|obliterated|burnt|frozen|roasted)|froze to death|fell (from|out of|off|into|too far)|drowned|burned to death|went up in flames|tried to swim in lava|suffocated in a wall|starved to death|withered away|hit the ground too hard|experienced kinetic energy|blew up|has made the advancement|has completed the challenge|has reached the goal)\b/i;
+
+function parseChatSenderAndMessage(plainText) {
   const text = String(plainText || "")
     .replace(/§#[0-9a-fA-F]{6}|§[0-9a-fk-or]/gi, "")
     .trim();
-  if (!text) return null;
+  if (!text || SYSTEM_CHAT_RE.test(text)) return null;
 
   // 1. Vanilla <Player> message
   const vanillaMatch = text.match(/^<([A-Za-z0-9_.\-]{2,24})>\s+(.+)$/);
@@ -610,7 +627,19 @@ function parseChatSenderAndMessage(plainText, botUsername = "") {
     return { sender: vanillaMatch[1], content: vanillaMatch[2].trim() };
   }
 
-  // 2. Server formatted: [Rank] Player: message OR Player » message
+  // 2. Whispers: "Player whispers to you: msg", "[Player -> me] msg", "From Player: msg"
+  const whisperMatch =
+    text.match(
+      /^([A-Za-z0-9_.\-]{2,24})\s+whispers(?:\s+to\s+you)?:\s+(.+)$/i,
+    ) ||
+    text.match(
+      /^\[?\s*(?:From\s+)?([A-Za-z0-9_.\-]{2,24})\s*(?:->|→|to)\s*(?:me|you|[A-Za-z0-9_.\-]{2,24})\s*\]?\s*:?\s+(.+)$/i,
+    );
+  if (whisperMatch) {
+    return { sender: whisperMatch[1], content: whisperMatch[2].trim() };
+  }
+
+  // 3. Server formatted: [Rank] Player: message OR Player » message
   const sepMatch = text.match(/^([^:»>•]{2,48}?)\s*(?::|»|›|->)\s+(.+)$/);
   if (sepMatch) {
     const rawLeft = sepMatch[1]
@@ -621,17 +650,20 @@ function parseChatSenderAndMessage(plainText, botUsername = "") {
     const candidate = tokens[tokens.length - 1] || "";
     if (
       /^[A-Za-z0-9_.\-]{2,24}$/.test(candidate) &&
-      !["server", "system", "info", "queue", "warning", "console"].includes(
-        candidate.toLowerCase(),
-      )
+      ![
+        "server",
+        "system",
+        "info",
+        "queue",
+        "warning",
+        "console",
+        "tip",
+        "broadcast",
+        "announcement",
+      ].includes(candidate.toLowerCase())
     ) {
       return { sender: candidate, content: sepMatch[2].trim() };
     }
-  }
-
-  // 3. Fallback if botUsername is mentioned in a general line
-  if (botUsername && text.toLowerCase().includes(botUsername.toLowerCase())) {
-    return { sender: "Player", content: text };
   }
 
   return null;
@@ -641,17 +673,107 @@ function buildLiveBotAiContext() {
   if (!bot || !bot.entity) return null;
   const pos = bot.entity.position;
   const nearbyPlayers = [];
+  const knownPlayerCoords = [];
   if (bot.players) {
     for (const p of Object.values(bot.players)) {
-      if (p?.username && p.username !== bot.username && p.entity) {
-        nearbyPlayers.push(p.username);
+      if (!p?.username || p.username === bot.username) continue;
+      if (p.entity && isLikelyNpcOrFakePlayer(bot, p.entity)) continue;
+      if (!isRealPlayerName(bot, p.username)) continue;
+      if (p.entity && p.entity.position && pos) {
+        const d = Math.round(p.entity.position.distanceTo(pos));
+        nearbyPlayers.push(`${p.username} (${d}m)`);
+        ollamaManager.updatePlayerLocation(p.username, p.entity.position);
+      } else {
+        const seen = bot._mcbpLastSeenPlayers?.get(p.username.toLowerCase());
+        if (seen?.position) {
+          knownPlayerCoords.push(
+            `${p.username} (at ${Math.floor(seen.position.x)}, ${Math.floor(seen.position.y)}, ${Math.floor(seen.position.z)})`,
+          );
+        }
       }
     }
   }
+
+  // Inventory & armor summary so the AI always knows what it has
+  let inventorySummary = "empty";
+  let armorSummary = "";
+  if (bot.inventory) {
+    const counts = {};
+    for (const it of bot.inventory.items()) {
+      counts[it.name] = (counts[it.name] || 0) + it.count;
+    }
+    const topItems = Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([n, c]) => `${n} x${c}`);
+    if (topItems.length) inventorySummary = topItems.join(", ");
+    const worn = [5, 6, 7, 8, 45]
+      .map((s) => bot.inventory.slots?.[s]?.name)
+      .filter(Boolean);
+    if (worn.length) armorSummary = worn.join(", ");
+  }
+
+  // Nearby hostile threats
+  const nearbyThreats = [];
+  if (bot.entities && pos) {
+    for (const e of Object.values(bot.entities)) {
+      if (!e || e === bot.entity || !e.position) continue;
+      if (!isHostile(e)) continue;
+      const d = Math.round(e.position.distanceTo(pos));
+      if (d <= 18) nearbyThreats.push(`${e.name} (${d}m)`);
+    }
+  }
+
+  // Time of day & weather
+  let timeOfDay = "";
+  const tod = bot.time?.timeOfDay;
+  if (typeof tod === "number") {
+    const t = tod % 24000;
+    timeOfDay =
+      t < 12000
+        ? "day"
+        : t < 13800
+          ? "sunset"
+          : t < 22200
+            ? "night"
+            : "sunrise";
+  }
+  const weather =
+    bot.thunderState > 0 ? "thunder" : bot.isRaining ? "rain" : "clear";
+
+  // Active background task, plan queue, or latest GearUp/module status
+  let activeAiTask = aiTools?.getQueueStatus?.() || "";
+  if (!activeAiTask) {
+    const latestStatus = recentLogs
+      .slice(-8)
+      .reverse()
+      .find((l) =>
+        /\b(GearUp:|AIAgent Plan|AIAgent: .* started|Walking to|Following)\b/.test(
+          l,
+        ),
+      );
+    if (latestStatus) {
+      activeAiTask = latestStatus.slice(9, 100);
+    } else if (bot.pathfinder?.isMoving()) {
+      activeAiTask = "moving to target";
+    }
+  }
+
+  let lastDeath = "";
+  if (bot._mcbpLastDeath && Date.now() - bot._mcbpLastDeath.at < 300000) {
+    const dp = bot._mcbpLastDeath.position;
+    const sec = Math.max(
+      1,
+      Math.round((Date.now() - bot._mcbpLastDeath.at) / 1000),
+    );
+    lastDeath = `at (${Math.floor(dp.x)}, ${Math.floor(dp.y)}, ${Math.floor(dp.z)}) ${sec}s ago${bot._mcbpLastDeath.cause ? ` (${bot._mcbpLastDeath.cause})` : ""}`;
+  }
+
   return {
     username: bot.username,
     health: Math.round(bot.health ?? 20),
     food: Math.round(bot.food ?? 20),
+    xpLevel: bot.experience?.level ?? 0,
     position: pos
       ? { x: Math.floor(pos.x), y: Math.floor(pos.y), z: Math.floor(pos.z) }
       : null,
@@ -659,17 +781,70 @@ function buildLiveBotAiContext() {
       /^minecraft:/,
       "",
     ),
+    timeOfDay,
+    weather,
     heldItem: bot.heldItem
       ? `${bot.heldItem.displayName || bot.heldItem.name} x${bot.heldItem.count}`
       : "Empty hand",
+    armor: armorSummary,
+    inventorySummary,
     nearbyPlayers: nearbyPlayers.slice(0, 6),
+    knownPlayerCoords: knownPlayerCoords.slice(0, 4),
+    nearbyThreats: nearbyThreats.slice(0, 5),
     activeScripts: Array.from(activeScripts),
+    activeAiTask,
+    lastDeath,
   };
 }
 
 // Chat reply, or a tool-using agent run when AIAgent is on and the
 // sender is allowed to give commands.
 const DIRECT_REPLIES = ["ok", "on it", "sure", "okay", "got it"];
+
+function pickDirectReply(message, result) {
+  const m = String(message || "").toLowerCase();
+  const r = String(result || "").toLowerCase();
+  if (r.includes("walking to") || r.includes("walking toward")) {
+    return ["omw", "coming", "on my way"][Math.floor(Math.random() * 3)];
+  }
+  if (r.includes("already next to") || r.includes("already at")) {
+    return "im right here";
+  }
+  if (r.includes("following")) {
+    return ["following u", "right behind u", "got u"][
+      Math.floor(Math.random() * 3)
+    ];
+  }
+  if (r.includes("stopped")) {
+    return "stopped";
+  }
+  if (r.includes("queued") && r.includes("step")) {
+    return "queued it up for right after this";
+  }
+  if (r.includes("created & started") && r.includes("plan:")) {
+    return [
+      "on it, starting the plan step by step",
+      "bet, making it step by step",
+    ][Math.floor(Math.random() * 2)];
+  }
+  if (r.includes("gearup") || m.includes("gear up")) {
+    return ["on it, gearing up", "gearing up now", "bet, gearing up"][
+      Math.floor(Math.random() * 3)
+    ];
+  }
+  if (r.includes("mine_block") || r.includes("mined")) {
+    return ["mining it now", "on it, mining"][Math.floor(Math.random() * 2)];
+  }
+  if (r.includes("craft_item") || r.includes("crafted")) {
+    return ["crafting it rn", "making it now"][Math.floor(Math.random() * 2)];
+  }
+  if (r.includes("smelt_item") || r.includes("smelted")) {
+    return ["smelting it now", "on it, smelting"][
+      Math.floor(Math.random() * 2)
+    ];
+  }
+  return DIRECT_REPLIES[Math.floor(Math.random() * DIRECT_REPLIES.length)];
+}
 
 async function runAiReply({
   sender,
@@ -688,20 +863,22 @@ async function runAiReply({
     try {
       const direct = await aiTools.tryDirect(message, sender);
       if (direct?.ok) {
-        const reply =
-          DIRECT_REPLIES[Math.floor(Math.random() * DIRECT_REPLIES.length)];
+        const reply = pickDirectReply(message, direct.result);
+        const actionItem = {
+          name: "run_commands",
+          args: { commands: message },
+          result: direct.result,
+        };
+        ollamaManager.rememberExchange(sender, message, reply, [actionItem]);
+        ollamaManager.recordWorldEvent(
+          `Ran "${message}" for ${sender} -> ${String(direct.result).slice(0, 80)}`,
+        );
         return {
           ok: true,
           reply,
           parts: [reply],
           model: "direct",
-          actions: [
-            {
-              name: "run_commands",
-              args: { commands: message },
-              result: direct.result,
-            },
-          ],
+          actions: [actionItem],
           latencyMs: Date.now() - started,
         };
       }
@@ -759,10 +936,24 @@ function logAiResult(res, target) {
 const aiFixAttempts = new Map();
 
 async function handleAiTaskDone(evt) {
-  if (!evt || evt.ok || !ollamaManager.config.agentEnabled) return;
+  if (!evt) return;
+  ollamaManager.recordWorldEvent(
+    `${evt.name} ${evt.ok ? "finished" : "failed"}: ${String(evt.result || "").slice(0, 90)}`,
+  );
+  if (evt.ok || !ollamaManager.config.agentEnabled) return;
   const currentBot = bot;
   if (!currentBot || !currentBot.entity) return;
   const sender = evt.sender || "Player";
+
+  // Fast deterministic recovery for physical stuck/obstruction failures
+  if (
+    /\b(stuck|no path|interrupted|could not reach)\b/i.test(
+      String(evt.result || ""),
+    )
+  ) {
+    await escapeHazardsAndObstructions(currentBot, { log }).catch(() => {});
+  }
+
   const now = Date.now();
   const prev = aiFixAttempts.get(sender);
   const count = prev && now - prev.at < 90000 ? prev.count : 0;
@@ -785,7 +976,7 @@ async function handleAiTaskDone(evt) {
     message: `[Task report, not a chat message] Your ${evt.name} task failed: ${evt.result}. ${
       lastTry
         ? `Do not retry. Tell ${sender} in a few casual words, like a player would, that it didn't work (no technical details, no commands, no error text).`
-        : `Fix it now with a different approach (another tool, another target or position${aiCanRunCode(sender) ? ", or run_code" : ""}). Never repeat the same call with the same arguments. If it is impossible, tell ${sender} briefly.`
+        : `Fix it now with a different approach (e.g. unstuck, craft missing tool, another target or position${aiCanRunCode(sender) ? ", or run_code" : ""}). Never repeat the same call with the same arguments. If it is impossible, tell ${sender} briefly.`
     }`,
     botContext: buildLiveBotAiContext(),
     tools: aiTools.schemasFor(sender),
@@ -803,7 +994,24 @@ async function handleAiTaskDone(evt) {
 const AD_RE =
   /\/visit\b|\[ad\]|discord\.gg|https?:\/\/|www\.|\.(com|net|org|gg)\b|\bstore\b|\bshop\b|\bvote\b|\bgiveaway\b|\bper hour\b|\/hr\b|\bbuying\b|\bselling\b/i;
 
-async function handleAiChat(currentBot, text, senderUuid) {
+async function handleAiChat(currentBot, text, senderUuid, position) {
+  const cleanRaw = String(text || "").trim();
+  if (position === "game_info") return;
+  if (SYSTEM_CHAT_RE.test(cleanRaw)) {
+    // Record notable system events (deaths, joins) in world memory without replying in chat
+    if (
+      currentBot.username &&
+      cleanRaw.toLowerCase().startsWith(currentBot.username.toLowerCase())
+    ) {
+      ollamaManager.recordWorldEvent(cleanRaw);
+      if (currentBot._mcbpLastDeath && !currentBot._mcbpLastDeath.cause) {
+        currentBot._mcbpLastDeath.cause = cleanRaw;
+      }
+    }
+    return;
+  }
+  const selfUuid = currentBot.player?.uuid || currentBot.entity?.uuid;
+  if (senderUuid && selfUuid && senderUuid === selfUuid) return;
   let parsed = parseChatSenderAndMessage(text, currentBot.username);
   // Servers that hide the name in chat still send who wrote it.
   const byUuid = senderUuid
@@ -815,19 +1023,40 @@ async function handleAiChat(currentBot, text, senderUuid) {
     if (!parsed) parsed = { sender: byUuid, content: String(text).trim() };
     else if (parsed.sender === "Player") parsed.sender = byUuid;
   }
-  if (!parsed || aiChatQueue.isBusy()) return;
+  if (!parsed) return;
   const me = String(currentBot.username || "").toLowerCase();
   if (parsed.sender.toLowerCase() === me) return;
-  // Only real players (in the tab list) get answers, not "version:" or
-  // "[Skyblock]" style server lines.
+  // Only real players (in the tab list, not NPCs or fake players) get answers
   const tab = Object.keys(currentBot.players || {});
-  if (parsed.sender !== "Player" && tab.length) {
+  if (tab.length) {
     const real = tab.find(
       (u) => u.toLowerCase() === parsed.sender.toLowerCase(),
     );
-    if (!real) return;
+    if (!real || !isRealPlayerName(currentBot, real)) return;
     parsed.sender = real;
   }
+
+  // Always observe real player chat and extract any mentioned coordinates into memory
+  const coords = extractCoordsFromText(parsed.content);
+  ollamaManager.observePlayerChat(parsed.sender, parsed.content, { coords });
+  if (coords && currentBot.entity?.position) {
+    try {
+      const { Vec3 } = loadLibraries();
+      if (!currentBot._mcbpLastSeenPlayers)
+        currentBot._mcbpLastSeenPlayers = new Map();
+      currentBot._mcbpLastSeenPlayers.set(parsed.sender.toLowerCase(), {
+        username: parsed.sender,
+        position: new Vec3(
+          coords.x,
+          coords.y ?? Math.floor(currentBot.entity.position.y),
+          coords.z,
+        ),
+        at: Date.now(),
+      });
+    } catch (_) {}
+  }
+
+  if (aiChatQueue.isBusy()) return;
   const addressed =
     Boolean(me) &&
     new RegExp(
@@ -847,11 +1076,17 @@ async function handleAiChat(currentBot, text, senderUuid) {
     .includes(parsed.sender.toLowerCase());
   const talkingToMe = addressed || byNick || trusted;
   if (!talkingToMe && AD_RE.test(parsed.content)) return;
+  const canCommandSender =
+    Boolean(ollamaManager.config.agentEnabled) &&
+    ollamaManager.canCommand(parsed.sender);
+  const liveCtx = buildLiveBotAiContext();
   if (
+    !canCommandSender &&
     !ollamaManager.shouldRespondToChat({
       sender: parsed.sender,
       message: parsed.content,
       botUsername: currentBot.username,
+      botContext: liveCtx,
     })
   ) {
     return;
@@ -876,14 +1111,75 @@ async function handleAiChat(currentBot, text, senderUuid) {
 
 // Server replies that matter to the bot: protected areas and chat checks.
 const DENIAL_RE =
-  /(can'?t|cannot|not allowed to|aren'?t allowed to|no permission to|don'?t have permission to)\s+(break|place|build|pvp|attack|hit|harm|hurt|damage|use|interact|open|mine|dig)\b|you can'?t (do that|pvp) here/i;
+  /(can'?t|cannot|not allowed to|aren'?t allowed to|no permission to|don'?t have permission to)\s+(break|place|build|pvp|attack|hit|harm|hurt|damage|use|interact|open|mine|dig)\b|you can'?t (do that|pvp|break that block) here|spawn protection/i;
+const PVP_DENIAL_RE =
+  /(can'?t|cannot|not allowed to|aren'?t allowed to|no permission to)\s+(pvp|attack|hit|harm|hurt|damage|fight)\b|pvp is (disabled|off)|you can'?t pvp here|in a no[- ]pvp/i;
+const BUILD_DENIAL_RE =
+  /(can'?t|cannot|not allowed to|aren'?t allowed to|no permission to|don'?t have permission to)\s+(break|place|build|mine|dig|destroy)\b|you can'?t break that block here|spawn protection/i;
 const MOVE_TO_CHAT_RE =
   /move before (using )?chat|cannot chat until you move|must move before|move to (be able to )?chat/i;
+const MISSING_CHAT_KEY_RE =
+  /missing profile public key|chat disabled due to missing|chat session not initialized/i;
 
 function handleServerNotice(currentBot, rawText) {
   const text = String(rawText || "");
+  const now = Date.now();
+  if (MISSING_CHAT_KEY_RE.test(text)) {
+    if (now - (currentBot._mcbpLastKeyRefreshAt || 0) > 3000) {
+      currentBot._mcbpLastKeyRefreshAt = now;
+      const refreshed = refreshChatSession(currentBot, { log: (t) => log(t) });
+      if (refreshed) {
+        setTimeout(() => {
+          if (bot === currentBot) aiChatQueue.resendLast();
+        }, 250);
+      }
+    }
+  }
   if (DENIAL_RE.test(text)) {
-    currentBot._mcbpDenied = { text: text.slice(0, 160), at: Date.now() };
+    currentBot._mcbpDenied = { text: text.slice(0, 160), at: now };
+  }
+  if (PVP_DENIAL_RE.test(text)) {
+    currentBot._mcbpNoPvpUntil = now + 12000;
+    currentBot._mcbpNoPvpPos = currentBot.entity?.position?.clone() || null;
+    if (now - (currentBot._mcbpLastNoPvpLogAt || 0) > 8000) {
+      currentBot._mcbpLastNoPvpLogAt = now;
+      const p = currentBot.entity?.position;
+      const coords = p
+        ? `at (${Math.floor(p.x)}, ${Math.floor(p.y)}, ${Math.floor(p.z)})`
+        : "";
+      log(`Protection: Server blocked PvP ${coords} — pausing PvP attacks`);
+      sessionLogger.record(
+        "Movement",
+        "No-PvP Zone Detected",
+        `${text.slice(0, 120)} ${coords}`.trim(),
+      );
+      pushSessionLogStatus();
+    }
+  }
+  if (BUILD_DENIAL_RE.test(text)) {
+    currentBot._mcbpProtectedZoneUntil = now + 30000;
+    currentBot._mcbpProtectedZonePos =
+      currentBot.entity?.position?.clone() || null;
+    if (currentBot.pathfinder?.movements) {
+      currentBot.pathfinder.movements.canDig = false;
+      currentBot.pathfinder.movements.allow1by1towers = false;
+    }
+    if (now - (currentBot._mcbpLastBuildDenyLogAt || 0) > 8000) {
+      currentBot._mcbpLastBuildDenyLogAt = now;
+      const p = currentBot.entity?.position;
+      const coords = p
+        ? `at (${Math.floor(p.x)}, ${Math.floor(p.y)}, ${Math.floor(p.z)})`
+        : "";
+      log(
+        `Protection: Server blocked block breaking/building ${coords} — disabling pathfinder digging`,
+      );
+      sessionLogger.record(
+        "Movement",
+        "Protected Area (No Break/Build)",
+        `${text.slice(0, 120)} ${coords}`.trim(),
+      );
+      pushSessionLogStatus();
+    }
   }
   if (MOVE_TO_CHAT_RE.test(text)) {
     // Step a little so the anti-bot check passes, then resend.
@@ -904,7 +1200,9 @@ function handleServerNotice(currentBot, rawText) {
 // When the stuck watchdog gives up for a while, let the AI look at it.
 // Its thinking and actions go to the console only.
 async function askAiAboutStuck(currentBot, { target }) {
-  if (bot !== currentBot || !ollamaManager.config.agentEnabled) return;
+  if (bot !== currentBot) return;
+  await escapeHazardsAndObstructions(currentBot, { log }).catch(() => {});
+  if (!ollamaManager.config.agentEnabled) return;
   if (ollamaManager.isGenerating) return;
   const owner =
     String(ollamaManager.config.agentAllowedPlayers || "")
@@ -916,7 +1214,7 @@ async function askAiAboutStuck(currentBot, { target }) {
   const res = await ollamaManager
     .runAgent({
       sender: owner,
-      message: `[Stuck report, not chat] You have been stuck for a while trying to reach ${target}. Recent console:\n${recentLogs.slice(-10).join("\n").slice(-1200)}\nGet unstuck with tools (jump, walk a direction, mine the block in the way, go around, or stop if it's unreachable). Never invent coordinates. Do not chat.`,
+      message: `[Stuck report, not chat] You have been stuck for a while trying to reach ${target}. Recent console:\n${recentLogs.slice(-10).join("\n").slice(-1200)}\nGet unstuck with tools (unstuck, jump, walk a direction, mine the block in the way, go around, or stop if it's unreachable). Never invent coordinates. Do not chat.`,
       botContext: buildLiveBotAiContext(),
       tools: aiTools.schemasFor(owner),
       executeTool: aiTools.executeTool,
@@ -1660,11 +1958,21 @@ function classifyEntity(e) {
   const kind = String(e.kind || "").toLowerCase();
   const type = String(e.type || "").toLowerCase();
 
-  if (
-    type === "player" ||
-    type === "orb" ||
-    IGNORED_OBJECT_ENTITIES.has(name)
-  ) {
+  if (type === "player") {
+    if (bot && e !== bot.entity && isLikelyNpcOrFakePlayer(bot, e)) {
+      const cleanNpcName = String(e.username || e.name || "NPC")
+        .replace(/§[0-9a-fk-or]/gi, "")
+        .trim();
+      return {
+        category: "npc",
+        hostile: false,
+        displayName: `[NPC] ${cleanNpcName || "FakePlayer"}`,
+      };
+    }
+    return null;
+  }
+
+  if (type === "orb" || IGNORED_OBJECT_ENTITIES.has(name)) {
     return null;
   }
 
@@ -1874,6 +2182,8 @@ function buildTelemetrySnapshot() {
   if (bot.players) {
     for (const p of Object.values(bot.players)) {
       if (!p || !p.username || p.username === bot.username) continue;
+      if (p.entity && isLikelyNpcOrFakePlayer(bot, p.entity)) continue;
+      if (!isRealPlayerName(bot, p.username)) continue;
       const ent = p.entity;
       const dist =
         ent && ent.position
@@ -1977,13 +2287,50 @@ function pushBotInventory(force = false) {
   }
 }
 
+let lastSpontaneousChatAt = 0;
+
+async function maybeSpontaneousChat() {
+  if (!bot || !bot.entity || !ollamaManager.config.enabled) return;
+  if (ollamaManager.isGenerating || aiChatQueue.isBusy()) return;
+  const now = Date.now();
+  if (now - lastSpontaneousChatAt < 210000) return;
+  if (now - (ollamaManager.lastReplyTime || 0) < 120000) return;
+
+  const ctx = buildLiveBotAiContext();
+  if (!ctx || !Array.isArray(ctx.nearbyPlayers) || ctx.nearbyPlayers.length === 0) {
+    return;
+  }
+  const nearestPlayer = String(ctx.nearbyPlayers[0] || "")
+    .split(" ")[0]
+    .trim();
+  if (!nearestPlayer) return;
+
+  lastSpontaneousChatAt = now;
+  const res = await ollamaManager
+    .generateChatReply({
+      sender: nearestPlayer,
+      message: `[Spontaneous chat moment — ${nearestPlayer} is nearby (${ctx.nearbyPlayers[0]}). Say one short, natural, casual gamer remark in the language used recently in chat (or English/Polish) about what you're doing right now, the time of day, or ask ${nearestPlayer} what they're up to. Keep it under 65 chars.]`,
+      botContext: ctx,
+      bypassCooldown: false,
+    })
+    .catch(() => null);
+  if (res && res.ok && res.reply && bot && bot.entity) {
+    logAiResult(res, nearestPlayer);
+    aiChatQueue.send(res.parts?.length ? res.parts : [res.reply]);
+  }
+}
+
 function startTelemetryLoop() {
   stopTelemetryLoop();
   pushBotTelemetry(true);
   pushBotInventory(true);
+  lastSpontaneousChatAt = Date.now();
   telemetryTimer = setInterval(() => {
     pushBotTelemetry(false);
     pushBotInventory(false);
+    if (Math.random() < 0.015) {
+      maybeSpontaneousChat().catch(() => {});
+    }
   }, 350);
 }
 
@@ -2221,8 +2568,19 @@ async function maybeAiFixModule(scriptName, text) {
       .map(
         (a) => `${a.name} → ${String(a.result).split("\n")[0].slice(0, 80)}`,
       );
+    const summary =
+      res.reply ||
+      (did.length ? "applied fix" : "") ||
+      (res.thoughts?.length
+        ? String(res.thoughts[res.thoughts.length - 1]).replace(
+            /^check:\s*/i,
+            "",
+          )
+        : "") ||
+      res.error ||
+      "no reply";
     log(
-      `AIAgent fix (${scriptName}): ${res.reply || res.error || "no reply"}${did.length ? ` [${did.join(" | ")}]` : ""}`,
+      `AIAgent fix (${scriptName}): ${summary}${did.length ? ` [${did.join(" | ")}]` : ""}`,
     );
   } catch (err) {
     log(`AIAgent fix (${scriptName}) failed: ${err.message || err}`);
@@ -3063,8 +3421,7 @@ function registerIpcHandlers() {
       const { mineflayer, mcData, pathfinder, Movements, goals } = libs;
 
       const rawVersion = String(server.version || "").trim();
-      const normalizedVersion =
-        !rawVersion || /^auto$/i.test(rawVersion) ? false : rawVersion;
+      const normalizedVersion = resolveSupportedVersion(rawVersion, mcData);
 
       const isMicrosoft = server.auth === "microsoft";
       const botOptions = {
@@ -3076,6 +3433,25 @@ function registerIpcHandlers() {
           : server.username || sessionState.username || "MCBP_Bot",
         auth: isMicrosoft ? "microsoft" : "offline",
       };
+
+      const useProxy =
+        typeof server.useProxy === "boolean"
+          ? server.useProxy
+          : Boolean(proxyManager.config.enabled);
+      let activeProxy = null;
+      if (useProxy) {
+        activeProxy = proxyManager.pickBestProxy();
+        if (activeProxy) {
+          log(
+            `Proxy: Tunneling via ${activeProxy.protocol.toUpperCase()} ${activeProxy.label}${activeProxy.latencyMs ? ` (${activeProxy.latencyMs}ms)` : ""}`,
+          );
+          botOptions.connect = proxyManager.createConnectHook(
+            activeProxy,
+            address.ip,
+            address.port,
+          );
+        }
+      }
 
       if (isMicrosoft) {
         botOptions.profilesFolder = getMsaProfilesDir();
@@ -3106,18 +3482,39 @@ function registerIpcHandlers() {
       currentBot.mcData = mcData;
       currentBot.Movements = Movements;
       currentBot.pathfinderGoals = goals;
+      attachViaVersionAdapter(currentBot, { log: (t) => log(t) });
+      attachSubServerChatFix(currentBot, { log: (t) => log(t) });
 
       currentBot.once("spawn", () => {
         if (bot !== currentBot) return;
+        currentBot._mcbpHasSpawned = true;
         closeMsaPopup();
         sendToRenderer("msa-code", null);
 
+        if (currentBot.entity?.position) {
+          aiBrain.recordLandmark(
+            "spawn",
+            currentBot.entity.position,
+            "Spawn",
+            currentBot,
+          );
+        }
+
         configureSmartMovements(currentBot, mcData, Movements);
         attachSmartMovement(currentBot, activeControlStates);
+        attachRealTimeSelfPreservation(currentBot, {
+          log: (t) => log(t),
+          onEvent: (evtText) => ollamaManager.recordWorldEvent(evtText),
+        });
         attachStuckWatchdog(currentBot, {
           log: (t) => log(t),
           loadLibraries,
           onStuck: (info) => askAiAboutStuck(currentBot, info),
+          onLogMovement: (action, details) => {
+            sessionLogger.record("Movement", action, details);
+            ollamaManager.recordWorldEvent(`${action}: ${details}`);
+            pushSessionLogStatus();
+          },
         });
 
         if (isMicrosoft && currentBot.username) {
@@ -3184,6 +3581,9 @@ function registerIpcHandlers() {
                     info.count - oldCount,
                     currentBot.entity?.position,
                   );
+                  ollamaManager.recordWorldEvent(
+                    `Collected +${info.count - oldCount}x ${name} (total ${info.count})`,
+                  );
                   pushSessionLogStatus();
                 }
               }
@@ -3201,6 +3601,19 @@ function registerIpcHandlers() {
           log(
             `AutoReconnect: Restored ${restoredScripts.size} active script(s)`,
           );
+        } else if (
+          Array.isArray(server.rememberedModules) &&
+          server.rememberedModules.length > 0
+        ) {
+          let restoredCount = 0;
+          for (const scriptId of server.rememberedModules) {
+            if (startScriptByName(scriptId)) restoredCount++;
+          }
+          if (restoredCount > 0) {
+            log(
+              `Server Profile: Restored ${restoredCount} remembered module(s) for ${address.ip}`,
+            );
+          }
         }
       });
 
@@ -3230,6 +3643,22 @@ function registerIpcHandlers() {
       currentBot.on("death", () => {
         if (bot !== currentBot) return;
         const p = currentBot.entity?.position;
+        if (p) {
+          currentBot._mcbpLastDeath = {
+            position: p.clone(),
+            dimension: String(
+              currentBot.game?.dimension || "overworld",
+            ).replace(/^minecraft:/, ""),
+            at: Date.now(),
+            cause: currentBot._mcbpLastDeath?.cause || "",
+          };
+          aiBrain.recordLandmark("last_death", p, "Last Death", currentBot);
+        }
+        ollamaManager.recordWorldEvent(
+          p
+            ? `Died at (${Math.floor(p.x)}, ${Math.floor(p.y)}, ${Math.floor(p.z)})`
+            : "Died",
+        );
         sessionLogger.record(
           "Game Event",
           "Bot died",
@@ -3242,7 +3671,26 @@ function registerIpcHandlers() {
 
       currentBot.on("diggingCompleted", (block) => {
         if (bot !== currentBot || !block) return;
+        if (
+          !block.name ||
+          block.name === "air" ||
+          block.name === "cave_air" ||
+          block.name === "void_air"
+        ) {
+          return;
+        }
+        if (
+          currentBot._mcbpDenied &&
+          Date.now() - currentBot._mcbpDenied.at < 500
+        ) {
+          return;
+        }
         const bp = block.position;
+        ollamaManager.recordWorldEvent(
+          bp
+            ? `Mined ${block.name} at (${bp.x}, ${bp.y}, ${bp.z})`
+            : `Mined ${block.name}`,
+        );
         sessionLogger.record(
           "Mine",
           `Mined ${block.displayName || block.name}`,
@@ -3286,19 +3734,72 @@ function registerIpcHandlers() {
           pushSessionLogStatus();
 
           if (ollamaManager.isActive()) {
-            handleAiChat(currentBot, payload.text || payload.motd, senderUuid);
+            handleAiChat(
+              currentBot,
+              payload.text || payload.motd,
+              senderUuid,
+              _position,
+            );
           }
         }
       });
 
       currentBot.on("kicked", (reason) => {
         if (bot !== currentBot) return;
-        log(`Kicked: ${formatKickReason(reason)}`);
+        const kickText = formatKickReason(reason);
+        log(`Kicked: ${kickText}`);
+        if (
+          !currentBot._mcbpHasSpawned &&
+          !server._viaRetried &&
+          /outdated|unsupported protocol|please use|incompatible|version/i.test(
+            kickText,
+          )
+        ) {
+          const fallbackVer = resolveVersionFromKickOrError(kickText, mcData);
+          if (fallbackVer && fallbackVer !== normalizedVersion) {
+            log(
+              `ViaVersion: Server requested MC ${fallbackVer} — auto-retrying connection...`,
+            );
+            setTimeout(() => {
+              if (!manualDisconnect) {
+                connectToServerInternal(
+                  { ...server, version: fallbackVer, _viaRetried: true },
+                  restoredScripts,
+                );
+              }
+            }, 600);
+          }
+        }
       });
 
-      currentBot.on("error", (err) => {
+      currentBot.on("error", async (err) => {
         if (bot !== currentBot) return;
-        log(`Bot error: ${err.message || err}`);
+        const errText = err?.message || String(err);
+        log(`Bot error: ${errText}`);
+        if (
+          !currentBot._mcbpHasSpawned &&
+          activeProxy &&
+          proxyManager.config.autoHeal &&
+          (server._proxyHealTries || 0) < 2
+        ) {
+          const healRes = await proxyManager.healProxyFailure(activeProxy, {
+            targetHost: address.ip,
+            targetPort: address.port,
+            log: (t) => log(t),
+            onAiHeal: (msg) => aiBrain.recordThought(`Proxy AI-Heal: ${msg}`),
+          });
+          sendToRenderer("proxy-status", proxyManager.getStatus());
+          if (!manualDisconnect) {
+            connectToServerInternal(
+              {
+                ...server,
+                useProxy: Boolean(healRes.proxy),
+                _proxyHealTries: (server._proxyHealTries || 0) + 1,
+              },
+              restoredScripts,
+            );
+          }
+        }
       });
 
       currentBot.on("end", () => {
@@ -4016,6 +4517,113 @@ function registerIpcHandlers() {
     const result = await updater.installUpdate(send);
     sendToRenderer("update-done", result);
   });
+
+  // --- AI Brain ("Mózg" AI) IPC Handlers ---
+  ipcMain.handle("ai-brain-get-status", () => aiBrain.getSnapshot(bot));
+
+  // --- Proxy Manager IPC Handlers ---
+  ipcMain.handle("proxy-get-status", () => proxyManager.getStatus());
+
+  ipcMain.handle("proxy-save-config", (_event, cfg = {}) => {
+    const st = proxyManager.saveConfig(cfg);
+    sendToRenderer("proxy-status", st);
+    return st;
+  });
+
+  ipcMain.handle("proxy-add", (_event, raw) => {
+    const res = proxyManager.addProxy(raw);
+    if (res.added > 0) {
+      log(`Proxy: Added ${res.added} proxy entry/entries`);
+    }
+    sendToRenderer("proxy-status", res.status);
+    return res;
+  });
+
+  ipcMain.handle("proxy-remove", (_event, id) => {
+    const st = proxyManager.removeProxy(id);
+    sendToRenderer("proxy-status", st);
+    return st;
+  });
+
+  ipcMain.handle("proxy-clear-dead", () => {
+    const st = proxyManager.clearDeadProxies();
+    sendToRenderer("proxy-status", st);
+    return st;
+  });
+
+  ipcMain.handle("proxy-fetch-free", async () => {
+    log("Proxy: Searching for free public SOCKS5/SOCKS4/HTTP proxies...");
+    const res = await proxyManager.fetchFreeProxies({
+      maxCount: 120,
+      onProgress: (p) => sendToRenderer("proxy-progress", p),
+    });
+    if (res.ok) {
+      log(`Proxy: Found +${res.added} free proxies (pool: ${res.total})`);
+    } else if (res.error) {
+      log(`Proxy error: ${res.error}`);
+    }
+    sendToRenderer("proxy-status", proxyManager.getStatus());
+    return res;
+  });
+
+  ipcMain.handle("proxy-test-all", async (_event, payload = {}) => {
+    const targetAddr = parseServerAddress(
+      payload?.serverIp || lastConnectServer?.ip || "",
+    );
+    log(
+      `Proxy: Testing proxy pool${targetAddr.ip ? ` against ${targetAddr.ip}:${targetAddr.port}` : ""}...`,
+    );
+    const res = await proxyManager.testAllProxies({
+      targetHost: targetAddr.ip,
+      targetPort: targetAddr.port,
+      pruneDead: payload?.pruneDead !== false,
+      onProgress: (p) => sendToRenderer("proxy-progress", p),
+    });
+    if (res.ok) {
+      log(
+        `Proxy: Tested ${res.tested} proxies — ${res.working} verified working`,
+      );
+    }
+    sendToRenderer("proxy-status", proxyManager.getStatus());
+    return res;
+  });
+
+  // --- Botting Swarm Manager IPC Handlers ---
+  ipcMain.handle("botting-get-status", () => bottingManager.getStatus());
+
+  ipcMain.handle("botting-spawn", async (_event, payload = {}) => {
+    const addr = parseServerAddress(
+      payload?.ip || lastConnectServer?.ip || "localhost",
+    );
+    return bottingManager.spawnSwarm({
+      host: addr.ip || "localhost",
+      port: addr.port || 25565,
+      version: payload?.version || lastConnectServer?.version || "",
+      prefix: payload?.prefix || "MCBP_Bot",
+      count: payload?.count || 3,
+      delayMs: payload?.delayMs || 1200,
+      proxyMode: payload?.proxyMode || "direct",
+      autoHeal: payload?.autoHeal !== false,
+      log: (t) => log(t),
+    });
+  });
+
+  ipcMain.handle("botting-stop-all", () =>
+    bottingManager.stopAll({ log: (t) => log(t) }),
+  );
+
+  ipcMain.handle("botting-disconnect-one", (_event, botId) =>
+    bottingManager.disconnectBot(botId),
+  );
+
+  ipcMain.handle("botting-action", (_event, payload = {}) =>
+    bottingManager.runSwarmAction({
+      ...payload,
+      mainBotName:
+        bot?.username || sessionState.mcName || sessionState.username || "",
+      log: (t) => log(t),
+    }),
+  );
 }
 
 const gotLock = app.requestSingleInstanceLock();
@@ -4033,11 +4641,14 @@ if (gotLock) {
   app.whenReady().then(() => {
     process.env.MCBP_VERSION = app.getVersion();
     ollamaManager.init(app.getPath("userData"));
+    proxyManager.init(app.getPath("userData"));
     scriptStudio.init({
       userDataDir: app.getPath("userData"),
       baseDirs: [__dirname],
     });
     sessionLogger.init(resolveLogsDir(), { appVersion: app.getVersion() });
+    aiBrain.onUpdate((snap) => sendToRenderer("ai-brain-status", snap));
+    bottingManager.onUpdate((st) => sendToRenderer("botting-status", st));
     registerIpcHandlers();
     createWindow();
 

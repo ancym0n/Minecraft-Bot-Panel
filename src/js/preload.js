@@ -188,4 +188,31 @@ contextBridge.exposeInMainWorld("api", {
   recordUiEvent: (payload) => ipcRenderer.send("record-ui-event", payload),
   onSessionLogStatus: (cb) =>
     onChannel("session-log-status", (_e, status) => cb(status)),
+  // AI Brain methods
+  aiBrainGetStatus: () => ipcRenderer.invoke("ai-brain-get-status"),
+  onAiBrainStatus: (cb) =>
+    onChannel("ai-brain-status", (_e, status) => cb(status)),
+  // Proxy Manager methods
+  proxyGetStatus: () => ipcRenderer.invoke("proxy-get-status"),
+  proxySaveConfig: (cfg) => ipcRenderer.invoke("proxy-save-config", cfg),
+  proxyAdd: (raw) => ipcRenderer.invoke("proxy-add", raw),
+  proxyRemove: (id) => ipcRenderer.invoke("proxy-remove", id),
+  proxyClearDead: () => ipcRenderer.invoke("proxy-clear-dead"),
+  proxyFetchFree: () => ipcRenderer.invoke("proxy-fetch-free"),
+  proxyTestAll: (payload) =>
+    ipcRenderer.invoke("proxy-test-all", payload || {}),
+  onProxyStatus: (cb) => onChannel("proxy-status", (_e, status) => cb(status)),
+  onProxyProgress: (cb) =>
+    onChannel("proxy-progress", (_e, prog) => cb(prog)),
+  // Botting Swarm methods
+  bottingGetStatus: () => ipcRenderer.invoke("botting-get-status"),
+  bottingSpawn: (payload) =>
+    ipcRenderer.invoke("botting-spawn", payload || {}),
+  bottingStopAll: () => ipcRenderer.invoke("botting-stop-all"),
+  bottingDisconnectOne: (botId) =>
+    ipcRenderer.invoke("botting-disconnect-one", botId),
+  bottingAction: (payload) =>
+    ipcRenderer.invoke("botting-action", payload || {}),
+  onBottingStatus: (cb) =>
+    onChannel("botting-status", (_e, status) => cb(status)),
 });
