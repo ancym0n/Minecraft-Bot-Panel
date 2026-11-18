@@ -2366,10 +2366,11 @@ function setAiScriptFlag(scriptName, on) {
 function renderScriptOptionHtml(option, scriptName) {
   const fieldId = `${escapeAttr(option.id)}-${escapeAttr(scriptName)}`;
   const label = escapeAttr(option.label);
-  if (option.type === "checkbox") {
+  const optType = String(option.type || "input").toLowerCase();
+  if (optType === "checkbox" || optType === "boolean" || optType === "bool") {
     return `<label class="script-checkbox-row${option.aiOnly ? " script-ai-only" : ""}" for="${fieldId}"${option.aiOnly ? ' title="When this module reports a problem, the local AI looks at the logs and tries to fix it"' : ""}><input type="checkbox" id="${fieldId}" value="off" onclick="checkbox('${fieldId}')"/><span>${label}</span></label>`;
   }
-  if (option.type === "select") {
+  if (optType === "select") {
     const choices = Array.isArray(option.choices) ? option.choices : [];
     const opts = choices
       .map((c) => {
@@ -2380,7 +2381,12 @@ function renderScriptOptionHtml(option, scriptName) {
       .join("");
     return `<div class="script-input-group"><label for="${fieldId}">${label}</label><select id="${fieldId}" class="script-select">${opts}</select></div>`;
   }
-  if (option.type === "input") {
+  if (
+    optType === "input" ||
+    optType === "number" ||
+    optType === "text" ||
+    optType === "string"
+  ) {
     return `<div class="script-input-group"><label for="${fieldId}">${label}</label><input type="text" id="${fieldId}" class="script-text-input" spellcheck="false"${option.placeholder ? ` placeholder="${escapeAttr(option.placeholder)}"` : ""}/></div>`;
   }
   return "";
@@ -2435,7 +2441,26 @@ function registerScriptFile(fullPath, type) {
   });
 
   scriptFunctions.set(scriptName, () => {
-    const libs = loadLibraries();
+    const rawLibs = loadLibraries();
+    // Wrap libs.mcData so local AI scripts that access `mcData.blocksByName`, `mcData.itemsByName`,
+    // `mcData.blocks[name]`, or `mcData.items[name]` directly without calling `mcData(bot.version)`
+    // transparently resolve from `bot.registry`!
+    const wrappedMcData = new Proxy(rawLibs.mcData, {
+      get(target, prop) {
+        const reg = bot?.registry;
+        if (reg) {
+          if (prop === "blocks" || prop === "blocksByName") {
+            return reg.blocksByName;
+          }
+          if (prop === "items" || prop === "itemsByName") {
+            return reg.itemsByName;
+          }
+          if (prop in reg) return reg[prop];
+        }
+        return target[prop];
+      },
+    });
+    const libs = { ...rawLibs, mcData: wrappedMcData };
     const runId = (scriptRunIds.get(scriptName) || 0) + 1;
     scriptRunIds.set(scriptName, runId);
     return Promise.resolve()
@@ -4303,7 +4328,9 @@ function registerIpcHandlers() {
   );
 
   ipcMain.handle("studio-save", async (_event, payload = {}) => {
-    const code = String(payload.code || "");
+    const code = scriptStudio.autoFixGeneratedScript(
+      String(payload.code || ""),
+    );
     const check = scriptStudio.validateScript(code);
     if (/^Syntax/.test(check.error || "")) return { ok: false, ...check };
     const name = check.name;
@@ -4436,12 +4463,53 @@ function registerIpcHandlers() {
         },
       });
       if (!res.ok) return { ok: false, error: res.error, model };
-      const code = scriptStudio.extractCode(res.text);
+      let code = scriptStudio.extractCode(res.text);
+      let validation = scriptStudio.validateScript(code);
+
+      // If the local model produced a syntax or Mineflayer API error, run one automatic self-repair pass
+      if (!validation.ok && !ctrl.signal.aborted && validation.error) {
+        progress({
+          stage: "writing",
+          message: `Fixing ${validation.error} with ${model}...`,
+          text: code,
+        });
+        const fixMessages = scriptStudio.buildGenerationMessages({
+          request,
+          currentCode: code,
+          fixError: validation.error,
+        });
+        const fixRes = await ollamaManager.streamChat({
+          model,
+          messages: fixMessages,
+          signal: ctrl.signal,
+          options: { temperature: 0.1, num_predict: 2048, num_ctx: 8192 },
+          onToken: (text) => {
+            const now = Date.now();
+            if (now - lastSent > 100) {
+              lastSent = now;
+              progress({
+                stage: "writing",
+                message: `Fixing script with ${model}...`,
+                text,
+              });
+            }
+          },
+        });
+        if (fixRes.ok && fixRes.text) {
+          const repaired = scriptStudio.extractCode(fixRes.text);
+          const repairedCheck = scriptStudio.validateScript(repaired);
+          if (repairedCheck.ok || !/^Syntax/.test(repairedCheck.error || "")) {
+            code = repaired;
+            validation = repairedCheck;
+          }
+        }
+      }
+
       return {
         ok: true,
         code,
         model,
-        validation: scriptStudio.validateScript(code),
+        validation,
       };
     } finally {
       if (studioAbort === ctrl) studioAbort = null;

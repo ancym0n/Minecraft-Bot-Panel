@@ -132,6 +132,89 @@ function attachViaVersionAdapter(bot, { log = null } = {}) {
     if (bot._client) wireClient(bot._client);
   });
 
+  // Make bot.findBlocks and bot.findBlock forgiving for custom AI-generated scripts:
+  // - Accepts `find:` / `block:` / `type:` aliases for `matching:`
+  // - Accepts a block/item object `{ id }`, a string name (e.g. "diamond" -> diamond_ore / deepslate_diamond_ore), or array
+  // - Adds `.position` self-reference on returned Vec3 items from `findBlocks` so `blocks[0].position.x` and `blocks[0].x` both work
+  const normalizeBlockMatcher = (raw) => {
+    if (raw === undefined || raw === null) return null;
+    if (typeof raw === "function" || typeof raw === "number") return raw;
+    if (Array.isArray(raw)) {
+      const flat = raw
+        .map((x) => normalizeBlockMatcher(x))
+        .flat()
+        .filter((x) => typeof x === "number");
+      return flat.length ? flat : null;
+    }
+    if (typeof raw === "object" && typeof raw.id === "number") {
+      const name = String(raw.name || "").toLowerCase();
+      const blocksByName = bot.registry?.blocksByName || {};
+      // If an itemType object from itemsByName (e.g. diamond) was passed instead of a blockType, map it to the matching block(s)
+      if (name && !blocksByName[name]) {
+        const oreIds = [
+          blocksByName[`${name}_ore`]?.id,
+          blocksByName[`deepslate_${name}_ore`]?.id,
+          blocksByName[`${name}_block`]?.id,
+        ].filter((id) => typeof id === "number");
+        if (oreIds.length) return oreIds;
+      }
+      return raw.id;
+    }
+    if (typeof raw === "string") {
+      const clean = raw
+        .trim()
+        .toLowerCase()
+        .replace(/^minecraft:/, "")
+        .replace(/\s+/g, "_");
+      const blocksByName = bot.registry?.blocksByName || {};
+      if (blocksByName[clean]) return blocksByName[clean].id;
+      const oreIds = [
+        blocksByName[`${clean}_ore`]?.id,
+        blocksByName[`deepslate_${clean}_ore`]?.id,
+        blocksByName[`${clean}_log`]?.id,
+        blocksByName[`${clean}_block`]?.id,
+      ].filter((id) => typeof id === "number");
+      if (oreIds.length) return oreIds;
+    }
+    return null;
+  };
+
+  if (typeof bot.findBlocks === "function" && !bot._mcbpFindBlocksPatched) {
+    bot._mcbpFindBlocksPatched = true;
+    const origFindBlocks = bot.findBlocks.bind(bot);
+    bot.findBlocks = (options = {}) => {
+      if (!options || typeof options !== "object") return [];
+      const rawMatch =
+        options.matching ?? options.find ?? options.block ?? options.type;
+      const matching = normalizeBlockMatcher(rawMatch);
+      if (matching === null) return [];
+      const positions = origFindBlocks({ ...options, matching }) || [];
+      for (const p of positions) {
+        if (p && typeof p === "object" && !p.position) {
+          Object.defineProperty(p, "position", {
+            value: p,
+            enumerable: false,
+            configurable: true,
+          });
+        }
+      }
+      return positions;
+    };
+  }
+
+  if (typeof bot.findBlock === "function" && !bot._mcbpFindBlockPatched) {
+    bot._mcbpFindBlockPatched = true;
+    const origFindBlock = bot.findBlock.bind(bot);
+    bot.findBlock = (options = {}) => {
+      if (!options || typeof options !== "object") return null;
+      const rawMatch =
+        options.matching ?? options.find ?? options.block ?? options.type;
+      const matching = normalizeBlockMatcher(rawMatch);
+      if (matching === null) return null;
+      return origFindBlock({ ...options, matching });
+    };
+  }
+
   // Track entity spawn timestamps & movement for Anti-Cheat FakePlayer detection
   bot.on("entitySpawn", (entity) => {
     if (!entity) return;

@@ -374,39 +374,136 @@ function buildDocsContext(request, maxChars = 6500) {
 
 // --- Generation prompt -------------------------------------------------------
 
-function buildGenerationMessages({ request, currentCode = "" }) {
-  const example =
-    listTemplates().find((t) => t.id.includes("chat-commands"))?.code || "";
+const MINEFLAYER_CHEATSHEET = `CRITICAL MINEFLAYER API RULES (DO NOT INVENT METHODS OR PROPERTIES):
+1. info.options types:
+   - ONLY use type: "input", type: "checkbox", or type: "select" (with choices: ["a", "b"]).
+   - NEVER use type: "number" or type: "boolean". For numbers, use { type: "input", label: "Radius", id: "radius" } and convert with Number(await getOption("radius", info.name)) || 32.
+2. Looking up blocks & items (ALWAYS use bot.registry, NEVER mcData.items or mcData.blocks):
+   - Block lookup: const blockType = bot.registry.blocksByName[name] || bot.registry.blocksByName[\`\${name}_ore\`];
+   - Item lookup: const itemType = bot.registry.itemsByName[name];
+   - Always check if (!blockType) before using blockType.id!
+3. Finding blocks in the world:
+   - Single nearest block (returns a Block object with block.position.x, block.position.y, block.position.z, block.name):
+     const block = bot.findBlock({ matching: blockType.id, maxDistance: radius });
+   - Multiple block positions (returns an array of Vec3 positions [pos], NOT Block objects! Use pos.x, pos.y, pos.z or bot.blockAt(pos)):
+     const positions = bot.findBlocks({ matching: blockType.id, maxDistance: radius, count: 10 });
+   - NEVER write \`find:\` inside bot.findBlock / bot.findBlocks — the key is ALWAYS \`matching:\` (a number id, array of ids, or function (b) => boolean).
+4. Finding entities / dropped items / players / mobs:
+   - Nearest entity:
+     const ent = bot.nearestEntity((e) => e.name === "item" && e.position.distanceTo(bot.entity.position) <= radius);
+   - Specific player entity:
+     const playerEnt = bot.players[username]?.entity;
+   - All entities: Object.values(bot.entities)
+5. Pathfinding & movement (bot.pathfinder is already loaded, get goals from libs):
+   - const { goals } = libs;
+   - Walk and wait to arrive (async):
+     await bot.pathfinder.goto(new goals.GoalNear(pos.x, pos.y, pos.z, 2));
+   - Start moving without blocking:
+     bot.pathfinder.setGoal(new goals.GoalNear(pos.x, pos.y, pos.z, 2));
+   - Follow entity:
+     bot.pathfinder.setGoal(new goals.GoalFollow(entity, 2), true);
+   - Stop moving:
+     bot.pathfinder.setGoal(null);
+6. Mining, inventory & equipping:
+   - Equip best tool before digging:
+     const tool = bot.pathfinder.bestHarvestTool(block);
+     if (tool) await bot.equip(tool, "hand");
+     await bot.dig(block, true);
+   - Inventory items list:
+     const items = bot.inventory.items(); // each item has item.name, item.count, item.displayName, item.slot
+   - Equip item by name:
+     const item = bot.inventory.items().find((i) => i.name === "diamond_sword" || i.name.includes(wanted));
+     if (item) await bot.equip(item, "hand");`;
+
+function pickBestTemplates(request, count = 2) {
+  const templates = listTemplates();
+  if (!templates.length) return [];
+  const terms = tokenize(request);
+  const scored = templates.map((t) => {
+    const hay = `${t.id} ${t.title} ${t.desc} ${t.code}`.toLowerCase();
+    let score = 0;
+    for (const term of terms) {
+      if (hay.includes(term)) score += 3;
+    }
+    if (
+      /block|mine|dig|find|search|ore|chop|wood|collect|diamond|iron/i.test(
+        request,
+      ) &&
+      t.id.includes("collect-blocks")
+    ) {
+      score += 15;
+    }
+    if (
+      /chat|command|say|prefix|owner/i.test(request) &&
+      t.id.includes("chat-commands")
+    ) {
+      score += 12;
+    }
+    if (
+      /player|look|watch|entity|mob|near/i.test(request) &&
+      t.id.includes("look-at-players")
+    ) {
+      score += 10;
+    }
+    if (/sleep|bed|night/i.test(request) && t.id.includes("auto-sleep")) {
+      score += 12;
+    }
+    if (
+      /health|hp|low|disconnect|guard/i.test(request) &&
+      t.id.includes("health-alert")
+    ) {
+      score += 10;
+    }
+    return { t, score };
+  });
+  scored.sort((a, b) => b.score - a.score);
+  const picked = scored.slice(0, count).map((x) => x.t);
+  if (!picked.some((t) => t.id.includes("collect-blocks")) && picked.length < 2) {
+    const cb = templates.find((t) => t.id.includes("collect-blocks"));
+    if (cb) picked.push(cb);
+  }
+  return picked;
+}
+
+function buildGenerationMessages({ request, currentCode = "", fixError = "" }) {
+  const examples = pickBestTemplates(request, 2);
+  const examplesBlock = examples
+    .map((ex) => `// Example (${ex.title}):\n\`\`\`js\n${ex.code.trim()}\n\`\`\``)
+    .join("\n\n");
   const docs = buildDocsContext(request);
   const system = `You write custom scripts for MCBP (Minecraft Bot Panel), which runs Mineflayer bots.
-Return ONE complete JavaScript file in a single \`\`\`js code block and nothing else.
+Return ONE complete, working JavaScript file in a single \`\`\`js code block and nothing else.
 
 Script contract (CommonJS):
-- Export { info, script }.
-- info = { name: "PascalCaseName", default: { interval: ms }, options: [...] }.
+- Export { info, script } via \`module.exports = { info, script };\`.
+- info = { name: "PascalCaseName", default: { interval: 1000 }, options: [...] }.
 - options items: { type: "checkbox" | "input" | "select", label, id, choices? }. select needs choices: ["a","b"].
 - async function script(bot, log, clearLog, getOption, scriptRepeater, libs)
-  - await getOption(id, info.name) returns a string; checkboxes return "on" or "off".
-  - await scriptRepeater(fn, ms) calls fn every ms until the user toggles the script off, then resolves. Keep the script alive with it.
+  - await getOption(id, info.name) returns a string; checkboxes return "on" or "off". Always provide a fallback default!
+  - await scriptRepeater(fn, ms) calls fn every ms until the user toggles the script off, then resolves. Keep the script alive with it, and guard async work with a \`let busy = false;\` lock so ticks never overlap.
   - libs = { goals, Movements, Vec3, mcData }. bot.pathfinder is already loaded; use goals from libs, never require mineflayer packages.
-  - Prefer bot.registry for block/item lookups.
   - Only add bot.on listeners when the task reacts to events; remove each one in a finally block after scriptRepeater.
   - Round coordinates with Math.floor before showing them.
   - Prefix log messages with the script name, e.g. log(\`\${info.name}: done\`).
   - Never call process.exit, never use eval, avoid chat spam (space messages several seconds apart).
 - Start with: if (!bot || !bot.entity) return log(\`\${info.name}: Connect a bot first\`);
 
-Example script:
-\`\`\`js
-${example.trim()}
-\`\`\`
+${MINEFLAYER_CHEATSHEET}
+
+Working reference templates:
+${examplesBlock}
 
 Relevant Mineflayer docs:
 ${docs || "(docs unavailable)"}`;
 
-  const user = currentCode.trim()
-    ? `Modify this script as requested.\nRequest: ${request}\n\nCurrent script:\n\`\`\`js\n${currentCode.slice(0, 8000)}\n\`\`\``
-    : `Write a script that does this: ${request}`;
+  let user;
+  if (fixError && currentCode.trim()) {
+    user = `The script you generated has an error: ${fixError}\nFix the script so it follows the Mineflayer API rules and works properly.\nOriginal request: ${request}\n\nBroken script:\n\`\`\`js\n${currentCode.slice(0, 8000)}\n\`\`\``;
+  } else if (currentCode.trim()) {
+    user = `Modify this script as requested.\nRequest: ${request}\n\nCurrent script:\n\`\`\`js\n${currentCode.slice(0, 8000)}\n\`\`\``;
+  } else {
+    user = `Write a complete, working MCBP script that does this: ${request}`;
+  }
 
   return [
     { role: "system", content: system },
@@ -414,19 +511,69 @@ ${docs || "(docs unavailable)"}`;
   ];
 }
 
+// Automatically repairs common Mineflayer hallucinations made by small local LLMs.
+function autoFixGeneratedScript(rawCode) {
+  let code = String(rawCode || "").trim();
+  if (!code) return code;
+
+  // 1. Normalize invalid option types ("number", "text", "string" -> "input"; "boolean" -> "checkbox")
+  code = code.replace(
+    /(\btype\s*:\s*["'])(?:number|text|string|int|integer|float)(["'])/gi,
+    "$1input$2",
+  );
+  code = code.replace(
+    /(\btype\s*:\s*["'])(?:boolean|bool|toggle)(["'])/gi,
+    "$1checkbox$2",
+  );
+
+  // 2. Fix mcData.blocksByName / mcData.itemsByName / mcData.blocks / mcData.items without mcData(bot.version)
+  code = code
+    .replace(/\bmcData\.blocksByName\b/g, "bot.registry.blocksByName")
+    .replace(/\bmcData\.itemsByName\b/g, "bot.registry.itemsByName")
+    .replace(/\bmcData\.entitiesByName\b/g, "bot.registry.entitiesByName")
+    .replace(/\bmcData\.blocks\[/g, "bot.registry.blocksByName[")
+    .replace(/\bmcData\.items\[/g, "bot.registry.itemsByName[");
+
+  // 3. Fix bot.findBlocks / bot.findBlock({ find: ... }) or ({ block: ... }) -> ({ matching: ... })
+  code = code.replace(
+    /(bot\.findBlocks?\s*\(\s*\{[^}]*?)\b(?:find|block|blockType)\s*:/g,
+    "$1matching:",
+  );
+
+  // 4. If matching: bot.registry.blocksByName[x] or matching: bot.registry.itemsByName[x] is used without .id, append ?.id
+  code = code.replace(
+    /(matching\s*:\s*bot\.registry\.(?:blocksByName|itemsByName)\[[^\]]+\])(?!\s*(?:\?\.|\.)id)/g,
+    "$1?.id",
+  );
+
+  // 5. If module.exports is missing but info and script are defined, append module.exports = { info, script };
+  if (
+    !/module\.exports/.test(code) &&
+    /\bconst\s+info\b|\blet\s+info\b/.test(code) &&
+    /\bfunction\s+script\b/.test(code)
+  ) {
+    code += "\n\nmodule.exports = { info, script };\n";
+  }
+
+  return code;
+}
+
 function extractCode(text) {
   const raw = String(text || "")
     .replace(/<think>[\s\S]*?<\/think>/gi, "")
     .trim();
   const blocks = [...raw.matchAll(/```(?:js|javascript)?\s*\n([\s\S]*?)```/gi)];
+  let extracted;
   if (blocks.length) {
-    return blocks
+    extracted = blocks
       .map((b) => b[1])
       .sort((a, b) => b.length - a.length)[0]
       .trim();
+  } else {
+    const open = raw.match(/```(?:js|javascript)?\s*\n([\s\S]*)$/i);
+    extracted = (open ? open[1] : raw).trim();
   }
-  const open = raw.match(/```(?:js|javascript)?\s*\n([\s\S]*)$/i);
-  return (open ? open[1] : raw).trim();
+  return autoFixGeneratedScript(extracted);
 }
 
 // --- Validation & saving -------------------------------------------------
@@ -464,6 +611,25 @@ function validateScript(code) {
   if (!/async\s+function\s+script|script\s*[:=]\s*async/.test(src))
     problems.push("No async script() function found");
   if (/process\.exit/.test(src)) problems.push("Uses process.exit");
+  if (
+    /require\s*\(\s*["'](?:mineflayer|mineflayer-pathfinder|vec3|minecraft-data)["']\s*\)/.test(
+      src,
+    )
+  ) {
+    problems.push(
+      "Do not require('mineflayer' | 'vec3' | 'minecraft-data'); use bot and libs = { goals, Movements, Vec3, mcData }",
+    );
+  }
+  if (/bot\.findBlocks?\s*\(\s*\{[^}]*\bfind\s*:/.test(src)) {
+    problems.push(
+      "bot.findBlock / bot.findBlocks uses `matching:`, not `find:`",
+    );
+  }
+  if (/\bmcData\.(?:items|blocks|blocksByName|itemsByName)\b/.test(src)) {
+    problems.push(
+      "Use bot.registry.blocksByName / bot.registry.itemsByName instead of mcData.blocks / mcData.items",
+    );
+  }
   return {
     ok: problems.length === 0,
     name,
@@ -516,6 +682,7 @@ module.exports = {
   searchDocs,
   getSection,
   buildGenerationMessages,
+  autoFixGeneratedScript,
   extractCode,
   extractScriptName,
   validateScript,
