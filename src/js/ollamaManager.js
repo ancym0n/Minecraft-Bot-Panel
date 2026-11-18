@@ -160,31 +160,104 @@ function supportsTools(name) {
   return TOOLS_MODEL_RE.test(String(name || ""));
 }
 
-// Some models (e.g. llama3.1) sometimes print a tool call as plain JSON
-// instead of using tool_calls. Turn that text back into calls.
-function parseTextToolCalls(text, toolNames = []) {
+// Parses "a=1, b='x'" or "x: 1 y: 2" style arguments.
+function parseLooseArgs(inner) {
+  const args = {};
+  const re =
+    /([A-Za-z_]\w*)\s*[=:]\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^,\s)]+)/g;
+  let m;
+  let found = false;
+  while ((m = re.exec(inner))) {
+    found = true;
+    let v = m[2];
+    if (/^["']/.test(v)) v = v.slice(1, -1);
+    args[m[1]] = v;
+  }
+  return found ? args : null;
+}
+
+// Some models (e.g. llama3.1, llama3.2:1b) print a tool call as text instead
+// of using tool_calls. Turn that text back into calls. `resolve` maps a
+// written name to a real tool (aliases allowed) or returns null.
+function parseTextToolCalls(text, toolNames = [], resolve = null) {
   const raw = String(text || "")
     .replace(/<\|python_tag\|>/g, "")
-    .replace(/^```(?:json)?\s*|```\s*$/g, "")
+    .replace(/<\/?tool_call>/g, "")
+    .replace(/^```(?:json|js|javascript|python)?\s*|```\s*$/g, "")
     .trim();
   const norm = (n) =>
     String(n || "")
       .toLowerCase()
       .replace(/[^a-z]/g, "");
-  // "get_status {...}" or "follow_player({...})"
-  const named = raw.match(
-    /^([A-Za-z_][\w-]*)\s*\(?\s*(\{[\s\S]*\})?\s*\)?\s*$/,
-  );
+  const realName = (n) =>
+    toolNames.find((t) => norm(t) === norm(n)) || (resolve ? resolve(n) : null);
+
+  // name(...) calls, one per line: follow_player("Steve"), go_to(x=1, z=2)
+  const lines = raw
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const callRe = /^(?:functions\.)?([A-Za-z_][\w-]*)\s*\(([\s\S]*)\)\s*;?$/;
+  if (lines.length && lines.every((l) => callRe.test(l))) {
+    const calls = [];
+    for (const line of lines) {
+      const [, name, innerRaw] = line.match(callRe);
+      const real = realName(name);
+      if (!real) continue;
+      const inner = innerRaw.trim();
+      let args = {};
+      if (/^\{[\s\S]*\}$/.test(inner)) {
+        try {
+          const obj = JSON.parse(inner);
+          args = obj.arguments || obj.parameters || obj;
+        } catch (_) {
+          args = parseLooseArgs(inner) || {};
+        }
+      } else if (
+        /^(["'`])[\s\S]*\1$/.test(inner) &&
+        !/^(["'`]).*\1\s*,/.test(inner)
+      ) {
+        args = { value: inner.slice(1, -1) };
+      } else if (inner) {
+        args = parseLooseArgs(inner) || {
+          value: inner.replace(/^["'`]|["'`]$/g, ""),
+        };
+      }
+      calls.push({ function: { name: real, arguments: args } });
+    }
+    if (calls.length) return calls;
+  }
+
+  // "run_commands walk to Steve then say hi" (tool name, then plain text)
+  const spaced = raw.match(/^([a-z]+_[a-z_]+)[:\s]+([^{\n][^\n]*)$/i);
+  if (spaced) {
+    const real = realName(spaced[1]);
+    if (real) {
+      const loose = parseLooseArgs(spaced[2]);
+      return [
+        {
+          function: {
+            name: real,
+            arguments: loose || {
+              value: spaced[2].trim().replace(/^["'`]|["'`]$/g, ""),
+            },
+          },
+        },
+      ];
+    }
+  }
+
+  // "get_status {...}" or bare "get_status"
+  const named = raw.match(/^([A-Za-z_][\w-]*)\s*(\{[\s\S]*\})?\s*$/);
   // Bare words like "stop" are normal replies, not calls.
-  const callShaped =
-    named && (named[2] || /\(/.test(raw) || /_/.test(named[1]));
-  if (named && callShaped && !/^[[{]/.test(raw)) {
-    const real = toolNames.find((t) => norm(t) === norm(named[1]));
+  const callShaped = named && (named[2] || /_/.test(named[1]));
+  if (named && callShaped) {
+    const real = realName(named[1]);
     if (!real) return [];
     let args = {};
     try {
       const obj = named[2] ? JSON.parse(named[2]) : {};
-      args = obj.arguments || obj.parameters || {};
+      args = obj.arguments || obj.parameters || obj;
     } catch (_) {}
     return [{ function: { name: real, arguments: args } }];
   }
@@ -207,15 +280,21 @@ function parseTextToolCalls(text, toolNames = []) {
     if (!item || typeof item !== "object") continue;
     const fnObj =
       item.function && typeof item.function === "object" ? item.function : item;
-    const name = fnObj.name || item.tool || "";
-    const real = toolNames.find((t) => norm(t) === norm(name));
+    const name =
+      (typeof fnObj.name === "string" && fnObj.name) ||
+      item.tool ||
+      item.action ||
+      item.command ||
+      "";
+    const real = realName(name);
     if (!real) continue;
-    let args = fnObj.arguments ?? fnObj.parameters ?? item.args ?? {};
+    let args =
+      fnObj.arguments ?? fnObj.parameters ?? item.args ?? item.params ?? {};
     if (typeof args === "string") {
       try {
         args = JSON.parse(args);
       } catch (_) {
-        args = {};
+        args = { value: args };
       }
     }
     calls.push({ function: { name: real, arguments: args || {} } });
@@ -230,7 +309,12 @@ function looksLikeCode(text) {
     /\{\s*"/.test(t) ||
     /"\w+"\s*:/.test(t) ||
     /\b[a-z]+_[a-z_]+\(/.test(t) ||
-    /<\|python_tag\|>|<tool_call>/i.test(t)
+    /<\|python_tag\|>|<tool_call>/i.test(t) ||
+    // Echoed log lines or tool output instead of a real reply.
+    /\b(AIAgent|ChatAI|Console):/.test(t) ||
+    /\bapi\.\w+\(|\b(run_commands|get_status|start_script|stop_script|read_logs|list_scripts)\b/.test(
+      t,
+    )
   );
 }
 
@@ -1354,7 +1438,7 @@ class OllamaManager {
 
     if (agent) {
       sysPrompt +=
-        "\nYou control a real Minecraft bot through the provided tools. When a player asks you to do something (move, follow, mine, fight, equip, start or stop a script), call the matching tool instead of only talking about it. Use get_status only when you need facts. If a tool returns an error or says you are stuck, try a different approach (another tool, other coordinates, mining the obstacle, run_code if available) before giving up, and tell the player briefly if it still fails. Movement, mining and attack tools only START the action: say you are on your way or starting, never that you already arrived or finished. Your chat reply must be normal words: never write JSON, code or tool names in chat. Never invent tool results.";
+        '\nYou control a real Minecraft bot through the provided tools. When a player asks you to do something (move, follow, mine, fight, equip, turn a module on or off, change module options), call a tool instead of only talking about it. The easiest tool is run_commands: pass simple lines like "walk to Steve", "mine 5 oak_log", "turn on KillAura range=4", "say hi". Use list_scripts to see every module and its options, and read_logs to see errors when something did not work. Use get_status only when you need facts. If a tool returns an error or says you are stuck, try a different approach (another tool, other coordinates, mining the obstacle, run_code if available) before giving up, and tell the player briefly if it still fails. Movement, mining and attack tools only START the action: say you are on your way or starting, never that you already arrived or finished. Your chat reply must be normal words: never write JSON, code or tool names in chat. Never invent tool results.';
     }
 
     if (this.config.includeBotContext && botContext) {
@@ -1507,6 +1591,7 @@ class OllamaManager {
     botContext = null,
     tools = [],
     executeTool = async () => "Unknown tool",
+    resolveTool = null,
     overrideModel = "",
     bypassCooldown = false,
     maxRounds = 5,
@@ -1525,8 +1610,14 @@ class OllamaManager {
     const actions = [];
     const toolNames = tools.map((t) => t.function.name);
     // Results the model must read before answering.
-    const INFO_TOOLS = new Set(["get_status", "list_scripts", "run_code"]);
+    const INFO_TOOLS = new Set([
+      "get_status",
+      "list_scripts",
+      "run_code",
+      "read_logs",
+    ]);
 
+    const seenCalls = new Set();
     const runCalls = async (calls) => {
       let needsFollowUp = false;
       for (const call of calls.slice(0, 4)) {
@@ -1539,12 +1630,14 @@ class OllamaManager {
             args = {};
           }
         }
+        // Small models repeat the exact same call; run it once.
+        const key = `${name}:${JSON.stringify(args)}`;
+        if (seenCalls.has(key)) continue;
+        seenCalls.add(key);
         let result;
         let failed = false;
         try {
-          result = toolNames.includes(name)
-            ? await executeTool(name, args, { sender })
-            : `Error: unknown tool ${name}`;
+          result = await executeTool(name, args, { sender });
         } catch (err) {
           result = `Error: ${err.message || err}`;
         }
@@ -1612,7 +1705,11 @@ class OllamaManager {
         let calls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
         let content = String(msg.content || "");
         if (!calls.length) {
-          calls = parseTextToolCalls(cleanModelText(content), toolNames);
+          calls = parseTextToolCalls(
+            cleanModelText(content),
+            toolNames,
+            resolveTool,
+          );
           if (calls.length) content = "";
         }
         if (!calls.length) {

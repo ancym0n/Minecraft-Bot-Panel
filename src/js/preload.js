@@ -112,6 +112,35 @@ contextBridge.exposeInMainWorld("api", {
     }
     return element.value;
   },
+  // Used by the AI Agent; fires the same events as a user edit so the
+  // value is saved and themed dropdowns refresh.
+  setOptionValue: (option, scriptName, value) => {
+    const element = document.getElementById(`${option}-${scriptName}`);
+    if (!element) return false;
+    const v = String(value ?? "");
+    if (element.type === "checkbox") {
+      const on = /^(on|true|yes|1)$/i.test(v);
+      element.checked = on;
+      element.setAttribute("value", on ? "on" : "off");
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    }
+    if (element.tagName === "SELECT") {
+      const match = [...element.options].find(
+        (o) =>
+          o.value.toLowerCase() === v.toLowerCase() ||
+          o.textContent.trim().toLowerCase() === v.toLowerCase(),
+      );
+      if (!match) return false;
+      element.value = match.value;
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    }
+    element.value = v;
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  },
   onScriptToggleOn: (scriptId) => {
     ipcRenderer.send("on-script-toggle-on", scriptId);
   },

@@ -13,6 +13,11 @@ const {
   configureSmartMovements,
   isHostile,
 } = require("./botUtils");
+const {
+  translate,
+  resolveScriptName,
+  HELP: COMMANDS_HELP,
+} = require("./commandTranslator");
 
 const fn = (name, description, properties = {}, required = []) => ({
   type: "function",
@@ -82,18 +87,52 @@ const TOOL_SCHEMAS = [
     },
     ["item"],
   ),
-  fn("list_scripts", "List MCBP automation scripts and whether they run."),
+  fn(
+    "run_commands",
+    `EASIEST WAY to control the bot. Write simple commands, one per line or separated by ;. They run in order. Examples:\n${COMMANDS_HELP}`,
+    { commands: str("Commands, e.g. 'walk to Steve; say hi'") },
+    ["commands"],
+  ),
+  fn(
+    "list_scripts",
+    "List every module (script) with ON/OFF state and its options with current values.",
+  ),
   fn(
     "start_script",
-    "Start an MCBP automation script by name (see list_scripts), e.g. AutoEat, KillAura, AutoFish.",
-    { name: str("Script name") },
+    'Turn ON a module by name, e.g. KillAura, AutoEat, AutoFish, Survival. Optional options like {"range":"4","players":"on"}.',
+    {
+      name: str("Module name"),
+      options: {
+        type: "object",
+        description: 'Optional option values to set first, e.g. {"range":"4"}',
+      },
+    },
     ["name"],
   ),
   fn(
     "stop_script",
-    "Stop a running MCBP automation script by name.",
-    { name: str("Script name") },
+    "Turn OFF a module by name.",
+    { name: str("Module name") },
     ["name"],
+  ),
+  fn("stop_all_scripts", "Turn OFF every running module."),
+  fn(
+    "set_script_option",
+    "Change one option of a module, e.g. name=KillAura option=range value=4. Checkboxes take on/off.",
+    {
+      name: str("Module name"),
+      option: str("Option id or label"),
+      value: str("New value"),
+    },
+    ["name", "option", "value"],
+  ),
+  fn(
+    "read_logs",
+    "Read the bot's recent console log (errors, module messages, chat, task results). Use it to find out why something failed.",
+    {
+      lines: num("How many recent lines (default 15, max 80)"),
+      filter: str("Only lines containing this text, e.g. error"),
+    },
   ),
 ];
 
@@ -104,8 +143,8 @@ const RUN_CODE_SCHEMA = fn(
   ["code"],
 );
 
-// Scripts the AI should never toggle itself.
-const BLOCKED_SCRIPTS = new Set(["chatai", "aiagent", "clearinv", "spam"]);
+// The AI may toggle every module except the ones that run the AI itself.
+const BLOCKED_SCRIPTS = new Set(["chatai", "aiagent"]);
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -130,6 +169,7 @@ function createAiTools(ctx) {
     log,
     onTaskDone = () => {},
     canRunCode = () => false,
+    getLogs = () => [],
   } = ctx;
 
   const requireBot = () => {
@@ -156,12 +196,61 @@ function createAiTools(ctx) {
   };
 
   const resolveScript = (name) => {
+    const list = scripts.list();
     const wanted = String(name || "")
       .toLowerCase()
       .replace(/[^a-z0-9]/g, "");
-    return scripts
-      .list()
-      .find((s) => s.toLowerCase().replace(/[^a-z0-9]/g, "") === wanted);
+    return (
+      list.find((s) => s.toLowerCase().replace(/[^a-z0-9]/g, "") === wanted) ||
+      resolveScriptName(name, list)
+    );
+  };
+
+  const toggleable = (name) => {
+    const real = resolveScript(name);
+    if (!real) {
+      throw new Error(
+        `No module named "${name}". Modules: ${scripts
+          .list()
+          .filter((s) => !BLOCKED_SCRIPTS.has(s.toLowerCase()))
+          .join(", ")}`,
+      );
+    }
+    if (BLOCKED_SCRIPTS.has(real.toLowerCase()))
+      throw new Error(`${real} can only be toggled from the panel`);
+    return real;
+  };
+
+  // Accepts "zombies", "Zombie", "oak logs", "wood" and returns a real id.
+  const resolveName = (raw, table) => {
+    const id = itemId(raw);
+    if (!table) return id;
+    const tries = [
+      id,
+      id.replace(/es$/, ""),
+      id.replace(/s$/, ""),
+      id.replace(/s_/g, "_"),
+      ALIASES[id],
+      ALIASES[id.replace(/s$/, "")],
+    ].filter(Boolean);
+    for (const t of tries) if (table[t]) return t;
+    return id;
+  };
+
+  const ALIASES = {
+    wood: "oak_log",
+    log: "oak_log",
+    tree: "oak_log",
+    trees: "oak_log",
+    cobble: "cobblestone",
+    diamond: "diamond_ore",
+    diamonds: "diamond_ore",
+    iron: "iron_ore",
+    coal: "coal_ore",
+    gold: "gold_ore",
+    sword: "diamond_sword",
+    pick: "diamond_pickaxe",
+    pickaxe: "diamond_pickaxe",
   };
 
   const itemId = (raw) =>
@@ -305,6 +394,170 @@ function createAiTools(ctx) {
     return status;
   }
 
+  // Sets a module option through the panel UI so it shows and persists.
+  async function setOption(scriptName, key, value) {
+    const opts = (await scripts.options?.(scriptName)) || [];
+    if (!opts.length) throw new Error(`${scriptName} has no options`);
+    const k = String(key || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "");
+    const opt =
+      opts.find((o) => o.id.toLowerCase() === k) ||
+      opts.find((o) => o.label.toLowerCase().replace(/[^a-z0-9]/g, "") === k) ||
+      opts.find(
+        (o) =>
+          k.length >= 3 &&
+          (o.label
+            .toLowerCase()
+            .replace(/[^a-z0-9]/g, "")
+            .includes(k) ||
+            o.id.toLowerCase().includes(k)),
+      );
+    if (!opt) {
+      throw new Error(
+        `${scriptName} has no option "${key}". Options: ${opts.map((o) => o.id).join(", ")}`,
+      );
+    }
+    let v = value;
+    if (opt.type === "checkbox") {
+      v = /^(on|true|yes|1|enable|enabled|y)$/i.test(String(v).trim())
+        ? "on"
+        : "off";
+    } else if (opt.type === "select") {
+      const want = String(v).toLowerCase().trim();
+      const choice = (opt.choices || []).find((c) => {
+        const cv = String(typeof c === "object" ? c.value : c).toLowerCase();
+        const cl = String(
+          typeof c === "object" ? c.label || c.value : c,
+        ).toLowerCase();
+        return cv === want || cl === want;
+      });
+      if (!choice) {
+        throw new Error(
+          `${opt.id} must be one of: ${(opt.choices || [])
+            .map((c) => (typeof c === "object" ? c.value : c))
+            .join(", ")}`,
+        );
+      }
+      v = typeof choice === "object" ? choice.value : choice;
+    } else {
+      v = String(v ?? "");
+    }
+    const ok = await scripts.setOption(scriptName, opt.id, v);
+    if (!ok) throw new Error(`Could not set ${opt.id} (is the panel open?)`);
+    return `${opt.id}=${v}`;
+  }
+
+  // Waits until the pathfinder goal is reached, dropped or 90s pass.
+  async function arrive(bot, seq) {
+    const started = Date.now();
+    await sleep(300);
+    while (Date.now() - started < 90000) {
+      if (getBot() !== bot || !bot.entity) return;
+      if (seq && bot._mcbpAiSeq !== seq) return;
+      if (!bot.pathfinder?.goal) return;
+      await sleep(300);
+    }
+  }
+
+  let inSequence = false;
+
+  // Translates plain commands to JS and runs them step by step.
+  async function runTranslated(text, sender) {
+    const bot = requireBot();
+    const t = translate(text, {
+      scripts: scripts.list(),
+      sender,
+      botName: bot.username,
+    });
+    if (!t.count) {
+      throw new Error(
+        `${t.errors.join("; ") || "No commands given"}. Write commands like:\n${COMMANDS_HELP}`,
+      );
+    }
+    if (t.needsCode && !canRunCode(sender)) {
+      throw new Error(
+        "That looks like JavaScript, which is not allowed. Use plain commands like: walk to Steve; mine 5 oak_log",
+      );
+    }
+    // Show the JS each command became, without the step() wrapper.
+    const shown = t.js
+      .split("\n")
+      .filter((l) => !/^await api\.arrive\(\);$/.test(l))
+      .map((l) =>
+        l.replace(
+          /^await api\.step\(\d+, "(?:[^"\\]|\\.)*", \(\) => (.*)\);$/,
+          "$1",
+        ),
+      )
+      .join("; ");
+    log(
+      `AIAgent: "${String(text).replace(/\s+/g, " ").slice(0, 80)}" → ${shown.slice(0, 400)}`,
+    );
+    const seq = {};
+    bot._mcbpAiSeq = seq;
+    const results = [];
+    const { goals, Vec3, mcData } = loadLibraries();
+    const api = {
+      arrive: () => arrive(bot, seq),
+      async step(i, line, call) {
+        if (getBot() !== bot || bot._mcbpAiSeq !== seq)
+          throw new Error("cancelled");
+        let res;
+        try {
+          inSequence = true;
+          res = await call();
+        } catch (err) {
+          throw new Error(`Step ${i} "${line}" failed: ${err.message || err}`);
+        } finally {
+          inSequence = false;
+        }
+        results.push(`${i}. ${String(res).split("\n")[0].slice(0, 120)}`);
+        return res;
+      },
+      async raw(i, line, fnBody) {
+        return api.step(i, line.split("\n")[0], async () => {
+          const v = await withTimeout(fnBody(), 20000);
+          return v === undefined ? "done" : JSON.stringify(v);
+        });
+      },
+    };
+    for (const [name, h] of Object.entries(handlers)) {
+      if (name === "run_commands" || name === "run_code") continue;
+      api[name] = (args = {}) => h(args, { sender });
+    }
+    let runner;
+    try {
+      runner = new AsyncFunction(
+        "api",
+        "bot",
+        "goals",
+        "Vec3",
+        "mcData",
+        "sleep",
+        `"use strict";\n${t.js}`,
+      );
+    } catch (err) {
+      throw new Error(
+        `SyntaxError: ${err.message}. Use plain commands instead`,
+      );
+    }
+    try {
+      await runner(api, bot, goals, Vec3, mcData, sleep);
+    } catch (err) {
+      const msg = err.message || String(err);
+      if (msg === "cancelled")
+        return `Stopped. Done: ${results.join(" | ") || "nothing"}`;
+      throw new Error(
+        `${msg}${results.length ? `. Done before that: ${results.join(" | ")}` : ""}`,
+      );
+    } finally {
+      if (bot._mcbpAiSeq === seq) bot._mcbpAiSeq = null;
+    }
+    const skipped = t.errors.length ? ` Skipped: ${t.errors.join("; ")}` : "";
+    return `${results.join(" | ")}${skipped}`;
+  }
+
   const handlers = {
     get_status() {
       const bot = requireBot();
@@ -409,6 +662,7 @@ function createAiTools(ctx) {
       const bot = requireBot();
       stopWatch(bot);
       bot._mcbpAiTask = null;
+      if (!inSequence) bot._mcbpAiSeq = null;
       bot.clearControlStates();
       clearPathfinderGoal(bot);
       if (typeof bot.stopDigging === "function") {
@@ -438,7 +692,10 @@ function createAiTools(ctx) {
         if (wanted === "hostile") return isHostile(e);
         if (e.type === "player")
           return String(e.username || "").toLowerCase() === wanted;
-        return String(e.name || "").toLowerCase() === itemId(wanted);
+        return (
+          String(e.name || "").toLowerCase() ===
+          resolveName(wanted, bot.registry?.entitiesByName)
+        );
       });
       candidates.sort(
         (a, b) => a.position.distanceTo(me) - b.position.distanceTo(me),
@@ -488,9 +745,12 @@ function createAiTools(ctx) {
 
     async mine_block({ block, count }) {
       const bot = requireBot();
-      const name = itemId(block);
+      const name = resolveName(block, bot.registry?.blocksByName);
       const blockType = bot.registry?.blocksByName?.[name];
-      if (!blockType) throw new Error(`Unknown block id "${block}"`);
+      if (!blockType)
+        throw new Error(
+          `Unknown block "${block}". Use a Minecraft id like oak_log, stone, iron_ore`,
+        );
       const amount = Math.max(1, Math.min(32, Math.floor(Number(count) || 1)));
       const { goals } = loadLibraries();
       stopWatch(bot);
@@ -574,7 +834,7 @@ function createAiTools(ctx) {
 
     async toss_item({ item, count }, { sender }) {
       const bot = requireBot();
-      const name = itemId(item);
+      const name = resolveName(item, bot.registry?.itemsByName);
       const stacks = bot.inventory.items().filter((i) => i.name === name);
       if (!stacks.length) throw new Error(`No ${name} in inventory`);
       const receiver = bot.players[sender]?.entity;
@@ -593,31 +853,212 @@ function createAiTools(ctx) {
       return `Dropped ${tossed} ${name}`;
     },
 
-    list_scripts() {
+    async list_scripts() {
       const active = new Set(scripts.active());
-      return scripts
+      const names = scripts
         .list()
-        .filter((s) => !BLOCKED_SCRIPTS.has(s.toLowerCase()))
-        .map((s) => `${s}${active.has(s) ? " (running)" : ""}`)
-        .join(", ");
+        .filter((s) => !BLOCKED_SCRIPTS.has(s.toLowerCase()));
+      const rows = await Promise.all(
+        names.map(async (s) => {
+          const opts = ((await scripts.options?.(s)) || [])
+            .map((o) => `${o.id}=${o.value === "" ? "?" : o.value}`)
+            .join(" ");
+          return `${s} ${active.has(s) ? "ON" : "off"}${opts ? ` [${opts}]` : ""}`;
+        }),
+      );
+      return rows.join("\n");
     },
 
-    start_script({ name }) {
-      const real = resolveScript(name);
-      if (!real) throw new Error(`No script named ${name}, see list_scripts`);
-      if (BLOCKED_SCRIPTS.has(real.toLowerCase()))
-        throw new Error(`${real} can only be toggled from the panel`);
-      return scripts.start(real)
-        ? `Started ${real}`
-        : `${real} is already running`;
+    async start_script({ name, options }) {
+      const real = toggleable(name);
+      const notes = [];
+      if (options && typeof options === "object") {
+        for (const [k, v] of Object.entries(options)) {
+          notes.push(await setOption(real, k, v));
+        }
+      }
+      const started = scripts.start(real);
+      const head = started ? `Turned ON ${real}` : `${real} is already ON`;
+      return notes.length ? `${head} (${notes.join(", ")})` : head;
     },
 
     stop_script({ name }) {
-      const real = resolveScript(name);
-      if (!real) throw new Error(`No script named ${name}, see list_scripts`);
-      if (BLOCKED_SCRIPTS.has(real.toLowerCase()))
-        throw new Error(`${real} can only be toggled from the panel`);
-      return scripts.stop(real) ? `Stopped ${real}` : `${real} was not running`;
+      const real = toggleable(name);
+      return scripts.stop(real)
+        ? `Turned OFF ${real}`
+        : `${real} was already off`;
+    },
+
+    stop_all_scripts() {
+      const stopped = scripts
+        .active()
+        .filter((s) => !BLOCKED_SCRIPTS.has(s.toLowerCase()))
+        .filter((s) => scripts.stop(s));
+      return stopped.length
+        ? `Turned OFF ${stopped.join(", ")}`
+        : "No modules were running";
+    },
+
+    async set_script_option({ name, option, value }) {
+      const real = toggleable(name);
+      return `${real}: ${await setOption(real, option, value)}`;
+    },
+
+    // Batch form used by the command translator.
+    async set_script_options({ name, options = {} }) {
+      const real = toggleable(name);
+      const notes = [];
+      for (const [k, v] of Object.entries(options)) {
+        notes.push(await setOption(real, k, v));
+      }
+      return `${real}: ${notes.join(", ") || "nothing changed"}`;
+    },
+
+    read_logs({ lines, filter } = {}) {
+      const n = Math.max(1, Math.min(80, Math.floor(Number(lines) || 15)));
+      const f = String(filter || "")
+        .toLowerCase()
+        .trim();
+      let all = getLogs();
+      if (f) {
+        const words = f.split(/\s+/);
+        all = all.filter((l) => words.some((w) => l.toLowerCase().includes(w)));
+      }
+      const out = all.slice(-n);
+      return out.length
+        ? out.join("\n").slice(-3000)
+        : f
+          ? `No log lines contain "${filter}"`
+          : "Log is empty";
+    },
+
+    // --- Small primitives (mostly used by run_commands) ---
+    say({ text, message }) {
+      const bot = requireBot();
+      const msg = String(text ?? message ?? "").trim();
+      if (!msg) throw new Error("Nothing to say");
+      bot.chat(msg.slice(0, 250));
+      return `Said "${msg.slice(0, 60)}"`;
+    },
+
+    async wait({ ms, seconds }) {
+      const t = Number(ms) || Number(seconds) * 1000 || 1000;
+      const left = Math.max(0, Math.min(600000, t));
+      const bot = getBot();
+      const seq = bot?._mcbpAiSeq;
+      const end = Date.now() + left;
+      while (Date.now() < end) {
+        if (seq && bot._mcbpAiSeq !== seq) break;
+        await sleep(Math.min(250, end - Date.now()));
+      }
+      return `Waited ${Math.round(left / 100) / 10}s`;
+    },
+
+    async jump({ times = 1 }) {
+      const bot = requireBot();
+      const n = Math.max(1, Math.min(20, Math.floor(Number(times) || 1)));
+      for (let i = 0; i < n; i++) {
+        bot.setControlState("jump", true);
+        await sleep(350);
+        bot.setControlState("jump", false);
+        await sleep(250);
+      }
+      return `Jumped ${n}x`;
+    },
+
+    control({ control, on = true }) {
+      const bot = requireBot();
+      const c = String(control || "").toLowerCase();
+      if (
+        ![
+          "sneak",
+          "sprint",
+          "jump",
+          "forward",
+          "back",
+          "left",
+          "right",
+        ].includes(c)
+      )
+        throw new Error(`Unknown control ${control}`);
+      const state = on !== false && on !== "off" && on !== "false";
+      bot.setControlState(c, state);
+      return `${c} ${state ? "on" : "off"}`;
+    },
+
+    async walk_direction({ direction, seconds = 1 }) {
+      const bot = requireBot();
+      const d = String(direction || "forward").toLowerCase();
+      const dir = d.startsWith("back")
+        ? "back"
+        : d.startsWith("forw")
+          ? "forward"
+          : d;
+      if (!["forward", "back", "left", "right"].includes(dir))
+        throw new Error(`Unknown direction ${direction}`);
+      stopWatch(bot);
+      clearPathfinderGoal(bot);
+      const ms = Math.max(100, Math.min(30000, Number(seconds) * 1000 || 1000));
+      bot.setControlState(dir, true);
+      await sleep(ms);
+      bot.setControlState(dir, false);
+      return `Walked ${dir} for ${ms / 1000}s`;
+    },
+
+    async look_at({ x, y, z }) {
+      const bot = requireBot();
+      const { Vec3 } = loadLibraries();
+      const v = new Vec3(Number(x), Number(y), Number(z));
+      if (![v.x, v.y, v.z].every(Number.isFinite))
+        throw new Error("x, y and z must be numbers");
+      await bot.lookAt(v.offset(0.5, 0.5, 0.5));
+      return `Looking at ${v.x} ${v.y} ${v.z}`;
+    },
+
+    async hold({ item }) {
+      const bot = requireBot();
+      const name = resolveName(item, bot.registry?.itemsByName);
+      const inv = bot.inventory.items();
+      const found =
+        inv.find((i) => i.name === name) ||
+        inv.find((i) => i.name.includes(itemId(item)));
+      if (!found) throw new Error(`No ${itemId(item)} in inventory`);
+      await bot.equip(found, "hand");
+      return `Holding ${found.name}`;
+    },
+
+    async drop_all() {
+      const bot = requireBot();
+      let n = 0;
+      for (const it of bot.inventory.items()) {
+        await bot.tossStack(it).catch(() => {});
+        n += 1;
+      }
+      return n ? `Dropped ${n} stacks` : "Inventory already empty";
+    },
+
+    async use_item({ item }) {
+      const bot = requireBot();
+      if (item) await handlers.hold({ item });
+      bot.activateItem();
+      await sleep(300);
+      bot.deactivateItem();
+      return `Used ${bot.heldItem ? bot.heldItem.name : "empty hand"}`;
+    },
+
+    respawn() {
+      const bot = requireBot();
+      if (bot.health > 0) return "Not dead";
+      bot.respawn();
+      return "Respawned";
+    },
+
+    // Runs plain-English commands through the translator.
+    async run_commands({ commands }, { sender }) {
+      const text = Array.isArray(commands)
+        ? commands.join("\n")
+        : String(commands || "");
+      return runTranslated(text, sender);
     },
 
     async run_code({ code }, { sender }) {
@@ -630,6 +1071,19 @@ function createAiTools(ctx) {
         .replace(/^```(?:js|javascript)?\s*|```\s*$/g, "")
         .trim();
       if (!src) throw new Error("No code given");
+      // Small models often send "walk to Steve" here instead of JS.
+      const plainCommands = translate(src, {
+        scripts: scripts.list(),
+        sender,
+        botName: bot.username,
+      });
+      if (
+        !plainCommands.needsCode &&
+        plainCommands.count > 0 &&
+        !plainCommands.errors.length
+      ) {
+        return runTranslated(src, sender);
+      }
       let runner;
       try {
         runner = new AsyncFunction(
@@ -669,12 +1123,148 @@ function createAiTools(ctx) {
   // their outcome is reported back so the AI can fix failures.
   const BACKGROUND = new Set(["attack", "mine_block"]);
 
-  async function executeTool(name, args = {}, meta = {}) {
+  // Names small models invent for the real tools.
+  const TOOL_ALIASES = {
+    commands: "run_commands",
+    command: "run_commands",
+    run_command: "run_commands",
+    execute: "run_commands",
+    do: "run_commands",
+    status: "get_status",
+    getstatus: "get_status",
+    walk_to: "go_to",
+    goto: "go_to",
+    move_to: "go_to",
+    come: "come_to_player",
+    come_here: "come_to_player",
+    follow: "follow_player",
+    look: "look_at_player",
+    kill: "attack",
+    mine: "mine_block",
+    dig: "mine_block",
+    equip: "equip_best_gear",
+    drop: "toss_item",
+    toss: "toss_item",
+    give: "toss_item",
+    chat: "say",
+    send_chat: "say",
+    list_modules: "list_scripts",
+    modules: "list_scripts",
+    enable_script: "start_script",
+    enable_module: "start_script",
+    start_module: "start_script",
+    turn_on: "start_script",
+    toggle_script: "start_script",
+    disable_script: "stop_script",
+    disable_module: "stop_script",
+    stop_module: "stop_script",
+    turn_off: "stop_script",
+    set_option: "set_script_option",
+    logs: "read_logs",
+    get_logs: "read_logs",
+    read_log: "read_logs",
+  };
+
+  // Argument names small models use instead of the real ones.
+  const ARG_ALIASES = {
+    player: [
+      "username",
+      "name",
+      "target",
+      "who",
+      "user",
+      "playerName",
+      "player_name",
+    ],
+    name: ["script", "module", "script_name", "module_name", "scriptName"],
+    block: ["block_type", "blockType", "type", "item", "name", "block_name"],
+    target: ["entity", "mob", "player", "name", "type"],
+    item: ["item_name", "itemName", "name", "type"],
+    count: ["amount", "quantity", "number", "n", "times"],
+    commands: ["command", "code", "text", "cmd", "cmds", "input", "steps"],
+    code: ["js", "javascript", "script", "source", "commands"],
+    text: ["message", "msg", "content"],
+    option: ["key", "setting", "option_name"],
+    value: ["val", "new_value", "setting_value"],
+  };
+
+  function fixArgs(name, rawArgs) {
+    let args = rawArgs;
+    // Tiny models sometimes send the JSON schema itself as the arguments.
+    if (args && args.type === "object" && args.properties) {
+      args = {};
+    }
+    const schema = [...TOOL_SCHEMAS, RUN_CODE_SCHEMA].find(
+      (t) => t.function.name === name,
+    );
+    const props = Object.keys(schema?.function?.parameters?.properties || {});
+    const out = { ...args };
+    for (const k of Object.keys(out)) {
+      const v = out[k];
+      if (v && typeof v === "object" && v.type && v.description) delete out[k];
+    }
+    for (const p of props) {
+      if (out[p] !== undefined && out[p] !== "") continue;
+      for (const alt of ARG_ALIASES[p] || []) {
+        if (args[alt] !== undefined && args[alt] !== "") {
+          out[p] = args[alt];
+          break;
+        }
+      }
+    }
+    // A single unnamed value: put it into the only required field.
+    const required = schema?.function?.parameters?.required || [];
+    if (required.length === 1 && out[required[0]] === undefined) {
+      const vals = Object.values(args).filter(
+        (v) => typeof v === "string" || typeof v === "number",
+      );
+      if (vals.length === 1) out[required[0]] = vals[0];
+    }
+    return out;
+  }
+
+  function resolveTool(rawName) {
+    const n = String(rawName || "")
+      .trim()
+      .replace(/^functions?\./, "")
+      .toLowerCase()
+      .replace(/[\s-]+/g, "_");
+    if (handlers[n]) return n;
+    if (TOOL_ALIASES[n]) return TOOL_ALIASES[n];
+    const squashed = n.replace(/_/g, "");
+    return (
+      Object.keys(handlers).find((h) => h.replace(/_/g, "") === squashed) ||
+      TOOL_ALIASES[squashed] ||
+      null
+    );
+  }
+
+  async function executeTool(rawName, args = {}, meta = {}) {
+    let name = resolveTool(rawName);
+    if (!name) {
+      return `Error: unknown tool ${rawName}. Use run_commands with simple commands like "walk to Steve"`;
+    }
+    let safeArgs = args && typeof args === "object" ? args : {};
+    if (typeof args === "string") safeArgs = { commands: args };
+    // Code is not allowed for this player: try it as plain commands.
+    if (name === "run_code" && !canRunCode(meta.sender)) {
+      name = "run_commands";
+      safeArgs = { commands: safeArgs.code ?? safeArgs.commands ?? "" };
+    }
+    safeArgs = fixArgs(name, safeArgs);
     const handler = handlers[name];
-    if (!handler) return `Error: unknown tool ${name}`;
-    const safeArgs = args && typeof args === "object" ? args : {};
     const argText = JSON.stringify(safeArgs);
-    if (BACKGROUND.has(name)) {
+    let background = BACKGROUND.has(name);
+    if (name === "run_commands" || name === "run_code") {
+      const bot = getBot();
+      const text = String(safeArgs.commands ?? safeArgs.code ?? "");
+      background = translate(text, {
+        scripts: scripts.list(),
+        sender: meta.sender,
+        botName: bot?.username,
+      }).long;
+    }
+    if (background) {
       requireBot();
       Promise.resolve()
         .then(() => handler(safeArgs, meta))
@@ -700,7 +1290,7 @@ function createAiTools(ctx) {
           });
         });
       log(`AIAgent: ${name}(${argText}) started`);
-      return `Started ${name.replace("_", " ")} in the background, you will get a report when it finishes`;
+      return `Started ${name.replace(/_/g, " ")} in the background, you will get a report when it finishes`;
     }
     try {
       const result = await handler(safeArgs, meta);
@@ -724,9 +1314,64 @@ function createAiTools(ctx) {
     if (!bot) return;
     stopWatch(bot);
     bot._mcbpAiTask = null;
+    bot._mcbpAiSeq = null;
   }
 
-  return { schemas: TOOL_SCHEMAS, schemasFor, executeTool, stopAll };
+  // For the !do console command: runs plain commands directly, no AI.
+  const runCommands = (text, sender) => runTranslated(text, sender);
+
+  // Chat fast path: when a player's message already is a clear command
+  // ("follow me", "jump twice then say gg"), run it without asking the
+  // model. Returns null when the message needs the model.
+  async function tryDirect(message, sender) {
+    const bot = getBot();
+    if (!bot?.entity) return null;
+    let text = String(message || "").trim();
+    const esc = String(bot.username || "").replace(
+      /[.*+?^${}()|[\]\\]/g,
+      "\\$&",
+    );
+    if (esc) text = text.replace(new RegExp(`^@?${esc}[,:]?\\s*`, "i"), "");
+    if (!text || text.length > 200) return null;
+    if (
+      /\?\s*$/.test(text) ||
+      /^(what|why|how|did|do|does|can|could|would|is|are|where|who|when|which|should|will|whats|what's)\b/i.test(
+        text,
+      )
+    ) {
+      return null;
+    }
+    const t = translate(text, {
+      scripts: scripts.list(),
+      sender,
+      botName: bot.username,
+    });
+    if (!t.count || t.errors.length || t.needsCode) return null;
+    // Info commands need the model to word the answer.
+    if (
+      t.steps.some((st) =>
+        /^api\.(get_status|read_logs|list_scripts)\(/.test(st.js || ""),
+      )
+    ) {
+      return null;
+    }
+    const result = await executeTool(
+      "run_commands",
+      { commands: text },
+      { sender },
+    );
+    return { ok: !/^Error:/.test(String(result)), result: String(result) };
+  }
+
+  return {
+    schemas: TOOL_SCHEMAS,
+    schemasFor,
+    executeTool,
+    stopAll,
+    runCommands,
+    resolveTool,
+    tryDirect,
+  };
 }
 
 module.exports = { createAiTools, TOOL_SCHEMAS, RUN_CODE_SCHEMA };

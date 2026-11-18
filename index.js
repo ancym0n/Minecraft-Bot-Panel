@@ -387,6 +387,32 @@ let lastInventoryJson = "";
 
 const scriptFunctions = new Map();
 const activeScripts = new Set();
+// Option definitions per script, for the AI Agent.
+const scriptOptionDefs = new Map();
+
+// Recent console lines and chat the AI Agent can read with read_logs.
+const recentLogs = [];
+function rememberLog(line) {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const text = String(line)
+    .replace(/§#[0-9a-fA-F]{6}|§[0-9a-fk-or]/gi, "")
+    .trim();
+  if (!text) return;
+  recentLogs.push(
+    `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} ${text}`,
+  );
+  if (recentLogs.length > 300) recentLogs.splice(0, recentLogs.length - 300);
+}
+
+function setOptionValue(option, scriptName, value) {
+  if (!mainWindow || mainWindow.isDestroyed()) return Promise.resolve(false);
+  return mainWindow.webContents
+    .executeJavaScript(
+      `window.api.setOptionValue(${JSON.stringify(String(option))}, ${JSON.stringify(String(scriptName))}, ${JSON.stringify(String(value))})`,
+    )
+    .catch(() => false);
+}
 
 // Code execution needs the opt-in AND an explicit allowed-players list.
 function aiCanRunCode(sender) {
@@ -409,11 +435,26 @@ const aiTools = createAiTools({
   log: (text) => log(text),
   onTaskDone: (evt) => handleAiTaskDone(evt),
   canRunCode: (sender) => aiCanRunCode(sender),
+  getLogs: () => recentLogs.slice(),
   scripts: {
     list: () => Array.from(scriptFunctions.keys()),
     active: () => Array.from(activeScripts),
     start: (name) => startScriptByName(name),
     stop: (name) => stopScriptByName(name),
+    // [{ id, label, type, choices, value }] with the panel's current values.
+    options: async (name) => {
+      const defs = scriptOptionDefs.get(name) || [];
+      return Promise.all(
+        defs.map(async (o) => ({
+          id: String(o.id),
+          label: String(o.label || o.id),
+          type: o.type,
+          choices: o.choices || [],
+          value: String((await getOption(o.id, name)) ?? ""),
+        })),
+      );
+    },
+    setOption: (name, id, value) => setOptionValue(id, name, value),
   },
 });
 const activeControlStates = {
@@ -610,7 +651,9 @@ function buildLiveBotAiContext() {
 
 // Chat reply, or a tool-using agent run when AIAgent is on and the
 // sender is allowed to give commands.
-function runAiReply({
+const DIRECT_REPLIES = ["ok", "on it", "sure", "okay", "got it"];
+
+async function runAiReply({
   sender,
   message,
   overrideModel = "",
@@ -620,12 +663,43 @@ function runAiReply({
   const useAgent = forceAgent ?? Boolean(ollamaManager.config.agentEnabled);
   const botContext = buildLiveBotAiContext();
   if (useAgent && bot && bot.entity && ollamaManager.canCommand(sender)) {
+    // Clear commands run straight away, so even tiny models never get
+    // them wrong. Anything else (or a failed run) goes to the model.
+    const started = Date.now();
+    let note = "";
+    try {
+      const direct = await aiTools.tryDirect(message, sender);
+      if (direct?.ok) {
+        const reply =
+          DIRECT_REPLIES[Math.floor(Math.random() * DIRECT_REPLIES.length)];
+        return {
+          ok: true,
+          reply,
+          parts: [reply],
+          model: "direct",
+          actions: [
+            {
+              name: "run_commands",
+              args: { commands: message },
+              result: direct.result,
+            },
+          ],
+          latencyMs: Date.now() - started,
+        };
+      }
+      if (direct) note = direct.result;
+    } catch (err) {
+      note = `Error: ${err.message || err}`;
+    }
     return ollamaManager.runAgent({
       sender,
-      message,
+      message: note
+        ? `${message}\n[Tried running this directly and got: ${note.slice(0, 300)}. Fix it with tools or tell ${sender} briefly.]`
+        : message,
       botContext,
       tools: aiTools.schemasFor(sender),
       executeTool: aiTools.executeTool,
+      resolveTool: aiTools.resolveTool,
       overrideModel,
       bypassCooldown,
     });
@@ -690,6 +764,7 @@ async function handleAiTaskDone(evt) {
     botContext: buildLiveBotAiContext(),
     tools: aiTools.schemasFor(sender),
     executeTool: aiTools.executeTool,
+    resolveTool: aiTools.resolveTool,
     bypassCooldown: true,
     remember: false,
   });
@@ -732,6 +807,7 @@ function sendToRenderer(channel, ...args) {
 function log(text) {
   const str = String(text);
   sendToRenderer("log", str);
+  rememberLog(str);
   const now = Date.now();
   if (str !== lastSessionLogText || now - lastSessionLogTime > 2000) {
     lastSessionLogText = str;
@@ -1848,6 +1924,10 @@ function registerScriptFile(fullPath, type) {
   formattedHTML += "</form></div>";
 
   scriptSources.set(scriptName, { type, fullPath });
+  scriptOptionDefs.set(
+    scriptName,
+    options.filter((o) => o && o.id && o.type !== "label"),
+  );
   sendToRenderer("on-script", formattedHTML, scriptName, {
     name: scriptName,
     type,
@@ -1949,6 +2029,7 @@ function stopScriptByName(id) {
 function loadAllScripts() {
   scriptFunctions.clear();
   scriptSources.clear();
+  scriptOptionDefs.clear();
   activeScripts.clear();
   Object.keys(AI_SCRIPT_FLAGS).forEach((id) => setAiScriptFlag(id, false));
   sendToRenderer("clear-scripts");
@@ -2967,6 +3048,7 @@ function registerIpcHandlers() {
         const payload = extractChatPayload(jsonMsg);
         if (payload.text || payload.motd) {
           sendToRenderer("chat", payload);
+          rememberLog(`[chat] ${payload.text || payload.motd}`);
           sessionLogger.record(
             "Chat",
             "Server Message",
@@ -3075,7 +3157,7 @@ function registerIpcHandlers() {
 
       if (cmd === "help") {
         log(
-          "Console: !pos, !hp, !gear, !gearup [wood|stone|iron|diamond], !signs, !sign <text>, !ai <msg>, !logs, !close, !weapon, !tool <block>, !goto <x> <y> <z>, !follow <player>, !guard <player>, !hunt <player>, !stop, !dropall, !respawn",
+          "Console: !do <commands>, !pos, !hp, !gear, !gearup [wood|stone|iron|diamond], !signs, !sign <text>, !ai <msg>, !logs, !close, !weapon, !tool <block>, !goto <x> <y> <z>, !follow <player>, !guard <player>, !hunt <player>, !stop, !dropall, !respawn",
         );
         return;
       }
@@ -3116,6 +3198,26 @@ function registerIpcHandlers() {
       }
       if (!bot || !bot.entity) {
         log(`Console (!${cmd}): Connect a bot first`);
+        return;
+      }
+      // Plain commands through the translator, e.g. !do walk to Steve; say hi
+      if (cmd === "do" || cmd === "run") {
+        const text = msg.replace(/^!\s*\S+\s*/, "");
+        if (!text) {
+          log(
+            "Console: !do walk to Steve; mine 5 oak_log; turn on KillAura range=4",
+          );
+          return;
+        }
+        try {
+          const out = await aiTools.runCommands(
+            text,
+            sessionState.mcName || sessionState.username || "",
+          );
+          log(`Console (!do): ${out}`);
+        } catch (err) {
+          log(`Console (!do) error: ${err.message || err}`);
+        }
         return;
       }
       if (cmd === "pos" || cmd === "xyz") {

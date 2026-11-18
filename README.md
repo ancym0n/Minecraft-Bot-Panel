@@ -17,9 +17,9 @@ A desktop app for running Minecraft bots without writing code. Log in, join a se
 - **Full inventory.** All 46 slots with counts and durability, one-click Auto-Gear, and whatever chest, shop or menu the server opens. You can left, right or shift-click through those just like in game.
 - **26 built-in scripts.** Farming, fishing, mining, tunneling, building, chest looting, combat, auto-eat, auto-armor, reconnecting, a full wood-to-diamond GearUp and a Survival mode that just plays on its own. Your settings stick between sessions. Full list below.
 - **Local AI chat.** Hit **Auto-Setup** and it downloads Ollama and a model that fits your PC (Qwen 3, Gemma 3, Llama, Phi-4 Mini...). The bot then chats like a normal player and splits long replies into a few messages with small random gaps, so anti-spam plugins don't kick it. Nothing goes to the cloud.
-- **AI Agent.** Turn on **Actions** and players can say "come here", "follow me", "mine 10 oak logs" or "turn on autoeat" and the bot does it. When it gets stuck it jumps, re-paths, digs or bridges, and if something fails it tries another way. You choose who's allowed to give it orders, and if you really trust them, you can let it write its own Mineflayer code.
+- **AI Agent.** Turn on **Actions** and players can say "come here", "follow me", "mine 10 oak logs" or "turn on killaura and autoeat" and the bot does it. It can switch any module on or off, change module options and read its own logs to work out why something failed. Clear orders run straight away without asking the model at all, so even tiny models like `llama3.2:1b` get them right. When it gets stuck it jumps, re-paths, digs or bridges, and if something fails it tries another way. You choose who's allowed to give it orders, and if you really trust them, you can let it write its own Mineflayer code.
 - **Script Studio.** Start from a template, read the Mineflayer docs right next to the editor (downloaded for your version, with an offline copy built in), or describe what you want and let your local AI write it. It checks for errors and drops the script straight into the Scripts tab.
-- **Chat and console.** Server chat with all its colors and formatting, `/commands` with arrow-key history, and `!` bot commands: `!help`, `!pos`, `!hp`, `!gear`, `!gearup [wood|stone|iron|diamond]`, `!signs`, `!sign <text>`, `!ai <msg>`, `!logs`, `!close`, `!weapon`, `!tool <block>`, `!goto <x> <y> <z>`, `!follow <player>`, `!guard <player>`, `!hunt <player>`, `!stop`, `!dropall`, `!respawn`.
+- **Chat and console.** Server chat with all its colors and formatting, `/commands` with arrow-key history, and `!` bot commands: `!do <commands>`, `!help`, `!pos`, `!hp`, `!gear`, `!gearup [wood|stone|iron|diamond]`, `!signs`, `!sign <text>`, `!ai <msg>`, `!logs`, `!close`, `!weapon`, `!tool <block>`, `!goto <x> <y> <z>`, `!follow <player>`, `!guard <player>`, `!hunt <player>`, `!stop`, `!dropall`, `!respawn`.
 - **Keeps up with Minecraft.** It checks npm in the background for newer `mineflayer`, `minecraft-data` and `mineflayer-pathfinder`, so new Minecraft versions usually work without a new MCBP build. Leave the version on `Auto` and it detects the server version.
 - **Session logs.** Every session writes a Markdown log you can open with `!logs`. Handy for bug reports.
 - **Make it yours.** Drop `.js` files into `custom/scripts` and restyle the whole app with `custom/theme.css`.
@@ -54,6 +54,23 @@ A desktop app for running Minecraft bots without writing code. Log in, join a se
 | **SafeWalk**      | `Sneak at Edges`, `Avoid Lava/Fire`                                             | Prevents walking off ledges (>1 block drop) or into lava/fire by crouching at block edges       |
 | **Spam**          | `Repeat`, `AntiKick`, `Message`, `Delay [ms]`                                   | Sends chat messages on a configurable interval with an optional random suffix                   |
 | **Survival**      | `Self Defense`, `Auto Gear & Eat`, `Collect Drops`, `Look Around`               | Plays autonomously: swims in water, eats, equips gear, blocks creepers, crits attackers, loots  |
+
+## Plain Commands
+
+The AI Agent and the `!do` console command both understand simple commands and turn them into Mineflayer code for you. Put one per line or split them with `;` or `then`, and they run in order (it waits to arrive before moving on).
+
+```
+walk to ancymon            follow me                 stop
+walk 100 64 -20            look at ancymon           come here
+mine 10 oak_log            attack zombie             attack hostile
+eat · gear · hold diamond_sword · drop 5 dirt · drop all
+say hello · wait 3s · jump twice · sneak on · forward 2
+turn on killaura players=on range=4     turn off killaura
+turn on killaura and autoeat            stop all scripts
+set spam message hi there               status · logs 20 error · scripts
+```
+
+Module names are forgiving (`aura`, `auto eat`, `fishing` all work), and so are block names (`oak logs`, `wood`, `diamonds`). The console shows the JavaScript each command became. Lines that are already JavaScript only run when **Allow Code** is on.
 
 ## Installation
 
