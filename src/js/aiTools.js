@@ -17,6 +17,7 @@ const {
   translate,
   resolveScriptName,
   HELP: COMMANDS_HELP,
+  VERB_LIST,
 } = require("./commandTranslator");
 
 const fn = (name, description, properties = {}, required = []) => ({
@@ -86,6 +87,12 @@ const TOOL_SCHEMAS = [
       count: num("Amount, default all of that item"),
     },
     ["item"],
+  ),
+  fn(
+    "think",
+    "Your private notepad. Write your plan or what went wrong here; players never see it. Use it before retrying a failed task.",
+    { thought: str("Your private thought") },
+    ["thought"],
   ),
   fn(
     "run_commands",
@@ -251,6 +258,73 @@ function createAiTools(ctx) {
     sword: "diamond_sword",
     pick: "diamond_pickaxe",
     pickaxe: "diamond_pickaxe",
+  };
+
+  // Chat components / JSON strings / § codes → plain text.
+  const plainText = (v) => {
+    if (v === null || v === undefined) return "";
+    let val = v;
+    if (typeof val === "string") {
+      const t = val.trim();
+      if (/^[{["]/.test(t)) {
+        try {
+          val = JSON.parse(t);
+        } catch (_) {}
+      }
+    }
+    const walk = (n) => {
+      if (n === null || n === undefined) return "";
+      if (typeof n === "string" || typeof n === "number") return String(n);
+      if (Array.isArray(n)) return n.map(walk).join("");
+      if (typeof n === "object") {
+        if (
+          typeof n.toString === "function" &&
+          n.toString !== Object.prototype.toString
+        )
+          return String(n.toString());
+        return `${walk(n.text ?? n.translate ?? "")}${walk(n.extra || [])}`;
+      }
+      return "";
+    };
+    return walk(val)
+      .replace(/§[0-9a-fk-or]/gi, "")
+      .trim();
+  };
+
+  // Items in the open menu (not the player's own inventory part).
+  const menuItems = (win) => {
+    const end =
+      typeof win.inventoryStart === "number"
+        ? win.inventoryStart
+        : win.slots.length;
+    const out = [];
+    for (let i = 0; i < end; i++) {
+      const it = win.slots[i];
+      if (!it) continue;
+      let custom = "";
+      try {
+        custom = plainText(it.customName);
+      } catch (_) {}
+      let lore = "";
+      try {
+        lore = (it.customLore || []).map(plainText).join(" ");
+      } catch (_) {}
+      const label = custom || it.displayName || it.name;
+      if (
+        /^(gray|black|white|light_gray)_stained_glass_pane$/.test(it.name) &&
+        !custom
+      )
+        continue;
+      out.push({
+        slot: i,
+        label,
+        key: label.toLowerCase().replace(/[^a-z0-9]/g, ""),
+        text: `${label} ${it.name} ${lore}`
+          .toLowerCase()
+          .replace(/[^a-z0-9]/g, ""),
+      });
+    }
+    return out;
   };
 
   const itemId = (raw) =>
@@ -472,7 +546,7 @@ function createAiTools(ctx) {
     });
     if (!t.count) {
       throw new Error(
-        `${t.errors.join("; ") || "No commands given"}. Write commands like:\n${COMMANDS_HELP}`,
+        `${t.errors.join("; ") || "No commands given"}. Command words: ${VERB_LIST}`,
       );
     }
     if (t.needsCode && !canRunCode(sender)) {
@@ -626,6 +700,20 @@ function createAiTools(ctx) {
 
     async come_to_player({ player }, { sender }) {
       const bot = requireBot();
+      const wanted = String(player || sender || "").replace(/^@/, "");
+      const isOnline = Object.keys(bot.players || {}).some(
+        (u) => u.toLowerCase() === wanted.toLowerCase(),
+      );
+      // "go to kitpvp": not a player, so it's probably a game in a menu.
+      if (
+        !isOnline &&
+        player &&
+        wanted.toLowerCase() !== String(sender).toLowerCase()
+      ) {
+        try {
+          return await handlers.join_game({ name: wanted });
+        } catch (_) {}
+      }
       const target = findPlayer(bot, player || sender);
       const { goals } = loadLibraries();
       const p = target.position;
@@ -1040,10 +1128,142 @@ function createAiTools(ctx) {
     async use_item({ item }) {
       const bot = requireBot();
       if (item) await handlers.hold({ item });
+      // Lobby items (compass, nether star...) usually open a menu.
+      const opened = new Promise((resolve) => {
+        const onOpen = (w) => resolve(w);
+        bot.once("windowOpen", onOpen);
+        setTimeout(() => {
+          bot.removeListener("windowOpen", onOpen);
+          resolve(null);
+        }, 1500);
+      });
       bot.activateItem();
       await sleep(300);
       bot.deactivateItem();
-      return `Used ${bot.heldItem ? bot.heldItem.name : "empty hand"}`;
+      const win = await opened;
+      const used = `Used ${bot.heldItem ? bot.heldItem.name : "empty hand"}`;
+      if (!win) return used;
+      const items = menuItems(win)
+        .map((m) => m.label)
+        .slice(0, 20);
+      return `${used}, opened menu "${plainText(win.title)}" with: ${items.join(", ") || "nothing"}`;
+    },
+
+    async click_slot({ name, slot, button }) {
+      const bot = requireBot();
+      const win = bot.currentWindow;
+      if (!win) {
+        throw new Error("No menu is open. Open one first, e.g. use compass");
+      }
+      const items = menuItems(win);
+      let target = null;
+      if (slot !== undefined && slot !== null && slot !== "") {
+        const n = Math.floor(Number(slot));
+        target = items.find((m) => m.slot === n) || {
+          slot: n,
+          label: `slot ${n}`,
+        };
+      } else {
+        const want = String(name || "")
+          .toLowerCase()
+          .replace(/[^a-z0-9]/g, "");
+        if (!want) throw new Error("Say which item to click");
+        target =
+          items.find((m) => m.key === want) ||
+          items.find((m) => m.key.includes(want)) ||
+          items.find((m) => m.text.includes(want));
+        if (!target) {
+          throw new Error(
+            `Nothing called "${name}" in this menu. Items: ${items
+              .map((m) => m.label)
+              .slice(0, 20)
+              .join(", ")}`,
+          );
+        }
+      }
+      const right = /right/i.test(String(button || ""));
+      await bot.clickWindow(target.slot, right ? 1 : 0, 0);
+      await sleep(500);
+      const now = bot.currentWindow;
+      const after =
+        now && now !== win
+          ? `, new menu "${plainText(now.title)}" with: ${menuItems(now)
+              .map((m) => m.label)
+              .slice(0, 20)
+              .join(", ")}`
+          : now
+            ? ""
+            : ", menu closed";
+      return `Clicked ${target.label}${after}`;
+    },
+
+    // Lobby games: open the selector item's menu and click the game.
+    async join_game({ name, allowCommand = false }) {
+      const bot = requireBot();
+      const want = String(name || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, "");
+      if (!want) throw new Error("Say which game to join");
+      const pick = (win) => {
+        const items = menuItems(win);
+        return (
+          items.find((m) => m.key === want) ||
+          items.find((m) => m.key.includes(want)) ||
+          items.find((m) => m.text.includes(want))
+        );
+      };
+      const clickIn = async (win) => {
+        const hit = pick(win);
+        if (!hit) return null;
+        return handlers.click_slot({ slot: hit.slot });
+      };
+      if (bot.currentWindow) {
+        const done = await clickIn(bot.currentWindow);
+        if (done) return done;
+      }
+      const SELECTOR =
+        /compass|clock|nether_star|book|chest|emerald|comparator|ender_eye|player_head|diamond_sword|firework/;
+      const selectors = bot.inventory
+        .items()
+        .filter((i) => SELECTOR.test(i.name))
+        .sort((a, b) => (a.slot ?? 99) - (b.slot ?? 99))
+        .slice(0, 3);
+      for (const item of selectors) {
+        await handlers.use_item({ item: item.name }).catch(() => {});
+        const win = bot.currentWindow;
+        if (!win) continue;
+        const done = await clickIn(win);
+        if (done) return `Joining ${name}: ${done}`;
+        if (bot.currentWindow) bot.closeWindow(bot.currentWindow);
+      }
+      if (allowCommand) {
+        bot.chat(`/server ${String(name).trim()}`);
+        return `Sent /server ${String(name).trim()}`;
+      }
+      throw new Error(
+        `Couldn't find ${name} in any menu${selectors.length ? "" : " (no compass or selector item)"}`,
+      );
+    },
+
+    close_window() {
+      const bot = requireBot();
+      if (!bot.currentWindow) return "No menu was open";
+      bot.closeWindow(bot.currentWindow);
+      return "Closed the menu";
+    },
+
+    hotbar({ slot }) {
+      const bot = requireBot();
+      const n = Math.floor(Number(slot));
+      if (!(n >= 1 && n <= 9)) throw new Error("Hotbar slot must be 1-9");
+      bot.setQuickBarSlot(n - 1);
+      return `Selected hotbar slot ${n}${bot.heldItem ? ` (${bot.heldItem.name})` : ""}`;
+    },
+
+    think({ thought }) {
+      const t = String(thought || "").trim();
+      if (t) log(`AIAgent (thinking): ${t.slice(0, 300)}`);
+      return "noted";
     },
 
     respawn() {
@@ -1347,6 +1567,17 @@ function createAiTools(ctx) {
       botName: bot.username,
     });
     if (!t.count || t.errors.length || t.needsCode) return null;
+    // Following or looking at someone needs them to be online. ("go to
+    // kitpvp" is fine: come_to_player joins it via the lobby menu.)
+    const online = new Set(
+      Object.keys(bot.players || {}).map((u) => u.toLowerCase()),
+    );
+    for (const st of t.steps) {
+      const m = String(st.js || "").match(
+        /^api\.(?:follow_player|look_at_player)\(\{ player: "([^"]*)" \}\)/,
+      );
+      if (m && !online.has(m[1].toLowerCase())) return null;
+    }
     // Info commands need the model to word the answer.
     if (
       t.steps.some((st) =>

@@ -713,6 +713,13 @@ async function runAiReply({
   });
 }
 
+// The model's private thinking goes to the console only, never to chat.
+function logAiThoughts(res) {
+  for (const t of res?.thoughts || []) {
+    log(`AIAgent (thinking): ${String(t).replace(/\s+/g, " ").slice(0, 300)}`);
+  }
+}
+
 function logAiResult(res, target) {
   const tag = res.actions?.length ? "AIAgent" : "ChatAI";
   const parts = res.parts?.length || 1;
@@ -720,6 +727,7 @@ function logAiResult(res, target) {
     `${tag}: [${res.model} · ${res.latencyMs}ms${parts > 1 ? ` · ${parts} msgs` : ""}] ➙ ${target}: ${res.reply}`,
   );
   if (res.note) log(`${tag}: ${res.note}`);
+  logAiThoughts(res);
   sessionLogger.record(
     "AI Reply",
     `Replied to ${target} (${res.model})`,
@@ -758,7 +766,7 @@ async function handleAiTaskDone(evt) {
     sender,
     message: `[Task report, not a chat message] Your ${evt.name} task failed: ${evt.result}. ${
       lastTry
-        ? `Do not retry. Tell ${sender} in one short sentence what went wrong.`
+        ? `Do not retry. Tell ${sender} in a few casual words, like a player would, that it didn't work (no technical details, no commands, no error text).`
         : `Fix it now with a different approach (another tool, another target or position${aiCanRunCode(sender) ? ", or run_code" : ""}). Never repeat the same call with the same arguments. If it is impossible, tell ${sender} briefly.`
     }`,
     botContext: buildLiveBotAiContext(),
@@ -791,6 +799,7 @@ async function handleAiChat(currentBot, text) {
   });
   if (bot !== currentBot) return;
   if (!res.ok) {
+    logAiThoughts(res);
     if (res.error && !res.silent) log(`ChatAI error: ${res.error}`);
     return;
   }
@@ -1883,7 +1892,7 @@ function renderScriptOptionHtml(option, scriptName) {
   const fieldId = `${escapeAttr(option.id)}-${escapeAttr(scriptName)}`;
   const label = escapeAttr(option.label);
   if (option.type === "checkbox") {
-    return `<label class="script-checkbox-row" for="${fieldId}"><input type="checkbox" id="${fieldId}" value="off" onclick="checkbox('${fieldId}')"/><span>${label}</span></label>`;
+    return `<label class="script-checkbox-row${option.aiOnly ? " script-ai-only" : ""}" for="${fieldId}"${option.aiOnly ? ' title="When this module reports a problem, the local AI looks at the logs and tries to fix it"' : ""}><input type="checkbox" id="${fieldId}" value="off" onclick="checkbox('${fieldId}')"/><span>${label}</span></label>`;
   }
   if (option.type === "select") {
     const choices = Array.isArray(option.choices) ? option.choices : [];
@@ -1914,8 +1923,23 @@ function registerScriptFile(fullPath, type) {
 
   const scriptName = String(scriptDetails.info.name);
   const options = Array.isArray(scriptDetails.info.options)
-    ? scriptDetails.info.options
+    ? [...scriptDetails.info.options]
     : [];
+  // Every module except the AI ones gets "AI Fixes Errors" (shown once
+  // the local AI is set up).
+  if (!AI_SELF_SCRIPTS.has(scriptName.toLowerCase())) {
+    options.push({
+      type: "checkbox",
+      label: "AI Fixes Errors",
+      id: "aifix",
+      aiOnly: true,
+    });
+  }
+  // Module log lines go through here so problems can be handed to the AI.
+  const scriptLog = (text) => {
+    log(text);
+    maybeAiFixModule(scriptName, String(text));
+  };
 
   let formattedHTML = `<div class="${escapeAttr(scriptName)}-script script-container" data-script="${escapeAttr(scriptName)}" data-type="${escapeAttr(type)}"><p class="${escapeAttr(scriptName)}-name script-name" data-script="${escapeAttr(scriptName)}">${escapeAttr(scriptName)}</p><form class="script-options">`;
   for (const option of options) {
@@ -1943,7 +1967,7 @@ function registerScriptFile(fullPath, type) {
       .then(() =>
         scriptDetails.script(
           bot,
-          log,
+          scriptLog,
           clearLog,
           getOption,
           (func, intervalNum) => {
@@ -1960,7 +1984,7 @@ function registerScriptFile(fullPath, type) {
                   try {
                     await func();
                   } catch (err) {
-                    log(`Error in ${scriptName}: ${err.message}`);
+                    scriptLog(`Error in ${scriptName}: ${err.message}`);
                   }
                 }
               }, safeInterval);
@@ -1970,7 +1994,7 @@ function registerScriptFile(fullPath, type) {
         ),
       )
       .catch((err) => {
-        log(`Error in ${scriptName}: ${err.message || err}`);
+        scriptLog(`Error in ${scriptName}: ${err.message || err}`);
       })
       .finally(() => {
         // A newer run (quick off/on toggle) owns the state now.
@@ -2006,6 +2030,77 @@ function loadScriptsFromDir(fullDirectory, type) {
   }
 
   log(`Loaded ${type} (${scriptAmount}) scripts`);
+}
+
+const AI_SELF_SCRIPTS = new Set(["aiagent", "chatai"]);
+const MODULE_PROBLEM_RE =
+  /\b(error|stuck|fail(?:ed|ing)?|couldn'?t|could not|can'?t|cannot|no path|unable|not found|timed out|gave up|giving up|missing|no target|enter a|is required|are required)\b/i;
+const aiFixState = new Map();
+
+// "AI Fixes Errors": when a module logs a problem, the agent looks at the
+// logs and tries to fix it with its tools. Its thinking and result go to
+// the console only, never to server chat.
+async function maybeAiFixModule(scriptName, text) {
+  if (!MODULE_PROBLEM_RE.test(text) || /^AIAgent/.test(text)) return;
+  const currentBot = bot;
+  if (!currentBot || !currentBot.entity) return;
+  const st = aiFixState.get(scriptName) || { busy: false, last: 0, tries: [] };
+  aiFixState.set(scriptName, st);
+  const now = Date.now();
+  st.tries = st.tries.filter((t) => now - t < 5 * 60 * 1000);
+  if (st.busy || now - st.last < 30000 || st.tries.length >= 3) return;
+  if ((await getOption("aifix", scriptName)) !== "on") return;
+  if (st.busy) return;
+  st.busy = true;
+  st.last = now;
+  st.tries.push(now);
+  const allowed = String(ollamaManager.config.agentAllowedPlayers || "")
+    .split(/[,\s]+/)
+    .filter(Boolean);
+  const owner =
+    allowed[0] || sessionState.mcName || sessionState.username || "owner";
+  log(`AIAgent: Looking into ${scriptName}: ${text.slice(0, 120)}`);
+  try {
+    const opts = await aiTools.executeTool(
+      "list_scripts",
+      {},
+      { sender: owner },
+    );
+    const line = String(opts)
+      .split("\n")
+      .find((l) => l.startsWith(`${scriptName} `));
+    const res = await ollamaManager.runAgent({
+      sender: owner,
+      message: [
+        `[Module problem report, not a chat message] The ${scriptName} module said: "${text.slice(0, 300)}".`,
+        line ? `Its current state: ${line}` : "",
+        `Recent console:\n${recentLogs.slice(-12).join("\n").slice(-1500)}`,
+        `Work out why with think and read_logs, then fix it with tools: change ${scriptName}'s options with set_script_option, restart it, move somewhere better, or turn on a helper module. Do not chat. Reply with one short line saying what you changed, or "no fix" if nothing can be done.`,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      botContext: buildLiveBotAiContext(),
+      tools: aiTools.schemasFor(owner),
+      executeTool: aiTools.executeTool,
+      resolveTool: aiTools.resolveTool,
+      bypassCooldown: true,
+      remember: false,
+    });
+    if (bot !== currentBot) return;
+    logAiThoughts(res);
+    const did = (res.actions || [])
+      .filter((a) => a.name !== "think")
+      .map(
+        (a) => `${a.name} → ${String(a.result).split("\n")[0].slice(0, 80)}`,
+      );
+    log(
+      `AIAgent fix (${scriptName}): ${res.reply || res.error || "no reply"}${did.length ? ` [${did.join(" | ")}]` : ""}`,
+    );
+  } catch (err) {
+    log(`AIAgent fix (${scriptName}) failed: ${err.message || err}`);
+  } finally {
+    st.busy = false;
+  }
 }
 
 function startScriptByName(id) {

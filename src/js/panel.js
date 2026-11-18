@@ -2626,6 +2626,11 @@ function renderOllamaStatus(st) {
   const cfg = st.config || {};
   const installed = Array.isArray(st.installedModels) ? st.installedModels : [];
   const installedSet = new Set(installed.map((m) => m.name));
+  // Module options like "AI Fixes Errors" only appear once the AI is set up.
+  document.body.classList.toggle(
+    "ai-ready",
+    Boolean(st.installed && installed.length > 0),
+  );
 
   if (aiServiceBadge) {
     aiServiceBadge.classList.remove(

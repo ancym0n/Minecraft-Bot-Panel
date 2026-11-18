@@ -302,6 +302,28 @@ function parseTextToolCalls(text, toolNames = [], resolve = null) {
   return calls;
 }
 
+// Replies that explain tools, commands or errors instead of talking like a
+// player. These are the model thinking out loud.
+function isThinkingOutLoud(text) {
+  const t = cleanModelText(text);
+  if (!t) return false;
+  return (
+    /\b(commands?|tools?|syntax|function|parameters?|arguments?|api|script names?|json)\b/i.test(
+      t,
+    ) ||
+    /\b(write|type|use|format) (the |your )?(commands?|it|them) like\b/i.test(
+      t,
+    ) ||
+    /\b(e\.g\.|for example|like this)\s*:/i.test(t) ||
+    /\b(exception|undefined|null|stack trace|TypeError|SyntaxError)\b/.test(
+      t,
+    ) ||
+    /\b(don'?t|do not) (understand|know) what you mean by\b/i.test(t) ||
+    /["'`][^"'`]{2,40}["'`]\s*(and|,)\s*["'`]/.test(t) ||
+    /\|/.test(t)
+  );
+}
+
 function looksLikeCode(text) {
   const t = String(text || "").trim();
   return (
@@ -1438,7 +1460,7 @@ class OllamaManager {
 
     if (agent) {
       sysPrompt +=
-        '\nYou control a real Minecraft bot through the provided tools. When a player asks you to do something (move, follow, mine, fight, equip, turn a module on or off, change module options), call a tool instead of only talking about it. The easiest tool is run_commands: pass simple lines like "walk to Steve", "mine 5 oak_log", "turn on KillAura range=4", "say hi". Use list_scripts to see every module and its options, and read_logs to see errors when something did not work. Use get_status only when you need facts. If a tool returns an error or says you are stuck, try a different approach (another tool, other coordinates, mining the obstacle, run_code if available) before giving up, and tell the player briefly if it still fails. Movement, mining and attack tools only START the action: say you are on your way or starting, never that you already arrived or finished. Your chat reply must be normal words: never write JSON, code or tool names in chat. Never invent tool results.';
+        '\nYou control a real Minecraft bot through the provided tools. When a player asks you to do something (move, follow, mine, fight, equip, turn a module on or off, change module options), call a tool instead of only talking about it. The easiest tool is run_commands: pass simple lines like "walk to Steve", "mine 5 oak_log", "turn on KillAura range=4", "say hi". Use list_scripts to see every module and its options, and read_logs to see errors when something did not work. Use get_status only when you need facts. If a tool returns an error or says you are stuck, try a different approach (another tool, other coordinates, mining the obstacle, run_code if available) before giving up, and tell the player briefly if it still fails. Movement, mining and attack tools only START the action: say you are on your way or starting, never that you already arrived or finished. On lobby servers, "join kitpvp" opens the compass menu and clicks the game for you; "use compass" shows the items in a menu and "click <item name>" clicks one. Think privately with the think tool: plans, errors and retries go there, never in chat. Your chat reply is what a normal player would type: short, casual, no talk about commands, tools, syntax, errors or how to give orders, never explain how to write commands, never write JSON or code. Never invent tool results.';
     }
 
     if (this.config.includeBotContext && botContext) {
@@ -1615,7 +1637,9 @@ class OllamaManager {
       "list_scripts",
       "run_code",
       "read_logs",
+      "think",
     ]);
+    const thoughts = [];
 
     const seenCalls = new Set();
     const runCalls = async (calls) => {
@@ -1727,18 +1751,42 @@ class OllamaManager {
         }
       }
 
+      // Small models start replies with "<player>: ".
+      const senderPrefix = new RegExp(
+        `^\\s*<?@?${String(sender).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}>?\\s*[:,]\\s*`,
+        "i",
+      );
+      finalText = String(finalText || "").replace(senderPrefix, "");
+      // Thinking out loud (tool talk, error text, syntax lessons) stays
+      // in the console as a thought instead of going to chat.
+      if (isThinkingOutLoud(finalText)) {
+        thoughts.push(cleanModelText(finalText).slice(0, 400));
+        finalText = "";
+      }
       let { reply, parts } = this.finalizeReply(finalText, botContext);
-      if (!reply && actions.length) {
-        const last = actions[actions.length - 1];
-        reply = last.failed ? "Hmm, I couldn't do that right now." : "On it!";
+      const realActions = actions.filter((a) => a.name !== "think");
+      if (!reply && realActions.length) {
+        const last = realActions[realActions.length - 1];
+        reply = last.failed ? "hmm can't do that rn" : "on it";
         parts = [reply];
+      }
+      for (const a of actions) {
+        const th = String(a.args?.thought || "").trim();
+        if (
+          a.name === "think" &&
+          th &&
+          th !== "noted" &&
+          !thoughts.includes(th)
+        )
+          thoughts.unshift(th);
       }
       if (!reply) {
         return finalText.length && !finalText.trim()
-          ? { ok: false, silent: true, model, actions }
+          ? { ok: false, silent: true, model, actions, thoughts }
           : {
               ok: false,
               error: "Model returned an empty response.",
+              thoughts,
               model,
               actions,
             };
@@ -1752,6 +1800,7 @@ class OllamaManager {
         parts,
         model,
         actions,
+        thoughts,
         latencyMs: Date.now() - startMs,
       };
     } catch (err) {
@@ -1882,6 +1931,7 @@ module.exports = {
   splitIntoMessages,
   cleanModelText,
   parseTextToolCalls,
+  isThinkingOutLoud,
   downloadFile,
   extractArchive,
   supportsTools,

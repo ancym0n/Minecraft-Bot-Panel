@@ -705,6 +705,22 @@ body[data-conn="connecting"] #connect {
   color: var(--light-main-color);
 }
 
+/* AI-only module options appear once the local AI is set up. */
+.script-checkbox-row.script-ai-only {
+  display: none;
+  margin-top: 0.15rem;
+  padding-top: 0.45rem;
+  border-top: 1px dashed var(--line-strong);
+}
+
+body.ai-ready .script-checkbox-row.script-ai-only {
+  display: flex;
+}
+
+.script-checkbox-row.script-ai-only span {
+  color: var(--accent-border);
+}
+
 .script-checkbox-row span {
   min-width: 0;
   font-size: 0.76rem;

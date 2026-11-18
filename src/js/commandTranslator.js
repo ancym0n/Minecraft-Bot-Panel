@@ -44,7 +44,7 @@ const FILLER = new Set([
 ]);
 
 // Words that mean "the player who asked".
-const SELF_WORDS = new Set(["me", "here", "myself", "us", "sender"]);
+const SELF_WORDS = new Set(["me", "here", "myself", "us", "sender", "you"]);
 
 const VERBS = {
   move: [
@@ -125,7 +125,11 @@ const VERBS = {
   ],
   logs: ["logs", "log", "console", "errors", "history"],
   scripts: ["scripts", "modules", "list", "hacks", "mods", "features"],
-  use: ["use", "rightclick", "activateitem", "interact"],
+  use: ["use", "rightclick", "activateitem", "interact", "open"],
+  click: ["click", "leftclick", "pick", "choose"],
+  close: ["close", "exit", "leave"],
+  hotbar: ["hotbar", "slot"],
+  join: ["join", "play", "queue", "connect"],
   respawn: ["respawn", "revive"],
   repeat: ["repeat", "loop"],
 };
@@ -340,8 +344,14 @@ function looksLikeJs(line) {
 // Turns one plain command into a JS call string, or { error }.
 function translateLine(raw, ctx) {
   const { scripts = [], sender = "" } = ctx;
-  const line = cleanLine(raw, ctx.botName);
+  let line = cleanLine(raw, ctx.botName)
+    .replace(/(?:\s*,|\s+and)?\s*\b(etc|and so on|and more)\b\.?$/i, "")
+    .replace(/^right[\s-]+click\b/i, "use")
+    .replace(/^left[\s-]+click\b/i, "click")
+    .trim();
   if (!line) return null;
+  // Server commands like "/server kitpvp" are sent as chat.
+  if (line.startsWith("/")) return `api.say({ text: ${q(line)} })`;
   const words = line.split(/\s+/);
   const lower = words.map((w) => w.toLowerCase());
   let verb = lower[0];
@@ -463,6 +473,8 @@ function translateLine(raw, ctx) {
     case "gear":
       return `api.equip_best_gear({})`;
     case "hold": {
+      if (/^slot$/i.test(lower[1] || "") && isNum(lower[2] || ""))
+        return `api.hotbar({ slot: ${toNum(lower[2])} })`;
       const rest = cleanWords(args);
       if (
         !rest.length ||
@@ -589,10 +601,39 @@ function translateLine(raw, ctx) {
     case "scripts":
       return `api.list_scripts({})`;
     case "use": {
-      const rest = cleanWords(args);
+      const rest = cleanWords(args).filter(
+        (t) => !/^(menu|gui|it|on|with)$/i.test(t),
+      );
       return rest.length
         ? `api.use_item({ item: ${q(rest.join("_"))} })`
         : `api.use_item({})`;
+    }
+    case "click": {
+      // "click kitpvp", "click slot 13", "click the KitPvP item"
+      if (/^right$/i.test(lower[1] || "") && words.length === 2)
+        return `api.use_item({})`;
+      const n = args.find(isNum);
+      if (n && /^slot$/i.test(lower[1] || ""))
+        return `api.click_slot({ slot: ${toNum(n)} })`;
+      const rest = cleanWords(args).filter(
+        (t) => !/^(on|button|icon|option|menu|gui|container|in)$/i.test(t),
+      );
+      if (!rest.length) return { error: "click what? e.g. click kitpvp" };
+      return `api.click_slot({ name: ${q(rest.join(" "))} })`;
+    }
+    case "join": {
+      const rest = cleanWords(args).filter(
+        (t) => !/^(game|server|mode|lobby|match)$/i.test(t),
+      );
+      if (!rest.length) return { error: "join what? e.g. join kitpvp" };
+      return `api.join_game({ name: ${q(rest.join(" "))}, allowCommand: true })`;
+    }
+    case "close":
+      return `api.close_window({})`;
+    case "hotbar": {
+      const n = args.find(isNum);
+      if (!n) return { error: "which slot? e.g. hotbar 1" };
+      return `api.hotbar({ slot: ${toNum(n)} })`;
     }
     case "respawn":
       return `api.respawn({})`;
@@ -608,8 +649,13 @@ const HELP = [
   "mine 10 oak_log | eat | gear | hold diamond_sword | drop 5 dirt | drop all",
   "say hello | wait 3 | jump 2 | sneak on | sprint off | forward 2 | left 1",
   "turn on KillAura players=on range=4 | turn off KillAura | stop all scripts",
-  "set Spam message hi | status | logs 20 | logs error | scripts | use | respawn",
+  "set Spam message hi | status | logs 20 | logs error | scripts | respawn",
+  "join kitpvp | use compass | click kitpvp | click slot 13 | close | hotbar 1 | /server kitpvp",
 ].join("\n");
+
+// Short list for errors, so models don't copy example sentences into chat.
+const VERB_LIST =
+  "walk, follow, stop, look, attack, mine, eat, gear, hold, drop, say, wait, jump, sneak, forward, use, click, close, hotbar, join, turn on, turn off, set, status, logs, scripts, /command";
 
 // text → { js, steps, errors, long, needsCode }
 function translate(text, ctx = {}) {
@@ -690,4 +736,5 @@ module.exports = {
   splitCommands,
   resolveScriptName,
   HELP,
+  VERB_LIST,
 };
