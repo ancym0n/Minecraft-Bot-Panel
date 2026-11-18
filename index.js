@@ -916,7 +916,7 @@ function logAiThoughts(res) {
 }
 
 function logAiResult(res, target) {
-  const tag = res.actions?.length ? "AIAgent" : "ChatAI";
+  const tag = res.actions?.length ? "AIAgent" : "AIChat";
   const parts = res.parts?.length || 1;
   log(
     `${tag}: [${res.model} · ${res.latencyMs}ms${parts > 1 ? ` · ${parts} msgs` : ""}] ➙ ${target}: ${res.reply}`,
@@ -1102,7 +1102,7 @@ async function handleAiChat(currentBot, text, senderUuid, position) {
   if (bot !== currentBot) return;
   if (!res.ok) {
     logAiThoughts(res);
-    if (res.error && !res.silent) log(`ChatAI error: ${res.error}`);
+    if (res.error && !res.silent) log(`AIChat error: ${res.error}`);
     return;
   }
   logAiResult(res, parsed.sender);
@@ -2348,7 +2348,11 @@ function stopTelemetryLoop() {
 }
 
 // Scripts whose on/off state mirrors a flag in the AI config.
-const AI_SCRIPT_FLAGS = { ChatAI: "enabled", AIAgent: "agentEnabled" };
+const AI_SCRIPT_FLAGS = { AIChat: "enabled", AIAgent: "agentEnabled" };
+const SCRIPT_NAME_ALIASES = { ChatAI: "AIChat", chatai: "AIChat" };
+function resolveScriptName(id) {
+  return SCRIPT_NAME_ALIASES[id] || id;
+}
 const scriptSources = new Map();
 const scriptRunIds = new Map();
 
@@ -2536,7 +2540,7 @@ function loadScriptsFromDir(fullDirectory, type) {
   log(`Loaded ${type} (${scriptAmount}) scripts`);
 }
 
-const AI_SELF_SCRIPTS = new Set(["aiagent", "chatai"]);
+const AI_SELF_SCRIPTS = new Set(["aiagent", "aichat", "chatai"]);
 const MODULE_PROBLEM_RE =
   /\b(error|stuck|fail(?:ed|ing)?|couldn'?t|could not|can'?t|cannot|no path|unable|not found|timed out|gave up|giving up|missing|no target|enter a|is required|are required|out of|no \w+ found|denied|skipping unreachable|searching for|scanning for|step warning)\b/i;
 const aiFixState = new Map();
@@ -2560,7 +2564,7 @@ async function maybeAiFixModule(scriptName, text) {
     Boolean(
       ollamaManager.config.agentEnabled ||
         activeScripts.has("AIAgent") ||
-        activeScripts.has("ChatAI"),
+        activeScripts.has("AIChat"),
     );
   if (aifixOpt !== "on" && !autoAssistGearUp) return;
   if (st.busy) return;
@@ -2628,7 +2632,8 @@ async function maybeAiFixModule(scriptName, text) {
   }
 }
 
-function startScriptByName(id) {
+function startScriptByName(rawId) {
+  const id = resolveScriptName(rawId);
   const runner = scriptFunctions.get(id);
   if (!runner || activeScripts.has(id)) return false;
   activeScripts.add(id);
@@ -2638,7 +2643,8 @@ function startScriptByName(id) {
   return true;
 }
 
-function stopScriptByName(id) {
+function stopScriptByName(rawId) {
+  const id = resolveScriptName(rawId);
   if (!activeScripts.has(id)) return false;
   activeScripts.delete(id);
   setAiScriptFlag(id, false);
@@ -3941,11 +3947,11 @@ function registerIpcHandlers() {
         if (!promptText) {
           const st = await ollamaManager.getStatus();
           log(
-            `ChatAI: ${st.serverRunning ? "Online" : "Offline"} | Model: ${st.config.model || st.hardware.recommendedModel} | Auto-reply: ${st.config.enabled ? "ON" : "OFF"} | Agent: ${st.config.agentEnabled ? "ON" : "OFF"}`,
+            `AIChat: ${st.serverRunning ? "Online" : "Offline"} | Model: ${st.config.model || st.hardware.recommendedModel} | Auto-reply: ${st.config.enabled ? "ON" : "OFF"} | Agent: ${st.config.agentEnabled ? "ON" : "OFF"}`,
           );
           return;
         }
-        log(`ChatAI: Generating reply for "${promptText}"...`);
+        log(`AIChat: Generating reply for "${promptText}"...`);
         const aiRes = await runAiReply({
           sender: sessionState.mcName || sessionState.username || "User",
           message: promptText,
@@ -3959,8 +3965,8 @@ function registerIpcHandlers() {
         } else {
           log(
             aiRes.silent
-              ? "ChatAI: Model chose not to reply"
-              : `ChatAI error: ${aiRes.error}`,
+              ? "AIChat: Model chose not to reply"
+              : `AIChat error: ${aiRes.error}`,
           );
         }
         return;
@@ -4173,7 +4179,7 @@ function registerIpcHandlers() {
     }
     sessionLogger.record(
       "UI Click",
-      "Updated ChatAI Config",
+      "Updated AIChat Config",
       `Model: ${updated.model}, Trigger: ${updated.triggerMode}, Split: ${updated.splitMessages}`,
     );
     pushSessionLogStatus();
@@ -4200,7 +4206,7 @@ function registerIpcHandlers() {
     );
     pushSessionLogStatus();
     log(
-      `ChatAI: Starting Auto-Setup (${preferredModel || "recommended model"})...`,
+      `AIChat: Starting Auto-Setup (${preferredModel || "recommended model"})...`,
     );
     const res = await ollamaManager.autoSetup({
       preferredModel,
@@ -4211,14 +4217,14 @@ function registerIpcHandlers() {
     const st = await ollamaManager.getStatus();
     sendToRenderer("ollama-status", st);
     if (res.ok) {
-      log(`ChatAI: Auto-Setup complete — ${res.model} is ready!`);
+      log(`AIChat: Auto-Setup complete — ${res.model} is ready!`);
       sessionLogger.record(
         "AI Setup",
         "Ollama Auto-Setup Complete",
         `Model ready: ${res.model}`,
       );
     } else {
-      log(`ChatAI setup error: ${res.error}`);
+      log(`AIChat setup error: ${res.error}`);
       sessionLogger.record("AI Setup", "Ollama Auto-Setup Error", res.error);
     }
     pushSessionLogStatus();
@@ -4247,9 +4253,9 @@ function registerIpcHandlers() {
     const st = await ollamaManager.getStatus();
     sendToRenderer("ollama-status", st);
     if (res.ok) {
-      log(`ChatAI: Pulled model ${clean}`);
+      log(`AIChat: Pulled model ${clean}`);
     } else {
-      log(`ChatAI pull error: ${res.error}`);
+      log(`AIChat pull error: ${res.error}`);
     }
     return { ...res, status: st };
   });
@@ -4259,7 +4265,7 @@ function registerIpcHandlers() {
     const model = String(payload?.model || "").trim();
     sessionLogger.record(
       "UI Click",
-      "Tested ChatAI Prompt",
+      "Tested AIChat Prompt",
       `Model: ${model || ollamaManager.config.model} | Prompt: "${prompt}"`,
     );
     pushSessionLogStatus();
@@ -4286,7 +4292,7 @@ function registerIpcHandlers() {
       );
       if (payload?.sendToServer && bot && typeof bot.chat === "function") {
         aiChatQueue.send(res.parts?.length ? res.parts : [res.reply]);
-        log(`ChatAI ➙ Server: ${res.reply}`);
+        log(`AIChat ➙ Server: ${res.reply}`);
       }
     }
     pushSessionLogStatus();

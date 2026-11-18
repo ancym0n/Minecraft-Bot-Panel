@@ -3,7 +3,7 @@ const { ollamaManager } = require("../ollamaManager");
 // Options here are two-way synced with the AI tab (same saved config),
 // so the panel writes changes straight to the AI settings.
 const info = {
-  name: "ChatAI",
+  name: "AIChat",
   default: { interval: 3000 },
   aiSync: true,
   options: [
@@ -66,15 +66,15 @@ async function prepareOllama(log, clearLog, tag, { model, isActive }) {
 }
 
 async function script(bot, log, clearLog, getOption, scriptRepeater) {
-  clearLog("ChatAI:");
-  const res = await prepareOllama(log, clearLog, "ChatAI", {
+  clearLog("AIChat:");
+  const res = await prepareOllama(log, clearLog, "AIChat", {
     model: () => ollamaManager.resolveModel(),
     isActive: () => Boolean(ollamaManager.config.enabled),
   });
   if (res.ok) {
     const cfg = ollamaManager.config;
     log(
-      `ChatAI: Ready (${res.model} · ${cfg.triggerMode === "all" ? "all chat" : "mentions"} · ${cfg.splitMessages ? `split, ${cfg.messageDelaySec}s gap` : "single message"})`,
+      `AIChat: Ready (${res.model} · ${cfg.triggerMode === "all" ? "all chat" : "mentions"} · ${cfg.splitMessages ? `split, ${cfg.messageDelaySec}s gap` : "single message"})`,
     );
   }
   // Stay alive while toggled on; the chat listener does the replying.

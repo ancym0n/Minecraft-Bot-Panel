@@ -527,7 +527,7 @@ function looksLikeCode(text) {
     /\b[a-z]+_[a-z_]+\(/.test(t) ||
     /<\|python_tag\|>|<tool_call>/i.test(t) ||
     // Echoed log lines or tool output instead of a real reply.
-    /\b(AIAgent|ChatAI|Console|AIBrain):/.test(t) ||
+    /\b(AIAgent|AIChat|ChatAI|Console|AIBrain):/.test(t) ||
     /\bapi\.\w+\(|\b(run_commands|get_status|start_script|stop_script|read_logs|list_scripts|query_game_mechanics|create_plan|queue_task)\b/.test(
       t,
     )

@@ -94,7 +94,7 @@ class ChatQueue {
         const bot = this.getBot();
         if (!bot || typeof bot.chat !== "function") break;
         if (this.isDuplicate(text)) {
-          this.log(`ChatAI: Skipped duplicate message to avoid spam kick`);
+          this.log(`AIChat: Skipped duplicate message to avoid spam kick`);
           continue;
         }
         try {
@@ -112,7 +112,7 @@ class ChatQueue {
             ),
           };
         } catch (err) {
-          this.log(`ChatAI: Failed to send chat: ${err.message || err}`);
+          this.log(`AIChat: Failed to send chat: ${err.message || err}`);
           break;
         }
       }

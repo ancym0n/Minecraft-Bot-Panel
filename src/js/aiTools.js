@@ -281,7 +281,7 @@ const RUN_CODE_SCHEMA = fn(
 );
 
 // The AI may toggle every module except the ones that run the AI itself.
-const BLOCKED_SCRIPTS = new Set(["chatai", "aiagent"]);
+const BLOCKED_SCRIPTS = new Set(["aichat", "chatai", "aiagent"]);
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

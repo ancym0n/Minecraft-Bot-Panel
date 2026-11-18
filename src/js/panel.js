@@ -1097,7 +1097,11 @@ function classifyLogMessage(rawText) {
       /✗|failed/i.test(rest)
     ) {
       tagClass = "tag-error";
-    } else if (low.includes("aiagent") || low.includes("chatai")) {
+    } else if (
+      low.includes("aiagent") ||
+      low.includes("aichat") ||
+      low.includes("chatai")
+    ) {
       tagClass = "tag-ai";
     } else if (low.includes("proxy")) {
       tagClass = "tag-proxy";
@@ -1674,7 +1678,7 @@ const controlAiContainer = document.getElementById("control-ai-scripts");
 const scriptSearchInput = document.getElementById("script-search");
 const stopAllScriptsBtn = document.getElementById("stop-all-scripts");
 const SCRIPT_OPTS_STORAGE_KEY = "mcbp-script-options-v1";
-const AI_CONTROL_SCRIPTS = new Set(["chatai", "aiagent"]);
+const AI_CONTROL_SCRIPTS = new Set(["aichat", "chatai", "aiagent"]);
 
 const DEFAULT_SCRIPT_OPTIONS = {
   "hostiles-Guard": "on",
@@ -1895,7 +1899,7 @@ window.api.onScript((html, scriptId, meta = {}) => {
     });
   }
 
-  // Place AI scripts (ChatAI, AIAgent) in the Control tab only so they don't mix with normal modules
+  // Place AI scripts (AIChat, AIAgent) in the Control tab only so they don't mix with normal modules
   const isAiControlScript =
     Boolean(meta?.aiSync) || AI_CONTROL_SCRIPTS.has(scriptName.toLowerCase());
   const targetParent =
@@ -3056,7 +3060,7 @@ function buildModelOptionsHtml(
   return html;
 }
 
-// Script-tab options that mirror the shared AI config (ChatAI / AIAgent).
+// Script-tab options that mirror the shared AI config (AIChat / AIAgent).
 const AI_SYNC_FIELDS = {
   replyall: {
     key: "triggerMode",
