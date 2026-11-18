@@ -31,6 +31,12 @@
               >← Account</span
             >
             <span id="account-badge" class="chip chip-muted">Offline</span>
+            <span
+              id="main-proxy-toggle"
+              class="chip chip-button"
+              title="Toggle proxy tunneling for the main bot connection"
+              >Proxy: off</span
+            >
             <span id="status-badge" class="chip status-disconnected"
               >Disconnected</span
             >
@@ -143,6 +149,14 @@
               <button type="button" class="tab workspace-tab" data-tab="ai">
                 AI
                 <span id="ai-tab-dot" class="tab-dot" hidden></span>
+              </button>
+              <button
+                type="button"
+                class="tab workspace-tab"
+                data-tab="botting"
+              >
+                Botting
+                <span id="botting-tab-count" class="tab-count" hidden>0</span>
               </button>
               <button type="button" class="tab workspace-tab" data-tab="studio">
                 Studio
@@ -360,6 +374,17 @@
                   <p class="radar-empty">No signs nearby</p>
                 </div>
               </div>
+            </div>
+
+            <div class="control-ai-section">
+              <div class="control-ai-head">
+                <span class="radar-title">AI Control Modules</span>
+                <span class="muted-text"
+                  >ChatAI &amp; AIAgent live here to keep regular scripts
+                  separate</span
+                >
+              </div>
+              <div id="control-ai-scripts" class="div-ai-actions"></div>
             </div>
           </div>
 
@@ -747,6 +772,263 @@
               </div>
               <div id="ai-test-output" class="ai-test-output">
                 Click Auto-Setup or Test AI to preview how the bot replies.
+              </div>
+            </div>
+
+            <div id="ai-brain-card" class="ai-brain-card">
+              <div class="ai-brain-head">
+                <div class="ai-config-title-group">
+                  <span class="ai-section-title">🧠 AI Brain</span>
+                  <span id="ai-brain-goal-badge" class="chip chip-muted"
+                    >Goal: Idle</span
+                  >
+                </div>
+                <span id="ai-brain-step" class="muted-text"
+                  >No active step</span
+                >
+              </div>
+              <div class="ai-brain-grid">
+                <div class="ai-brain-col">
+                  <div class="radar-title">Plan &amp; Recent Actions</div>
+                  <div id="ai-brain-plan-list" class="radar-list ai-brain-list">
+                    <p class="radar-empty">No active plan steps</p>
+                  </div>
+                </div>
+                <div class="ai-brain-col">
+                  <div class="radar-title">Thoughts &amp; Landmarks</div>
+                  <div
+                    id="ai-brain-thoughts-list"
+                    class="radar-list ai-brain-list"
+                  >
+                    <p class="radar-empty">Waiting for AI activity…</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Botting & Proxy Pool -->
+          <div id="tab-botting" class="workspace-pane" hidden>
+            <div class="ai-config-card botting-card">
+              <div class="ai-config-top">
+                <div class="ai-config-title-group">
+                  <span class="ai-section-title">Bot Swarm (Botting)</span>
+                  <span id="botting-summary-badge" class="chip chip-muted"
+                    >0 / 0 online</span
+                  >
+                </div>
+                <div class="ai-toggle-group">
+                  <button
+                    type="button"
+                    id="botting-spawn-btn"
+                    class="btn btn-small btn-primary"
+                    title="Connect multiple Mineflayer bots to the current server"
+                  >
+                    Spawn Swarm
+                  </button>
+                  <button
+                    type="button"
+                    id="botting-stop-all-btn"
+                    class="btn btn-small btn-danger-soft"
+                    title="Disconnect all swarm bots"
+                  >
+                    Disconnect All
+                  </button>
+                </div>
+              </div>
+
+              <div class="ai-form-grid ai-form-grid-4">
+                <div class="field">
+                  <label for="botting-prefix-input">Username Prefix</label>
+                  <input
+                    type="text"
+                    id="botting-prefix-input"
+                    class="input-slim"
+                    value="MCBP_Bot"
+                    placeholder="MCBP_Bot"
+                    spellcheck="false"
+                  />
+                </div>
+                <div class="field">
+                  <label for="botting-count-input">Bot Count (1-30)</label>
+                  <input
+                    type="text"
+                    id="botting-count-input"
+                    class="input-slim"
+                    value="3"
+                    inputmode="numeric"
+                    spellcheck="false"
+                  />
+                </div>
+                <div class="field">
+                  <label for="botting-delay-input">Join Delay [ms]</label>
+                  <input
+                    type="text"
+                    id="botting-delay-input"
+                    class="input-slim"
+                    value="1200"
+                    inputmode="numeric"
+                    spellcheck="false"
+                  />
+                </div>
+                <div class="field">
+                  <label for="botting-proxy-mode">Connection Mode</label>
+                  <select id="botting-proxy-mode">
+                    <option value="direct">Direct (No Proxy)</option>
+                    <option value="rotate">Rotate Working Proxies</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="botting-actions-bar">
+                <input
+                  type="text"
+                  id="botting-target-input"
+                  class="input-slim"
+                  placeholder="Target player or chat/command (e.g. ancymon or /register pass pass)"
+                  spellcheck="false"
+                />
+                <div class="botting-action-btns">
+                  <button
+                    type="button"
+                    class="btn btn-small"
+                    data-swarm-action="follow"
+                    title="All bots follow target player (or main bot)"
+                  >
+                    Follow
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-small"
+                    data-swarm-action="come"
+                    title="All bots circle around target player"
+                  >
+                    Circle
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-small"
+                    data-swarm-action="guard"
+                    title="All bots guard target player and attack threats"
+                  >
+                    Guard
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-small"
+                    data-swarm-action="killaura"
+                    title="All bots attack nearby hostile mobs/players"
+                  >
+                    KillAura
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-small"
+                    data-swarm-action="antiafk"
+                    title="All bots jump, swing and strafe to avoid AFK kicks"
+                  >
+                    Anti-AFK
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-small"
+                    data-swarm-action="chat"
+                    title="All bots send the text/command in the input box"
+                  >
+                    Send Chat
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-small btn-ghost"
+                    data-swarm-action="dropall"
+                    title="All bots drop their inventory"
+                  >
+                    Drop All
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-small btn-danger-soft"
+                    data-swarm-action="stop"
+                    title="Stop all swarm bot actions"
+                  >
+                    Stop
+                  </button>
+                </div>
+              </div>
+
+              <div id="botting-bots-list" class="radar-list botting-bots-list">
+                <p class="radar-empty">
+                  No swarm bots active. Configure prefix &amp; count above and
+                  click Spawn Swarm.
+                </p>
+              </div>
+            </div>
+
+            <div class="ai-config-card proxy-card">
+              <div class="ai-config-top">
+                <div class="ai-config-title-group">
+                  <span class="ai-section-title">Proxy Pool &amp; Auto-Tester</span>
+                  <span id="proxy-summary-badge" class="chip chip-muted"
+                    >0 working / 0 total</span
+                  >
+                </div>
+                <div class="ai-toggle-group">
+                  <button
+                    type="button"
+                    id="proxy-fetch-free-btn"
+                    class="btn btn-small btn-primary"
+                    title="Fetch free public SOCKS5, SOCKS4 and HTTP proxies"
+                  >
+                    Find Free Proxies
+                  </button>
+                  <button
+                    type="button"
+                    id="proxy-test-all-btn"
+                    class="btn btn-small"
+                    title="Test all proxies against the target Minecraft server and remove dead ones"
+                  >
+                    Auto-Test Pool
+                  </button>
+                  <button
+                    type="button"
+                    id="proxy-clear-dead-btn"
+                    class="btn btn-small btn-ghost"
+                    title="Remove dead or slow proxies"
+                  >
+                    Prune Dead
+                  </button>
+                </div>
+              </div>
+
+              <div id="proxy-progress-box" class="ai-progress-box" hidden>
+                <div class="ai-progress-head">
+                  <span id="proxy-progress-text" class="ai-progress-text"
+                    >Testing proxies…</span
+                  >
+                </div>
+              </div>
+
+              <div class="proxy-add-row">
+                <input
+                  type="text"
+                  id="proxy-add-input"
+                  class="input-slim"
+                  placeholder="Add proxy (e.g. socks5://1.2.3.4:1080 or host:port)"
+                  spellcheck="false"
+                />
+                <button
+                  type="button"
+                  id="proxy-add-btn"
+                  class="btn btn-small"
+                >
+                  Add Proxy
+                </button>
+              </div>
+
+              <div id="proxy-list" class="radar-list proxy-list">
+                <p class="radar-empty">
+                  No proxies loaded. Click Find Free Proxies then Auto-Test Pool.
+                </p>
               </div>
             </div>
           </div>

@@ -495,7 +495,9 @@ function checkbox(id) {
 window.checkbox = checkbox;
 
 function updateActiveScriptsBadge() {
-  const activeCount = document.querySelectorAll(".script-name-active").length;
+  const activeCount = document.querySelectorAll(
+    ".div-actions .script-name-active",
+  ).length;
   const badge = document.getElementById("active-scripts-badge");
   if (!badge) return;
   if (activeCount > 0) {
@@ -536,9 +538,116 @@ document.querySelectorAll(".workspace-tab").forEach((tabBtn) => {
       window.api.inventoryAction({ action: "refresh" });
     } else if (targetTab === "ai" && typeof refreshOllamaUi === "function") {
       refreshOllamaUi();
+      if (typeof refreshAiBrainUi === "function") refreshAiBrainUi();
+    } else if (
+      targetTab === "botting" &&
+      typeof refreshBottingAndProxyUi === "function"
+    ) {
+      refreshBottingAndProxyUi();
     }
   });
 });
+
+// --- Server History, Autocomplete & Per-Server Remembered Modules ---
+const SERVER_PROFILES_KEY = "mcbp-server-profiles-v1";
+const LAST_SERVER_KEY = "mcbp-last-server-v1";
+const ipInput = document.getElementById("ip");
+let activeConnectedServerKey = "";
+let mainProxyEnabled = false;
+
+function normalizeServerKey(rawIp) {
+  return String(rawIp || "")
+    .trim()
+    .toLowerCase();
+}
+
+function loadServerProfiles() {
+  try {
+    const raw = localStorage.getItem(SERVER_PROFILES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function saveServerProfiles(list) {
+  try {
+    localStorage.setItem(
+      SERVER_PROFILES_KEY,
+      JSON.stringify((list || []).slice(0, 25)),
+    );
+  } catch (_) {}
+}
+
+function getServerProfile(rawIp) {
+  const key = normalizeServerKey(rawIp);
+  if (!key) return null;
+  return (
+    loadServerProfiles().find((p) => normalizeServerKey(p.ip) === key) || null
+  );
+}
+
+function getActiveEnabledScriptNames() {
+  const names = [];
+  document
+    .querySelectorAll(".script-container .script-name-active")
+    .forEach((el) => {
+      const sName = el.getAttribute("data-script");
+      if (sName) names.push(sName);
+    });
+  return [...new Set(names)];
+}
+
+function upsertServerProfile(rawIp, { version, modules } = {}) {
+  const cleanIp = String(rawIp || "").trim();
+  const key = normalizeServerKey(cleanIp);
+  if (!key) return;
+  const list = loadServerProfiles();
+  const idx = list.findIndex((p) => normalizeServerKey(p.ip) === key);
+  const existing = idx >= 0 ? list[idx] : { ip: cleanIp, version: "", modules: [] };
+  const updated = {
+    ip: cleanIp,
+    version:
+      version !== undefined ? String(version || "").trim() : existing.version || "",
+    modules: Array.isArray(modules)
+      ? [...new Set(modules)]
+      : Array.isArray(existing.modules)
+        ? existing.modules
+        : [],
+    lastUsed: Date.now(),
+  };
+  if (idx >= 0) list.splice(idx, 1);
+  list.unshift(updated);
+  saveServerProfiles(list);
+  refreshServerAutocomplete();
+}
+
+function removeServerProfile(rawIp) {
+  const key = normalizeServerKey(rawIp);
+  if (!key) return;
+  const next = loadServerProfiles().filter(
+    (p) => normalizeServerKey(p.ip) !== key,
+  );
+  saveServerProfiles(next);
+  if (
+    normalizeServerKey(localStorage.getItem(LAST_SERVER_KEY)) === key
+  ) {
+    localStorage.removeItem(LAST_SERVER_KEY);
+  }
+  refreshServerAutocomplete();
+}
+
+function persistCurrentServerModules() {
+  const targetIp =
+    activeConnectedServerKey || (ipInput ? ipInput.value.trim() : "");
+  if (!targetIp) return;
+  if (document.body.dataset.conn !== "connected") return;
+  upsertServerProfile(targetIp, {
+    modules: getActiveEnabledScriptNames(),
+  });
+}
 
 // --- Version picker (themed combo instead of a native datalist) ---
 const versionInput = document.getElementById("version");
@@ -553,7 +662,66 @@ if (versionInput) {
     const v = versionInput.value.trim();
     if (/^auto$/i.test(v)) versionInput.value = "";
     localStorage.setItem(VERSION_STORAGE_KEY, versionInput.value.trim());
+    if (ipInput?.value.trim()) {
+      upsertServerProfile(ipInput.value.trim(), {
+        version: versionInput.value.trim(),
+      });
+    }
   });
+}
+
+const serverCombo = window.mcbpDropdown?.attachCombo(ipInput, {
+  items: [],
+  filter: true,
+  onSelect: (selectedIp) => {
+    const prof = getServerProfile(selectedIp);
+    if (prof && versionInput) {
+      versionInput.value = prof.version || "";
+      localStorage.setItem(VERSION_STORAGE_KEY, versionInput.value);
+    }
+    localStorage.setItem(LAST_SERVER_KEY, selectedIp);
+  },
+  onDelete: (deletedIp) => {
+    removeServerProfile(deletedIp);
+    if (ipInput && normalizeServerKey(ipInput.value) === normalizeServerKey(deletedIp)) {
+      ipInput.value = "";
+    }
+  },
+});
+
+function refreshServerAutocomplete() {
+  if (!serverCombo) return;
+  const profiles = loadServerProfiles();
+  serverCombo.setItems(
+    profiles.map((p) => {
+      const modCount = Array.isArray(p.modules) ? p.modules.length : 0;
+      const hintParts = [];
+      if (p.version) hintParts.push(p.version);
+      if (modCount > 0) {
+        hintParts.push(`${modCount} mod${modCount > 1 ? "s" : ""}`);
+      }
+      return {
+        value: p.ip,
+        label: p.ip,
+        hint: hintParts.join(" · ") || "saved",
+        deletable: true,
+      };
+    }),
+  );
+}
+
+if (ipInput) {
+  const lastIp = localStorage.getItem(LAST_SERVER_KEY) || "";
+  const profiles = loadServerProfiles();
+  const initialIp = lastIp || profiles[0]?.ip || "";
+  if (initialIp && !ipInput.value) {
+    ipInput.value = initialIp;
+    const prof = getServerProfile(initialIp);
+    if (prof?.version && versionInput && !versionInput.value) {
+      versionInput.value = prof.version;
+    }
+  }
+  refreshServerAutocomplete();
 }
 
 // --- Account & Connection Status ---
@@ -665,6 +833,8 @@ window.api.onConnectionState((stateInfo) => {
     : "disconnected";
 
   if (stateInfo.state === "connected") {
+    activeConnectedServerKey =
+      stateInfo.host || (ipInput ? ipInput.value.trim() : "");
     statusBadge.classList.add("status-connected");
     statusBadge.textContent = stateInfo.version
       ? `Connected · ${stateInfo.version}`
@@ -674,6 +844,7 @@ window.api.onConnectionState((stateInfo) => {
     statusBadge.classList.add("status-connecting");
     statusBadge.textContent = "Connecting…";
   } else {
+    activeConnectedServerKey = "";
     statusBadge.classList.add("status-disconnected");
     statusBadge.textContent = "Disconnected";
     if (panelMsaBanner) panelMsaBanner.hidden = true;
@@ -887,14 +1058,50 @@ function renderMinecraftFormatted(payload) {
 
 function classifyLogMessage(rawText) {
   const text = String(rawText || "");
+  if (/^AIAgent\s*\(thinking\)\s*:/i.test(text)) {
+    return {
+      tag: "AI Thought",
+      body: text.replace(/^AIAgent\s*\(thinking\)\s*:\s*/i, ""),
+      tagClass: "tag-think",
+    };
+  }
+  if (/^AIAgent\s+Plan\b/i.test(text)) {
+    const body = text.replace(/^AIAgent\s+Plan\s*:?\s*/i, "");
+    return { tag: "AI Plan", body, tagClass: "tag-plan" };
+  }
+  if (/^AIAgent\s+Queue\b/i.test(text)) {
+    const body = text.replace(/^AIAgent\s+Queue\s*:?\s*/i, "");
+    return { tag: "AI Queue", body, tagClass: "tag-plan" };
+  }
+  if (/^AIAgent\s+[▸✓✗]/i.test(text)) {
+    const isErr = /^AIAgent\s+✗/.test(text);
+    return {
+      tag: "AIAgent",
+      body: text.replace(/^AIAgent\s+/, ""),
+      tagClass: isErr ? "tag-error" : "tag-ai",
+    };
+  }
   const colonIdx = text.indexOf(":");
-  if (colonIdx > 0 && colonIdx <= 20) {
+  if (colonIdx > 0 && colonIdx <= 22) {
     const prefix = text.slice(0, colonIdx).trim();
     const rest = text.slice(colonIdx + 1).trim();
     const low = prefix.toLowerCase();
     let tagClass = "tag-info";
-    if (low.includes("error") || low.includes("fail") || low.includes("kick")) {
+    if (
+      low.includes("error") ||
+      low.includes("fail") ||
+      low.includes("kick") ||
+      /✗|failed/i.test(rest)
+    ) {
       tagClass = "tag-error";
+    } else if (low.includes("aiagent") || low.includes("chatai")) {
+      tagClass = "tag-ai";
+    } else if (low.includes("proxy")) {
+      tagClass = "tag-proxy";
+    } else if (low.includes("botting")) {
+      tagClass = "tag-botting";
+    } else if (low.includes("viaversion")) {
+      tagClass = "tag-auto";
     } else if (
       low.includes("guard") ||
       low.includes("hunt") ||
@@ -1108,12 +1315,23 @@ document
 function connectToServer() {
   const ip = document.getElementById("ip").value.trim();
   const version = document.getElementById("version").value.trim();
+  if (!ip) return;
+  localStorage.setItem(LAST_SERVER_KEY, ip);
+  localStorage.setItem(VERSION_STORAGE_KEY, version);
+  const existingProfile = getServerProfile(ip);
+  const rememberedModules = Array.isArray(existingProfile?.modules)
+    ? existingProfile.modules
+    : getActiveEnabledScriptNames();
+  upsertServerProfile(ip, { version, modules: rememberedModules });
+
   if (onlineMode) {
     window.api.serverConnect({
       ip,
       version,
       username: accountEmail || accountMcName,
       auth: "microsoft",
+      rememberedModules,
+      useProxy: mainProxyEnabled,
     });
   } else {
     window.api.serverConnect({
@@ -1121,6 +1339,8 @@ function connectToServer() {
       version,
       username: accountUsername,
       auth: "offline",
+      rememberedModules,
+      useProxy: mainProxyEnabled,
     });
   }
 }
@@ -1150,9 +1370,11 @@ document.getElementById("open-custom-scripts").addEventListener("click", () => {
 
 // --- Scripts Grid, Search, Persistent Options & Stop All ---
 const actionsContainer = document.querySelector(".div-actions");
+const controlAiContainer = document.getElementById("control-ai-scripts");
 const scriptSearchInput = document.getElementById("script-search");
 const stopAllScriptsBtn = document.getElementById("stop-all-scripts");
 const SCRIPT_OPTS_STORAGE_KEY = "mcbp-script-options-v1";
+const AI_CONTROL_SCRIPTS = new Set(["chatai", "aiagent"]);
 
 const DEFAULT_SCRIPT_OPTIONS = {
   "hostiles-Guard": "on",
@@ -1231,28 +1453,34 @@ function saveScriptOptionValue(fieldId, val) {
 if (scriptSearchInput) {
   scriptSearchInput.addEventListener("input", () => {
     const q = scriptSearchInput.value.trim().toLowerCase();
-    document.querySelectorAll(".script-container").forEach((card) => {
-      const name = (card.getAttribute("data-script") || "").toLowerCase();
-      card.style.display = !q || name.includes(q) ? "" : "none";
-    });
+    document
+      .querySelectorAll(".div-actions .script-container")
+      .forEach((card) => {
+        const name = (card.getAttribute("data-script") || "").toLowerCase();
+        card.style.display = !q || name.includes(q) ? "" : "none";
+      });
   });
 }
 
 if (stopAllScriptsBtn) {
   stopAllScriptsBtn.addEventListener("click", () => {
-    document.querySelectorAll(".script-name-active").forEach((el) => {
-      const scriptName = el.getAttribute("data-script");
-      if (scriptName) {
-        window.api.onScriptToggleOff(scriptName);
-      }
-      el.classList.remove("script-name-active");
-    });
+    document
+      .querySelectorAll(".div-actions .script-name-active")
+      .forEach((el) => {
+        const scriptName = el.getAttribute("data-script");
+        if (scriptName) {
+          window.api.onScriptToggleOff(scriptName);
+        }
+        el.classList.remove("script-name-active");
+      });
     updateActiveScriptsBadge();
+    persistCurrentServerModules();
   });
 }
 
 window.api.onClearScripts(() => {
   if (actionsContainer) actionsContainer.innerHTML = "";
+  if (controlAiContainer) controlAiContainer.innerHTML = "";
   updateActiveScriptsBadge();
 });
 
@@ -1264,6 +1492,7 @@ if (window.api && typeof window.api.onScriptState === "function") {
     if (card) {
       card.classList.toggle("script-name-active", Boolean(active));
       updateActiveScriptsBadge();
+      persistCurrentServerModules();
     }
   });
 }
@@ -1361,11 +1590,20 @@ window.api.onScript((html, scriptId, meta = {}) => {
         toggleEl.classList.add("script-name-active");
       }
       updateActiveScriptsBadge();
+      persistCurrentServerModules();
     });
   }
 
+  // Place AI scripts (ChatAI, AIAgent) in the Control tab only so they don't mix with normal modules
+  const isAiControlScript =
+    Boolean(meta?.aiSync) || AI_CONTROL_SCRIPTS.has(scriptName.toLowerCase());
+  const targetParent =
+    isAiControlScript && controlAiContainer
+      ? controlAiContainer
+      : actionsContainer;
+
   // Re-registered script (saved from Studio): swap the card in place.
-  const existing = actionsContainer.querySelector(
+  const existing = targetParent.querySelector(
     `.script-container[data-script="${CSS.escape(scriptName)}"]`,
   );
   if (existing) {
@@ -1374,7 +1612,7 @@ window.api.onScript((html, scriptId, meta = {}) => {
     card.classList.add("script-flash");
     setTimeout(() => card.classList.remove("script-flash"), 1200);
   } else {
-    actionsContainer.appendChild(card);
+    targetParent.appendChild(card);
   }
   if (meta?.aiSync && latestOllamaStatus)
     syncAiScriptFields(latestOllamaStatus);
@@ -2730,13 +2968,24 @@ function renderOllamaStatus(st) {
     const catalog = Array.isArray(hw.catalog) ? hw.catalog : [];
     const merged = [];
     const seen = new Set();
+    const BADGE_META = {
+      logic: { icon: "🧠", label: "Logic", cls: "is-logic" },
+      accuracy: { icon: "🎯", label: "Accuracy", cls: "is-accuracy" },
+      think: { icon: "💭", label: "Thinking", cls: "is-think" },
+      code: { icon: "💻", label: "Coding", cls: "is-code" },
+      chat: { icon: "💬", label: "Chat", cls: "is-chat" },
+      fast: { icon: "⚡", label: "Fast", cls: "is-fast" },
+    };
+
     for (const c of catalog) {
       seen.add(c.name);
       merged.push({
         name: c.name,
+        label: c.label || c.name,
         desc: c.desc,
         sizeLabel: c.sizeLabel,
         tags: modelTags(c),
+        badges: Array.isArray(c.badges) ? c.badges.slice(0, 3) : [],
         isRecommended: Boolean(c.isRecommended),
         isInstalled:
           installedSet.has(c.name) || installedSet.has(`${c.name}:latest`),
@@ -2749,9 +2998,11 @@ function renderOllamaStatus(st) {
       ) {
         merged.push({
           name: inst.name,
+          label: inst.name,
           desc: "Installed local Ollama model",
           sizeLabel: inst.sizeLabel,
           tags: [],
+          badges: [],
           isRecommended: false,
           isInstalled: true,
         });
@@ -2770,16 +3021,19 @@ function renderOllamaStatus(st) {
         const isCurrent = isCode
           ? m.name === scriptModel
           : m.name === activeModel;
+        const capBadges = (m.badges || [])
+          .slice(0, 3)
+          .map((bKey) => {
+            const bm = BADGE_META[bKey];
+            if (!bm) return "";
+            return `<span class="ai-model-badge ${bm.cls}" title="${escapeHtml(bm.label)}">${bm.icon} ${escapeHtml(bm.label)}</span>`;
+          })
+          .join("");
         const pills = [
           m.isRecommended
-            ? `<span class="ai-model-badge is-rec">Recommended</span>`
+            ? `<span class="ai-model-badge is-rec" title="Recommended for your hardware">★ Pick</span>`
             : "",
-          m.tags.includes("tools")
-            ? `<span class="ai-model-badge is-tools" title="Supports AI Agent actions">Actions</span>`
-            : "",
-          m.tags.includes("code")
-            ? `<span class="ai-model-badge is-code" title="Good at writing scripts (Studio)">Code</span>`
-            : "",
+          capBadges,
           m.isInstalled
             ? `<span class="ai-model-badge is-installed">Installed</span>`
             : `<span class="ai-model-badge">${escapeHtml(m.sizeLabel)}</span>`,
@@ -3020,6 +3274,395 @@ if (window.api?.onOllamaProgress) {
 }
 
 refreshOllamaUi();
+
+// --- AI Brain ("Mózg" AI) Live Status UI ---
+const aiBrainGoalBadge = $id("ai-brain-goal-badge");
+const aiBrainStep = $id("ai-brain-step");
+const aiBrainPlanList = $id("ai-brain-plan-list");
+const aiBrainThoughtsList = $id("ai-brain-thoughts-list");
+
+function renderAiBrainStatus(snap) {
+  if (!snap) return;
+  if (aiBrainGoalBadge) {
+    const goalText = snap.activeGoal || "Idle";
+    aiBrainGoalBadge.textContent = `Goal: ${goalText}`;
+    aiBrainGoalBadge.classList.toggle(
+      "status-connected",
+      goalText !== "Idle",
+    );
+  }
+  if (aiBrainStep) {
+    aiBrainStep.textContent = snap.activeStep || "No active step";
+  }
+  if (aiBrainPlanList) {
+    const planItems = [];
+    if (Array.isArray(snap.planSteps) && snap.planSteps.length > 0) {
+      for (const st of snap.planSteps) {
+        const icon =
+          st.status === "done"
+            ? "✓"
+            : st.status === "active"
+              ? "▸"
+              : "·";
+        planItems.push(
+          `<div class="radar-item"><div class="radar-item-info"><span class="radar-entity-icon">${icon}</span><span class="radar-item-name">${escapeHtml(st.label)}</span></div></div>`,
+        );
+      }
+    }
+    if (Array.isArray(snap.recentActions) && snap.recentActions.length > 0) {
+      for (const act of snap.recentActions.slice(-6).reverse()) {
+        const icon = act.failed ? "✗" : "⚙";
+        planItems.push(
+          `<div class="radar-item" title="${escapeHtml(act.result)}"><div class="radar-item-info"><span class="radar-entity-icon">${icon}</span><span class="radar-item-name">${escapeHtml(act.tool)} → ${escapeHtml(act.result.slice(0, 70))}</span></div></div>`,
+        );
+      }
+    }
+    aiBrainPlanList.innerHTML = planItems.length
+      ? planItems.join("")
+      : `<p class="radar-empty">No active plan steps</p>`;
+  }
+  if (aiBrainThoughtsList) {
+    const rows = [];
+    if (Array.isArray(snap.problemHistory) && snap.problemHistory.length > 0) {
+      for (const p of snap.problemHistory.slice(-2).reverse()) {
+        const fixText = p.fix || p.diagnosis || p.error || "";
+        rows.push(
+          `<div class="radar-item" title="${escapeHtml(fixText)}"><div class="radar-item-info"><span class="radar-entity-icon">🛠</span><span class="radar-item-name">${escapeHtml(p.tool)}: ${escapeHtml(fixText.slice(0, 85))}</span></div></div>`,
+        );
+      }
+    }
+    if (Array.isArray(snap.recentThoughts) && snap.recentThoughts.length > 0) {
+      for (const th of snap.recentThoughts.slice(-4).reverse()) {
+        rows.push(
+          `<div class="radar-item"><div class="radar-item-info"><span class="radar-entity-icon">💭</span><span class="radar-item-name">${escapeHtml(th.text)}</span></div></div>`,
+        );
+      }
+    }
+    if (Array.isArray(snap.landmarks) && snap.landmarks.length > 0) {
+      for (const lm of snap.landmarks.slice(0, 4)) {
+        rows.push(
+          `<div class="radar-item"><div class="radar-item-info"><span class="radar-entity-icon">📍</span><span class="radar-item-name">${escapeHtml(lm.label)} (${lm.x}, ${lm.y}, ${lm.z})</span></div></div>`,
+        );
+      }
+    }
+    aiBrainThoughtsList.innerHTML = rows.length
+      ? rows.join("")
+      : `<p class="radar-empty">Waiting for AI activity…</p>`;
+  }
+}
+
+async function refreshAiBrainUi() {
+  if (!window.api?.aiBrainGetStatus) return;
+  try {
+    renderAiBrainStatus(await window.api.aiBrainGetStatus());
+  } catch (_) {}
+}
+
+if (window.api?.onAiBrainStatus) {
+  window.api.onAiBrainStatus((snap) => renderAiBrainStatus(snap));
+}
+refreshAiBrainUi();
+
+// --- Botting Swarm & Proxy Pool / Free Proxy Auto-Tester UI ---
+const mainProxyToggle = $id("main-proxy-toggle");
+const bottingTabCount = $id("botting-tab-count");
+const bottingSummaryBadge = $id("botting-summary-badge");
+const bottingSpawnBtn = $id("botting-spawn-btn");
+const bottingStopAllBtn = $id("botting-stop-all-btn");
+const bottingPrefixInput = $id("botting-prefix-input");
+const bottingCountInput = $id("botting-count-input");
+const bottingDelayInput = $id("botting-delay-input");
+const bottingProxyMode = $id("botting-proxy-mode");
+const bottingTargetInput = $id("botting-target-input");
+const bottingBotsList = $id("botting-bots-list");
+
+const proxySummaryBadge = $id("proxy-summary-badge");
+const proxyFetchFreeBtn = $id("proxy-fetch-free-btn");
+const proxyTestAllBtn = $id("proxy-test-all-btn");
+const proxyClearDeadBtn = $id("proxy-clear-dead-btn");
+const proxyProgressBox = $id("proxy-progress-box");
+const proxyProgressText = $id("proxy-progress-text");
+const proxyAddInput = $id("proxy-add-input");
+const proxyAddBtn = $id("proxy-add-btn");
+const proxyListEl = $id("proxy-list");
+
+window.mcbpDropdown?.enhanceSelect(bottingProxyMode);
+
+function updateMainProxyToggleUi(enabled, workingCount = 0) {
+  mainProxyEnabled = Boolean(enabled);
+  if (!mainProxyToggle) return;
+  mainProxyToggle.classList.toggle("status-connected", mainProxyEnabled);
+  mainProxyToggle.textContent = mainProxyEnabled
+    ? `Proxy: on${workingCount ? ` (${workingCount})` : ""}`
+    : "Proxy: off";
+}
+
+if (mainProxyToggle) {
+  mainProxyToggle.addEventListener("click", async () => {
+    const next = !mainProxyEnabled;
+    updateMainProxyToggleUi(next);
+    if (window.api?.proxySaveConfig) {
+      const st = await window.api.proxySaveConfig({ enabled: next });
+      renderProxyStatus(st);
+    }
+  });
+}
+
+function renderProxyStatus(st) {
+  if (!st) return;
+  const proxies = Array.isArray(st.proxies) ? st.proxies : [];
+  const working = Number(st.workingCount) || 0;
+  updateMainProxyToggleUi(st.config?.enabled, working);
+
+  if (proxySummaryBadge) {
+    proxySummaryBadge.textContent = `${working} working / ${proxies.length} total`;
+    proxySummaryBadge.classList.toggle("status-connected", working > 0);
+  }
+  if (!proxyListEl) return;
+  if (!proxies.length) {
+    proxyListEl.innerHTML = `<p class="radar-empty">No proxies loaded. Click Find Free Proxies then Auto-Test Pool.</p>`;
+    return;
+  }
+  proxyListEl.innerHTML = proxies
+    .slice(0, 80)
+    .map((p) => {
+      const statusBadge =
+        p.status === "working"
+          ? `<span class="ai-model-badge is-installed">${p.latencyMs}ms · OK</span>`
+          : p.status === "dead"
+            ? `<span class="ai-model-badge is-warn">Dead</span>`
+            : `<span class="ai-model-badge">Untested</span>`;
+      const protoBadge = `<span class="ai-model-badge is-code">${escapeHtml(String(p.protocol || "socks5").toUpperCase())}</span>`;
+      return `
+        <div class="radar-item">
+          <div class="radar-item-info">
+            <span class="radar-item-name">${escapeHtml(p.host)}:${escapeHtml(String(p.port))}</span>
+            ${protoBadge}
+            ${statusBadge}
+          </div>
+          <div class="radar-item-actions">
+            <button type="button" class="radar-btn radar-btn-danger" data-proxy-del="${escapeHtml(p.id)}" title="Remove proxy">×</button>
+          </div>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+if (proxyListEl) {
+  proxyListEl.addEventListener("click", async (e) => {
+    const delBtn = e.target.closest("[data-proxy-del]");
+    if (delBtn && window.api?.proxyRemove) {
+      const id = delBtn.getAttribute("data-proxy-del");
+      const st = await window.api.proxyRemove(id);
+      renderProxyStatus(st);
+    }
+  });
+}
+
+if (proxyAddBtn && proxyAddInput) {
+  const addProxyNow = async () => {
+    const raw = proxyAddInput.value.trim();
+    if (!raw || !window.api?.proxyAdd) return;
+    const res = await window.api.proxyAdd(raw);
+    proxyAddInput.value = "";
+    if (res?.status) renderProxyStatus(res.status);
+  };
+  proxyAddBtn.addEventListener("click", addProxyNow);
+  proxyAddInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addProxyNow();
+    }
+  });
+}
+
+if (proxyFetchFreeBtn) {
+  proxyFetchFreeBtn.addEventListener("click", async () => {
+    if (!window.api?.proxyFetchFree) return;
+    proxyFetchFreeBtn.disabled = true;
+    proxyFetchFreeBtn.textContent = "Searching…";
+    if (proxyProgressBox) proxyProgressBox.hidden = false;
+    try {
+      await window.api.proxyFetchFree();
+      if (window.api?.proxyGetStatus) {
+        renderProxyStatus(await window.api.proxyGetStatus());
+      }
+    } finally {
+      proxyFetchFreeBtn.disabled = false;
+      proxyFetchFreeBtn.textContent = "Find Free Proxies";
+      setTimeout(() => {
+        if (proxyProgressBox) proxyProgressBox.hidden = true;
+      }, 1200);
+    }
+  });
+}
+
+if (proxyTestAllBtn) {
+  proxyTestAllBtn.addEventListener("click", async () => {
+    if (!window.api?.proxyTestAll) return;
+    proxyTestAllBtn.disabled = true;
+    proxyTestAllBtn.textContent = "Testing…";
+    if (proxyProgressBox) proxyProgressBox.hidden = false;
+    try {
+      await window.api.proxyTestAll({
+        serverIp: ipInput ? ipInput.value.trim() : "",
+        pruneDead: true,
+      });
+      if (window.api?.proxyGetStatus) {
+        renderProxyStatus(await window.api.proxyGetStatus());
+      }
+    } finally {
+      proxyTestAllBtn.disabled = false;
+      proxyTestAllBtn.textContent = "Auto-Test Pool";
+      setTimeout(() => {
+        if (proxyProgressBox) proxyProgressBox.hidden = true;
+      }, 1500);
+    }
+  });
+}
+
+if (proxyClearDeadBtn) {
+  proxyClearDeadBtn.addEventListener("click", async () => {
+    if (!window.api?.proxyClearDead) return;
+    const st = await window.api.proxyClearDead();
+    renderProxyStatus(st);
+  });
+}
+
+if (window.api?.onProxyStatus) {
+  window.api.onProxyStatus((st) => renderProxyStatus(st));
+}
+if (window.api?.onProxyProgress) {
+  window.api.onProxyProgress((prog) => {
+    if (!prog || !proxyProgressBox) return;
+    proxyProgressBox.hidden = false;
+    if (proxyProgressText && prog.message) {
+      proxyProgressText.textContent = prog.message;
+    }
+  });
+}
+
+function renderBottingStatus(st) {
+  if (!st) return;
+  const bots = Array.isArray(st.bots) ? st.bots : [];
+  const online = Number(st.onlineCount) || 0;
+  const total = Number(st.totalCount) || 0;
+  if (bottingSummaryBadge) {
+    bottingSummaryBadge.textContent = `${online} / ${total} online`;
+    bottingSummaryBadge.classList.toggle("status-connected", online > 0);
+  }
+  if (bottingTabCount) {
+    bottingTabCount.hidden = total === 0;
+    bottingTabCount.textContent = String(online);
+  }
+  if (!bottingBotsList) return;
+  if (!bots.length) {
+    bottingBotsList.innerHTML = `<p class="radar-empty">No swarm bots active. Configure prefix &amp; count above and click Spawn Swarm.</p>`;
+    return;
+  }
+  bottingBotsList.innerHTML = bots
+    .map((b) => {
+      const stateCls =
+        b.state === "online"
+          ? "is-installed"
+          : b.state === "connecting" || b.state === "healing"
+            ? "is-rec"
+            : "is-warn";
+      const posText = b.position
+        ? `(${b.position.x}, ${b.position.y}, ${b.position.z})`
+        : "";
+      const proxyLabel = b.proxy ? `🌐 ${escapeHtml(b.proxy)}` : "Direct";
+      return `
+        <div class="radar-item" title="${escapeHtml(b.lastError || b.task || "")}">
+          <div class="radar-item-info">
+            <span class="radar-entity-icon">🤖</span>
+            <span class="radar-item-name">${escapeHtml(b.username)}</span>
+            <span class="ai-model-badge ${stateCls}">${escapeHtml(b.state)}</span>
+            <span class="ai-model-badge">❤ ${b.health}/20</span>
+            <span class="ai-model-badge">${proxyLabel}</span>
+            <span class="radar-dist">${escapeHtml(b.task || "idle")} ${escapeHtml(posText)}</span>
+          </div>
+          <div class="radar-item-actions">
+            <button type="button" class="radar-btn radar-btn-danger" data-bot-disc="${escapeHtml(b.id)}" title="Disconnect ${escapeHtml(b.username)}">Leave</button>
+          </div>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+if (bottingBotsList) {
+  bottingBotsList.addEventListener("click", async (e) => {
+    const discBtn = e.target.closest("[data-bot-disc]");
+    if (discBtn && window.api?.bottingDisconnectOne) {
+      const id = discBtn.getAttribute("data-bot-disc");
+      const st = await window.api.bottingDisconnectOne(id);
+      renderBottingStatus(st);
+    }
+  });
+}
+
+if (bottingSpawnBtn) {
+  bottingSpawnBtn.addEventListener("click", async () => {
+    if (!window.api?.bottingSpawn) return;
+    bottingSpawnBtn.disabled = true;
+    bottingSpawnBtn.textContent = "Spawning…";
+    try {
+      const res = await window.api.bottingSpawn({
+        ip: ipInput ? ipInput.value.trim() : "localhost",
+        version: versionInput ? versionInput.value.trim() : "",
+        prefix: bottingPrefixInput ? bottingPrefixInput.value.trim() : "MCBP_Bot",
+        count: Number(bottingCountInput?.value) || 3,
+        delayMs: Number(bottingDelayInput?.value) || 1200,
+        proxyMode: bottingProxyMode ? bottingProxyMode.value : "direct",
+        autoHeal: true,
+      });
+      if (res?.status) renderBottingStatus(res.status);
+    } finally {
+      bottingSpawnBtn.disabled = false;
+      bottingSpawnBtn.textContent = "Spawn Swarm";
+    }
+  });
+}
+
+if (bottingStopAllBtn) {
+  bottingStopAllBtn.addEventListener("click", async () => {
+    if (!window.api?.bottingStopAll) return;
+    const res = await window.api.bottingStopAll();
+    if (res?.status) renderBottingStatus(res.status);
+  });
+}
+
+document.querySelectorAll("[data-swarm-action]").forEach((btn) => {
+  btn.addEventListener("click", async () => {
+    if (!window.api?.bottingAction) return;
+    const action = btn.getAttribute("data-swarm-action");
+    const targetVal = bottingTargetInput ? bottingTargetInput.value.trim() : "";
+    const res = await window.api.bottingAction({
+      action,
+      target: targetVal,
+      text: targetVal,
+    });
+    if (res?.status) renderBottingStatus(res.status);
+  });
+});
+
+if (window.api?.onBottingStatus) {
+  window.api.onBottingStatus((st) => renderBottingStatus(st));
+}
+
+async function refreshBottingAndProxyUi() {
+  try {
+    if (window.api?.proxyGetStatus) {
+      renderProxyStatus(await window.api.proxyGetStatus());
+    }
+    if (window.api?.bottingGetStatus) {
+      renderBottingStatus(await window.api.bottingGetStatus());
+    }
+  } catch (_) {}
+}
+refreshBottingAndProxyUi();
 
 // --- Script Studio (templates, Mineflayer docs, local AI generator) ---
 const studioPicker = $id("studio-template-select");

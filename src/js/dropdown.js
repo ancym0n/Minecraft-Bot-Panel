@@ -33,7 +33,7 @@
     }
   }
 
-  function buildMenu(items, activeValue, onPick) {
+  function buildMenu(items, activeValue, onPick, onDelete = null) {
     const menu = document.createElement("div");
     menu.className = "dd-menu";
     menu.setAttribute("role", "listbox");
@@ -68,7 +68,21 @@
         hint.textContent = item.hint;
         opt.appendChild(hint);
       }
+      if (item.deletable && typeof onDelete === "function") {
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "dd-delete";
+        del.title = item.deleteTitle || `Remove ${item.label || item.value}`;
+        del.textContent = "×";
+        del.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onDelete(item);
+        });
+        opt.appendChild(del);
+      }
       opt.addEventListener("mousedown", (e) => {
+        if (e.target.closest(".dd-delete")) return;
         e.preventDefault();
         onPick(item);
       });
@@ -89,12 +103,25 @@
     opts[idx].scrollIntoView({ block: "nearest" });
   }
 
-  function openMenu(host, anchor, items, activeValue, onPick, onClose) {
+  function openMenu(
+    host,
+    anchor,
+    items,
+    activeValue,
+    onPick,
+    onClose,
+    onDelete = null,
+  ) {
     closeOpen();
-    const menu = buildMenu(items, activeValue, (item) => {
-      closeOpen();
-      onPick(item);
-    });
+    const menu = buildMenu(
+      items,
+      activeValue,
+      (item) => {
+        closeOpen();
+        onPick(item);
+      },
+      onDelete,
+    );
     document.body.appendChild(menu);
     host.classList.add("dd-open");
     openState = { menu, host, anchor, onClose };
@@ -210,7 +237,10 @@
   }
 
   // Free-text input with a themed suggestion list (replaces <datalist>).
-  function attachCombo(input, { items = [], emptyValue = "" } = {}) {
+  function attachCombo(
+    input,
+    { items = [], emptyValue = "", onDelete = null, onSelect = null } = {},
+  ) {
     if (!input || input._combo) return input?._combo;
     let allItems = items;
     const host = document.createElement("div");
@@ -230,6 +260,15 @@
     chev.appendChild(icon);
     host.appendChild(chev);
 
+    const handleDelete =
+      typeof onDelete === "function"
+        ? (item) => {
+            onDelete(item);
+            if (allItems.length > 0) show(false);
+            else closeOpen();
+          }
+        : null;
+
     const show = (filter) => {
       const q = filter ? input.value.trim().toLowerCase() : "";
       const list = q
@@ -242,11 +281,20 @@
           )
         : allItems;
       const current = input.value.trim() || emptyValue;
-      openMenu(host, input, list, current, (item) => {
-        input.value = item.value === emptyValue ? "" : item.value;
-        input.dispatchEvent(new Event("input", { bubbles: true }));
-        input.dispatchEvent(new Event("change", { bubbles: true }));
-      });
+      openMenu(
+        host,
+        input,
+        list,
+        current,
+        (item) => {
+          input.value = item.value === emptyValue ? "" : item.value;
+          if (typeof onSelect === "function") onSelect(item);
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+          input.dispatchEvent(new Event("change", { bubbles: true }));
+        },
+        null,
+        handleDelete,
+      );
     };
 
     chev.addEventListener("mousedown", (e) => {
