@@ -934,6 +934,13 @@ function injectBaritonePathfinder(bot) {
       !onClimbable &&
       (!sharpTurnAhead || nextPoint.parkour);
 
+    const canUsePhysicsSim = Boolean(
+      physics &&
+        physics.physics &&
+        bot.world &&
+        bot.controlState &&
+        Array.isArray(bot.inventory?.slots),
+    );
     if (bot.entity.isInWater) {
       const ceilingBlocked = Boolean(
         headAboveBlock && headAboveBlock.boundingBox === "block",
@@ -949,7 +956,7 @@ function injectBaritonePathfinder(bot) {
         bot.setControlState("jump", false);
         bot.setControlState("forward", Math.hypot(dx, dz) > 0.25);
       }
-    } else if (physics) {
+    } else if (canUsePhysicsSim) {
       if (canSprintNow && physics.canStraightLine(path, true)) {
         bot.setControlState("jump", false);
         bot.setControlState("sprint", true);
