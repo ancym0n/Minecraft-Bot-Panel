@@ -2249,6 +2249,62 @@ input[type="checkbox"]:checked::after {
   gap: 0.5rem;
 }
 
+.console-viewport-wrap {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.console-jump-live {
+  position: absolute;
+  right: 0.75rem;
+  bottom: 0.65rem;
+  z-index: 4;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.32rem 0.7rem;
+  font-family: inherit;
+  font-size: 0.72rem;
+  font-weight: 800;
+  color: #123a28;
+  background-color: var(--green-color);
+  border: 0;
+  border-radius: 999px;
+  box-shadow: 0 6px 16px -4px rgba(0, 0, 0, 0.55);
+  transition:
+    transform 0.16s var(--spring-ease),
+    opacity 0.16s ease;
+}
+
+.console-jump-live:hover {
+  transform: translateY(-1px);
+}
+
+.console-jump-live[hidden] {
+  display: none !important;
+}
+
+.console-history-divider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.18rem 0.5rem;
+  margin: 0.15rem 0;
+  font-size: 0.66rem;
+  font-weight: 800;
+  color: var(--main-color);
+  background-color: rgba(145, 113, 248, 0.08);
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  text-align: center;
+}
+
 .pre-logs,
 .pre-chat,
 pre {

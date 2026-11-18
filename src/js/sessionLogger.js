@@ -200,6 +200,130 @@ class SessionLogger {
     }
   }
 
+  parseEntriesFromFile(filePath, type = "logs") {
+    if (!filePath || !fs.existsSync(filePath)) return [];
+    try {
+      const content = fs.readFileSync(filePath, "utf8");
+      const lines = content.split(/\r?\n/);
+      const fileName = path.basename(filePath);
+      const entries = [];
+      for (const line of lines) {
+        const m = line.match(
+          /^\|\s*`([^`]+)`\s*\|\s*\*\*([^*]+)\*\*\s*\|\s*([^|]*?)\s*\|\s*(.*?)\s*\|$/,
+        );
+        if (!m) continue;
+        const rawTime = m[1].trim();
+        const time = rawTime.split(".")[0];
+        const category = m[2].trim();
+        const event = m[3].replace(/\\\|/g, "|").trim();
+        const details = m[4].replace(/\\\|/g, "|").trim();
+        const catLower = category.toLowerCase();
+
+        if (type === "chat") {
+          if (catLower === "chat") {
+            entries.push({
+              time,
+              raw: details || event,
+              payload: details || event,
+              sourceFile: fileName,
+            });
+          } else if (catLower === "ai reply") {
+            entries.push({
+              time,
+              raw: `${event}: ${details}`,
+              payload: `${event}: ${details}`,
+              sourceFile: fileName,
+            });
+          }
+        } else {
+          if (catLower === "console") {
+            entries.push({
+              time,
+              raw: details || event,
+              sourceFile: fileName,
+            });
+          } else if (
+            catLower !== "chat" &&
+            catLower !== "ui click" &&
+            catLower !== "system"
+          ) {
+            entries.push({
+              time,
+              raw: `${category}: ${event}${details ? ` — ${details}` : ""}`,
+              sourceFile: fileName,
+            });
+          }
+        }
+      }
+      return entries;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  readHistoricalEntries({
+    type = "logs",
+    beforeIndex = null,
+    fileIndex = 0,
+    limit = 100,
+    filter = "",
+  } = {}) {
+    this.flush();
+    const files = this.listLogFiles(30);
+    if (!files.length) {
+      return {
+        entries: [],
+        nextBeforeIndex: 0,
+        nextFileIndex: 0,
+        hasMore: false,
+        sourceFile: "",
+      };
+    }
+
+    const q = String(filter || "")
+      .trim()
+      .toLowerCase();
+    let fIdx = Math.max(0, Number(fileIndex) || 0);
+    let bIdx =
+      beforeIndex !== null && beforeIndex !== undefined
+        ? Number(beforeIndex)
+        : null;
+    const collected = [];
+    let activeFile = "";
+
+    while (fIdx < files.length && collected.length < limit) {
+      const fileObj = files[fIdx];
+      let all = this.parseEntriesFromFile(fileObj.path, type);
+      if (q) {
+        all = all.filter((e) => String(e.raw || "").toLowerCase().includes(q));
+      }
+      const end = bIdx !== null ? Math.min(bIdx, all.length) : all.length;
+      const needed = limit - collected.length;
+      const start = Math.max(0, end - needed);
+      const slice = all.slice(start, end);
+      if (slice.length) {
+        collected.unshift(...slice);
+        activeFile = fileObj.name;
+      }
+      if (start > 0) {
+        bIdx = start;
+        break;
+      } else {
+        fIdx += 1;
+        bIdx = null;
+      }
+    }
+
+    const hasMore = fIdx < files.length && (bIdx === null || bIdx > 0);
+    return {
+      entries: collected,
+      nextBeforeIndex: bIdx ?? 0,
+      nextFileIndex: fIdx,
+      hasMore,
+      sourceFile: activeFile || files[Math.min(fIdx, files.length - 1)]?.name || "",
+    };
+  }
+
   getStatus() {
     return {
       initialized: this.initialized,

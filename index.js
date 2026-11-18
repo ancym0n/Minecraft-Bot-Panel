@@ -4531,6 +4531,10 @@ function registerIpcHandlers() {
   // --- Session Markdown Logger IPC Handlers ---
   ipcMain.handle("session-log-get-status", () => sessionLogger.getStatus());
 
+  ipcMain.handle("session-log-read-history", (_event, payload = {}) =>
+    sessionLogger.readHistoricalEntries(payload),
+  );
+
   ipcMain.on("open-session-log", (_event, filePath) => {
     const target = filePath || sessionLogger.currentFilePath;
     sessionLogger.flush();

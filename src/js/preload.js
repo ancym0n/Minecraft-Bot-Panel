@@ -182,6 +182,8 @@ contextBridge.exposeInMainWorld("api", {
     onChannel("studio-gen-progress", (_e, prog) => cb(prog)),
   // Session Markdown Logger methods
   sessionLogGetStatus: () => ipcRenderer.invoke("session-log-get-status"),
+  sessionLogReadHistory: (payload) =>
+    ipcRenderer.invoke("session-log-read-history", payload || {}),
   openSessionLog: (filePath) =>
     ipcRenderer.send("open-session-log", filePath || ""),
   openLogsFolder: () => ipcRenderer.send("open-logs-folder"),

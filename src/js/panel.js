@@ -855,13 +855,16 @@ window.api.onConnectionState((stateInfo) => {
   }
 });
 
-// --- Logs & Chat (with full Minecraft color & style formatting) ---
+// --- Logs & Chat (windowed virtual viewport + real-time file history pagination) ---
 const preLogsEl = document.querySelector(".pre-logs");
 const preChatEl = document.querySelector(".pre-chat");
 const logFilterInput = document.getElementById("log-filter");
 const chatFilterInput = document.getElementById("chat-filter");
-const MAX_LOG_LINES = 320;
-const MAX_CHAT_LINES = 320;
+const logsJumpLiveBtn = document.getElementById("logs-jump-live");
+const chatJumpLiveBtn = document.getElementById("chat-jump-live");
+const VIEWPORT_WINDOW_SIZE = 120;
+const PAGE_STEP_SIZE = 55;
+const MAX_MEMORY_ENTRIES = 12000;
 const chatHistory = [];
 let chatHistoryIndex = -1;
 
@@ -1137,77 +1140,383 @@ function isNearBottom(el) {
   return el.scrollHeight - el.scrollTop - el.clientHeight <= 48;
 }
 
-function applyLogFilterToLine(lineEl) {
-  if (!logFilterInput || !lineEl) return;
-  const q = logFilterInput.value.trim().toLowerCase();
-  if (!q) {
-    lineEl.style.display = "";
-    return;
-  }
-  const raw = (lineEl.getAttribute("data-raw") || "").toLowerCase();
-  lineEl.style.display = raw.includes(q) ? "" : "none";
-}
-
-function applyChatFilterToLine(lineEl) {
-  if (!chatFilterInput || !lineEl) return;
-  const q = chatFilterInput.value.trim().toLowerCase();
-  if (!q) {
-    lineEl.style.display = "";
-    return;
-  }
-  const raw = (lineEl.getAttribute("data-raw") || "").toLowerCase();
-  lineEl.style.display = raw.includes(q) ? "" : "none";
-}
-
-if (logFilterInput) {
-  logFilterInput.addEventListener("input", () => {
-    if (!preLogsEl) return;
-    preLogsEl.querySelectorAll(".log-line").forEach(applyLogFilterToLine);
-  });
-}
-
-if (chatFilterInput) {
-  chatFilterInput.addEventListener("input", () => {
-    if (!preChatEl) return;
-    preChatEl.querySelectorAll(".chat-line").forEach(applyChatFilterToLine);
-  });
-}
-
-window.api.onLog((text) => {
-  if (!preLogsEl) return;
-  const raw = String(text || "");
-  const shouldScroll = isNearBottom(preLogsEl);
-  const { tag, body, tagClass } = classifyLogMessage(raw);
-
+function buildLogRowElement(entry) {
   const row = document.createElement("div");
   row.className = "log-line";
-  row.setAttribute("data-raw", raw);
-  const tagHtml = tag
-    ? `<span class="log-tag ${tagClass}">${escapeHtml(tag)}</span>`
-    : "";
-  row.innerHTML = `<time>${formatTime()}</time>${tagHtml}<span class="log-msg">${renderMinecraftFormatted(body)}</span>`;
-  applyLogFilterToLine(row);
-  preLogsEl.appendChild(row);
+  row.setAttribute("data-raw", entry.raw);
+  if (!entry.html) {
+    const { tag, body, tagClass } = classifyLogMessage(entry.raw);
+    const tagHtml = tag
+      ? `<span class="log-tag ${tagClass}">${escapeHtml(tag)}</span>`
+      : "";
+    entry.html = `<time>${escapeHtml(entry.time)}</time>${tagHtml}<span class="log-msg">${renderMinecraftFormatted(body)}</span>`;
+  }
+  row.innerHTML = entry.html;
+  return row;
+}
 
-  while (preLogsEl.children.length > MAX_LOG_LINES) {
-    preLogsEl.removeChild(preLogsEl.firstElementChild);
+function buildChatRowElement(entry) {
+  const row = document.createElement("div");
+  row.className = "chat-line";
+  row.setAttribute("data-raw", entry.raw);
+  if (!entry.html) {
+    entry.html = `<time>${escapeHtml(entry.time)}</time><span class="chat-msg">${renderMinecraftFormatted(entry.payload)}</span>`;
+  }
+  row.innerHTML = entry.html;
+  return row;
+}
+
+function createVirtualStream({
+  type,
+  container,
+  filterInput,
+  jumpBtn,
+  buildRow,
+}) {
+  const state = {
+    entries: [],
+    filterQuery: "",
+    windowEnd: 0,
+    pinnedLive: true,
+    unseenCount: 0,
+    diskCursor: {
+      beforeIndex: null,
+      fileIndex: 0,
+      hasMore: true,
+      loading: false,
+      initialized: false,
+    },
+    pendingIncoming: [],
+    rafId: null,
+  };
+
+  function getFiltered() {
+    if (!state.filterQuery) return state.entries;
+    const q = state.filterQuery;
+    return state.entries.filter((e) => e.rawLower.includes(q));
   }
 
-  if (shouldScroll) {
-    preLogsEl.scrollTo(0, preLogsEl.scrollHeight);
+  function updateJumpButton() {
+    if (!jumpBtn) return;
+    if (state.pinnedLive) {
+      jumpBtn.hidden = true;
+      state.unseenCount = 0;
+    } else {
+      jumpBtn.hidden = false;
+      jumpBtn.textContent =
+        state.unseenCount > 0
+          ? `↓ Return to Live (${state.unseenCount} new)`
+          : "↓ Return to Live";
+    }
   }
+
+  function renderWindow({ preserveAnchor = null, scrollToBottom = false } = {}) {
+    if (!container) return;
+    const filtered = getFiltered();
+    const total = filtered.length;
+    if (state.pinnedLive || state.windowEnd > total || state.windowEnd === 0) {
+      state.windowEnd = total;
+    }
+    const end = Math.max(0, Math.min(total, state.windowEnd));
+    const start = Math.max(0, end - VIEWPORT_WINDOW_SIZE);
+    const slice = filtered.slice(start, end);
+
+    const prevScrollHeight = container.scrollHeight;
+    const prevScrollTop = container.scrollTop;
+
+    const frag = document.createDocumentFragment();
+    if (start > 0 || state.diskCursor.hasMore) {
+      const badge = document.createElement("div");
+      badge.className = "console-history-divider";
+      badge.textContent =
+        start > 0
+          ? `↑ Scroll up for older ${type} (${start} earlier in memory${state.diskCursor.hasMore ? " + session files" : ""})`
+          : `↑ Scroll up to load older ${type} from session .md files`;
+      frag.appendChild(badge);
+    }
+
+    let lastFile = "";
+    for (const item of slice) {
+      if (item.sourceFile && item.sourceFile !== lastFile) {
+        lastFile = item.sourceFile;
+        const fileDivider = document.createElement("div");
+        fileDivider.className = "console-history-divider";
+        fileDivider.textContent = `📄 Loaded from ${lastFile}`;
+        frag.appendChild(fileDivider);
+      }
+      frag.appendChild(buildRow(item));
+    }
+
+    container.replaceChildren(frag);
+
+    if (scrollToBottom || state.pinnedLive) {
+      container.scrollTop = container.scrollHeight;
+    } else if (preserveAnchor === "top") {
+      const delta = container.scrollHeight - prevScrollHeight;
+      container.scrollTop = Math.max(12, prevScrollTop + delta);
+    } else if (preserveAnchor === "bottom") {
+      container.scrollTop = Math.max(
+        0,
+        container.scrollHeight - container.clientHeight - 28,
+      );
+    }
+    updateJumpButton();
+  }
+
+  async function loadOlderFromDisk() {
+    if (
+      state.diskCursor.loading ||
+      !state.diskCursor.hasMore ||
+      !window.api?.sessionLogReadHistory
+    ) {
+      return false;
+    }
+    state.diskCursor.loading = true;
+    try {
+      // On first disk fetch, skip entries already captured in the live session buffer
+      const beforeIdx = state.diskCursor.initialized
+        ? state.diskCursor.beforeIndex
+        : Math.max(0, state.entries.length > 0 ? 0 : 999999);
+      const startFileIdx = state.diskCursor.initialized
+        ? state.diskCursor.fileIndex
+        : 1;
+      const res = await window.api.sessionLogReadHistory({
+        type,
+        beforeIndex: state.diskCursor.initialized ? beforeIdx : null,
+        fileIndex: startFileIdx,
+        limit: PAGE_STEP_SIZE,
+        filter: "",
+      });
+      state.diskCursor.initialized = true;
+      state.diskCursor.beforeIndex = res?.nextBeforeIndex ?? 0;
+      state.diskCursor.fileIndex = res?.nextFileIndex ?? startFileIdx + 1;
+      state.diskCursor.hasMore = Boolean(res?.hasMore);
+
+      const fetched = Array.isArray(res?.entries) ? res.entries : [];
+      if (fetched.length > 0) {
+        const mapped = fetched.map((e) => ({
+          time: e.time || formatTime(),
+          raw: String(e.raw || ""),
+          rawLower: String(e.raw || "").toLowerCase(),
+          payload: e.payload || e.raw || "",
+          sourceFile: e.sourceFile || res.sourceFile || "",
+          html: "",
+        }));
+        state.entries.unshift(...mapped);
+        state.windowEnd += mapped.length;
+        return true;
+      }
+      return false;
+    } catch (_) {
+      state.diskCursor.hasMore = false;
+      return false;
+    } finally {
+      state.diskCursor.loading = false;
+    }
+  }
+
+  function flushIncoming() {
+    state.rafId = null;
+    if (!state.pendingIncoming.length || !container) return;
+    const batch = state.pendingIncoming.splice(0, state.pendingIncoming.length);
+    state.entries.push(...batch);
+    if (state.entries.length > MAX_MEMORY_ENTRIES) {
+      const overflow = state.entries.length - MAX_MEMORY_ENTRIES;
+      state.entries.splice(0, overflow);
+      state.windowEnd = Math.max(0, state.windowEnd - overflow);
+    }
+
+    if (!state.pinnedLive) {
+      state.unseenCount += batch.length;
+      updateJumpButton();
+      return;
+    }
+
+    // Fast path when pinned live: append matching rows directly and trim DOM to VIEWPORT_WINDOW_SIZE
+    const q = state.filterQuery;
+    const matching = q
+      ? batch.filter((e) => e.rawLower.includes(q))
+      : batch;
+    if (!matching.length) return;
+
+    if (matching.length >= VIEWPORT_WINDOW_SIZE) {
+      state.windowEnd = getFiltered().length;
+      renderWindow({ scrollToBottom: true });
+      return;
+    }
+
+    const frag = document.createDocumentFragment();
+    for (const item of matching) {
+      frag.appendChild(buildRow(item));
+    }
+    container.appendChild(frag);
+    state.windowEnd = getFiltered().length;
+
+    const lineSelector = type === "chat" ? ".chat-line" : ".log-line";
+    const rows = container.querySelectorAll(lineSelector);
+    const excess = rows.length - VIEWPORT_WINDOW_SIZE;
+    for (let i = 0; i < excess; i++) {
+      rows[i].remove();
+    }
+    container.scrollTop = container.scrollHeight;
+    updateJumpButton();
+  }
+
+  function push(entry) {
+    state.pendingIncoming.push({
+      time: entry.time || formatTime(),
+      raw: entry.raw,
+      rawLower: entry.raw.toLowerCase(),
+      payload: entry.payload ?? entry.raw,
+      sourceFile: "",
+      html: "",
+    });
+    if (!state.rafId) {
+      state.rafId = requestAnimationFrame(flushIncoming);
+    }
+  }
+
+  function removeMatching(needle) {
+    const clean = String(needle || "");
+    if (!clean) return;
+    state.pendingIncoming = state.pendingIncoming.filter(
+      (e) => !e.raw.includes(clean),
+    );
+    const beforeLen = state.entries.length;
+    state.entries = state.entries.filter((e) => !e.raw.includes(clean));
+    if (state.entries.length !== beforeLen && state.pinnedLive && container) {
+      container.querySelectorAll(".log-line, .chat-line").forEach((row) => {
+        if ((row.getAttribute("data-raw") || "").includes(clean)) {
+          row.remove();
+        }
+      });
+      state.windowEnd = getFiltered().length;
+    }
+  }
+
+  function jumpToLive() {
+    state.pinnedLive = true;
+    state.unseenCount = 0;
+    state.windowEnd = getFiltered().length;
+    renderWindow({ scrollToBottom: true });
+  }
+
+  function clear() {
+    state.entries = [];
+    state.pendingIncoming = [];
+    state.windowEnd = 0;
+    state.pinnedLive = true;
+    state.unseenCount = 0;
+    if (container) container.innerHTML = "";
+    updateJumpButton();
+  }
+
+  if (container) {
+    let scrollBusy = false;
+    container.addEventListener("scroll", async () => {
+      if (scrollBusy) return;
+      const filtered = getFiltered();
+      const total = filtered.length;
+      const atBottom = isNearBottom(container);
+      const atTop = container.scrollTop <= 18;
+
+      if (atBottom) {
+        if (state.windowEnd < total) {
+          scrollBusy = true;
+          state.windowEnd = Math.min(total, state.windowEnd + PAGE_STEP_SIZE);
+          if (state.windowEnd >= total) state.pinnedLive = true;
+          renderWindow({
+            preserveAnchor: state.pinnedLive ? null : "bottom",
+            scrollToBottom: state.pinnedLive,
+          });
+          scrollBusy = false;
+        } else if (!state.pinnedLive) {
+          state.pinnedLive = true;
+          state.unseenCount = 0;
+          updateJumpButton();
+        }
+        return;
+      }
+
+      state.pinnedLive = false;
+      updateJumpButton();
+
+      if (atTop) {
+        scrollBusy = true;
+        try {
+          const currentStart = Math.max(
+            0,
+            state.windowEnd - VIEWPORT_WINDOW_SIZE,
+          );
+          if (currentStart > 0) {
+            state.windowEnd = Math.max(
+              Math.min(VIEWPORT_WINDOW_SIZE, total),
+              state.windowEnd - PAGE_STEP_SIZE,
+            );
+            renderWindow({ preserveAnchor: "top" });
+          } else if (state.diskCursor.hasMore) {
+            const loaded = await loadOlderFromDisk();
+            if (loaded) {
+              state.windowEnd = Math.max(
+                Math.min(VIEWPORT_WINDOW_SIZE, getFiltered().length),
+                state.windowEnd - PAGE_STEP_SIZE,
+              );
+              renderWindow({ preserveAnchor: "top" });
+            }
+          }
+        } finally {
+          scrollBusy = false;
+        }
+      }
+    });
+  }
+
+  if (filterInput) {
+    filterInput.addEventListener("input", () => {
+      state.filterQuery = filterInput.value.trim().toLowerCase();
+      state.pinnedLive = true;
+      state.windowEnd = getFiltered().length;
+      renderWindow({ scrollToBottom: true });
+    });
+  }
+
+  if (jumpBtn) {
+    jumpBtn.addEventListener("click", () => jumpToLive());
+  }
+
+  return {
+    push,
+    removeMatching,
+    jumpToLive,
+    clear,
+    isPinnedLive: () => state.pinnedLive,
+  };
+}
+
+const logsStream = createVirtualStream({
+  type: "logs",
+  container: preLogsEl,
+  filterInput: logFilterInput,
+  jumpBtn: logsJumpLiveBtn,
+  buildRow: buildLogRowElement,
+});
+
+const chatStream = createVirtualStream({
+  type: "chat",
+  container: preChatEl,
+  filterInput: chatFilterInput,
+  jumpBtn: chatJumpLiveBtn,
+  buildRow: buildChatRowElement,
+});
+
+window.api.onLog((text) => {
+  const raw = String(text || "");
+  if (!raw) return;
+  logsStream.push({ raw, time: formatTime() });
 });
 
 window.api.onClearLog((text) => {
-  if (!preLogsEl) return;
-  const needle = String(text || "");
-  if (!needle) return;
-  preLogsEl.querySelectorAll(".log-line").forEach((row) => {
-    const raw = row.getAttribute("data-raw") || "";
-    if (raw.includes(needle)) {
-      row.remove();
-    }
-  });
+  logsStream.removeMatching(text);
 });
 
 // --- Console tabs (logs / chat) ---
@@ -1228,7 +1537,10 @@ function showConsoleTab(name) {
     pane.hidden = !match;
   });
   const scroller = name === "chat" ? preChatEl : preLogsEl;
-  if (scroller) scroller.scrollTo(0, scroller.scrollHeight);
+  const stream = name === "chat" ? chatStream : logsStream;
+  if (scroller && stream.isPinnedLive()) {
+    scroller.scrollTo(0, scroller.scrollHeight);
+  }
   if (name === "chat" && chatUnreadDot) chatUnreadDot.hidden = true;
 }
 
@@ -1239,28 +1551,16 @@ document.querySelectorAll(".console-tab").forEach((tab) => {
 });
 
 window.api.onChat((payload) => {
-  if (!preChatEl) return;
-  const shouldScroll = isNearBottom(preChatEl);
   const plainText =
     typeof payload === "string"
       ? payload
       : String(payload?.text || payload?.motd || "");
   if (!plainText.trim()) return;
-
-  const row = document.createElement("div");
-  row.className = "chat-line";
-  row.setAttribute("data-raw", plainText);
-  row.innerHTML = `<time>${formatTime()}</time><span class="chat-msg">${renderMinecraftFormatted(payload)}</span>`;
-  applyChatFilterToLine(row);
-  preChatEl.appendChild(row);
-
-  while (preChatEl.children.length > MAX_CHAT_LINES) {
-    preChatEl.removeChild(preChatEl.firstElementChild);
-  }
-
-  if (shouldScroll) {
-    preChatEl.scrollTo(0, preChatEl.scrollHeight);
-  }
+  chatStream.push({
+    raw: plainText,
+    payload,
+    time: formatTime(),
+  });
   if (activeConsoleTab !== "chat" && chatUnreadDot) {
     chatUnreadDot.hidden = false;
   }
@@ -1268,9 +1568,9 @@ window.api.onChat((payload) => {
 
 document.getElementById("clear-console-btn").addEventListener("click", () => {
   if (activeConsoleTab === "chat") {
-    if (preChatEl) preChatEl.innerHTML = "";
-  } else if (preLogsEl) {
-    preLogsEl.innerHTML = "";
+    chatStream.clear();
+  } else {
+    logsStream.clear();
   }
 });
 

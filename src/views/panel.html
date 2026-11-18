@@ -1233,7 +1233,17 @@
               placeholder="Filter logs"
               spellcheck="false"
             />
-            <div class="pre-logs" role="log" aria-live="polite"></div>
+            <div class="console-viewport-wrap">
+              <div class="pre-logs" role="log" aria-live="polite"></div>
+              <button
+                type="button"
+                id="logs-jump-live"
+                class="console-jump-live"
+                hidden
+              >
+                ↓ Return to Live
+              </button>
+            </div>
           </div>
 
           <div id="console-chat" class="console-pane" hidden>
@@ -1244,7 +1254,17 @@
               placeholder="Filter chat"
               spellcheck="false"
             />
-            <div class="pre-chat" role="log" aria-live="polite"></div>
+            <div class="console-viewport-wrap">
+              <div class="pre-chat" role="log" aria-live="polite"></div>
+              <button
+                type="button"
+                id="chat-jump-live"
+                class="console-jump-live"
+                hidden
+              >
+                ↓ Return to Live
+              </button>
+            </div>
           </div>
 
           <form class="form-chat-message">
