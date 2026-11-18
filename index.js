@@ -42,6 +42,10 @@ const {
   pingServerProtocol,
 } = require("./src/js/viaAdapter");
 const viaProxyBridge = require("./src/js/viaProxyBridge");
+const { runWithPathOwner } = require("./src/js/baritone");
+
+// Scripts run as "script" owners so the AI can take the pathfinder over from them.
+const runScriptAs = (id, runner) => runWithPathOwner(id, "script", runner);
 const { ollamaManager } = require("./src/js/ollamaManager");
 const { aiBrain } = require("./src/js/aiBrain");
 const { proxyManager } = require("./src/js/proxyManager");
@@ -2644,7 +2648,7 @@ function startScriptByName(rawId) {
   activeScripts.add(id);
   setAiScriptFlag(id, true);
   sendToRenderer("script-state", id, true);
-  runner();
+  runScriptAs(id, runner);
   return true;
 }
 
@@ -3146,7 +3150,7 @@ async function handleBotControl(payload = {}) {
           if (runner) {
             activeScripts.add("Guard");
             sendToRenderer("script-state", "Guard", true);
-            runner();
+            runScriptAs("Guard", runner);
           }
         }
         log(`Guard: Assigned to protect ${username}`);
@@ -3192,7 +3196,7 @@ async function handleBotControl(payload = {}) {
           if (runner) {
             activeScripts.add("Hunt");
             sendToRenderer("script-state", "Hunt", true);
-            runner();
+            runScriptAs("Hunt", runner);
           }
         }
         log(`Hunt: Pursuing ${username}`);
@@ -4128,7 +4132,7 @@ function registerIpcHandlers() {
           if (runner) {
             activeScripts.add("GearUp");
             sendToRenderer("script-state", "GearUp", true);
-            runner();
+            runScriptAs("GearUp", runner);
           }
         }
         log(`GearUp: Started progression to ${tierArg} tier`);

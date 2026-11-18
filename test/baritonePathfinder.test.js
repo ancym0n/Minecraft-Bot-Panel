@@ -11,6 +11,7 @@ const {
   BaritoneMovements,
   Move,
   injectBaritonePathfinder,
+  runWithPathOwner,
   splicePaths,
   areGoalsEquivalent,
 } = require("../src/js/baritone");
@@ -456,4 +457,96 @@ test("BaritonePathfinder legalStop never teleports X/Z, deduplicates goals, gate
     false,
     "In water under a solid ceiling, must NOT blindly hold jump and head-bang ceiling",
   );
+});
+
+// --- Path ownership: AI, GearUp and other scripts sharing one pathfinder ---------------
+
+function flatBot() {
+  const bot = createMockWorldBot((x, y, z) => (y === 0 ? "stone" : "air"));
+  const m = new BaritoneMovements(bot);
+  m.canDig = false;
+  m.scafoldingBlocks = [];
+  bot.pathfinder.setMovements(m);
+  return bot;
+}
+
+const tick = () => new Promise((r) => setImmediate(r));
+
+test("Path ownership: the AI takes the pathfinder from GearUp, GearUp cannot fight back, and its route resumes afterwards", async () => {
+  const bot = flatBot();
+  const gearGoal = new goals.GoalBlock(8, 1, 0);
+  const aiGoal = new goals.GoalBlock(0, 1, 8);
+  const denied = [];
+  bot.on("path_denied", (who, holder) => denied.push([who, holder]));
+
+  runWithPathOwner("GearUp", "script", () => bot.pathfinder.setGoal(gearGoal));
+  assert.equal(bot.pathfinder.goal, gearGoal);
+  assert.equal(bot.pathfinder.getPathOwner(), "GearUp");
+
+  runWithPathOwner("AI", "ai", () => bot.pathfinder.setGoal(aiGoal));
+  assert.equal(bot.pathfinder.goal, aiGoal, "AI preempts the script");
+  assert.equal(bot.pathfinder.getPathOwner(), "AI");
+
+  // The script keeps issuing goals and stop requests; none of it may disturb the AI.
+  runWithPathOwner("GearUp", "script", () => bot.pathfinder.stop());
+  runWithPathOwner("GearUp", "script", () => bot.pathfinder.setGoal(gearGoal));
+  bot.emit("physicsTick");
+  assert.equal(bot.pathfinder.goal, aiGoal);
+  assert.equal(bot.pathfinder.isMoving(), true, "AI path keeps running");
+  assert.ok(denied.length >= 1 && denied[0][1] === "AI");
+
+  // AI finishes: GearUp's latest goal is resumed without GearUp having to retry.
+  runWithPathOwner("AI", "ai", () => bot.pathfinder.setGoal(null));
+  await tick();
+  await tick();
+  assert.equal(bot.pathfinder.goal, gearGoal, "GearUp resumes after the AI is done");
+  assert.equal(bot.pathfinder.getPathOwner(), "GearUp");
+});
+
+test("Path ownership: scripts of equal priority still replace each other, and unattributed helpers act for the holder", () => {
+  const bot = flatBot();
+  const a = new goals.GoalBlock(6, 1, 0);
+  const b = new goals.GoalBlock(0, 1, 6);
+  runWithPathOwner("Mine", "script", () => bot.pathfinder.setGoal(a));
+  runWithPathOwner("GearUp", "script", () => bot.pathfinder.setGoal(b));
+  assert.equal(bot.pathfinder.goal, b);
+
+  // Setback recovery / the panel's Stop button carry no owner; they act for whoever holds the path.
+  runWithPathOwner("AI", "ai", () => bot.pathfinder.setGoal(a));
+  bot.pathfinder.setGoal(null);
+  assert.equal(bot.pathfinder.goal, null, "unattributed stop is honoured");
+  // A helper that clears and restores a goal keeps the holder's claim for a moment...
+  runWithPathOwner("GearUp", "script", () => bot.pathfinder.setGoal(b));
+  assert.equal(bot.pathfinder.goal, null, "claim survives a helper's clear/restore window");
+  bot.pathfinder.setGoal(a);
+  assert.equal(bot.pathfinder.goal, a, "...and the helper can restore the holder's goal");
+  // ...and is released for good once the owner clears the goal itself.
+  runWithPathOwner("AI", "ai", () => bot.pathfinder.setGoal(null));
+  runWithPathOwner("GearUp", "script", () => bot.pathfinder.setGoal(b));
+  assert.equal(bot.pathfinder.goal, b, "lease is free again after an explicit release");
+});
+
+test("Path ownership: a held-back goto waits for the AI instead of failing, then runs", async () => {
+  const bot = flatBot();
+  const aiGoal = new goals.GoalBlock(0, 1, 8);
+  const gearGoal = new goals.GoalBlock(8, 1, 0);
+  runWithPathOwner("AI", "ai", () => bot.pathfinder.setGoal(aiGoal));
+
+  let settled = false;
+  const pending = runWithPathOwner("GearUp", "script", () =>
+    bot.pathfinder.goto(gearGoal).then(
+      () => (settled = "reached"),
+      (e) => (settled = e.message),
+    ),
+  );
+  await tick();
+  assert.equal(settled, false, "goto waits while the AI owns the path");
+  assert.equal(bot.pathfinder.goal, aiGoal);
+
+  runWithPathOwner("AI", "ai", () => bot.pathfinder.setGoal(null));
+  await tick();
+  await tick();
+  assert.equal(bot.pathfinder.goal, gearGoal, "waiting goto starts once the AI is done");
+  bot.pathfinder.setGoal(null);
+  void pending;
 });

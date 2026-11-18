@@ -22,6 +22,7 @@ const {
   isRealPlayerName,
 } = require("./botUtils");
 const { aiBrain } = require("./aiBrain");
+const { runWithPathOwner } = require("./baritone");
 const {
   craftItemByName,
   craftAnyPlanks,
@@ -3393,7 +3394,13 @@ function createAiTools(ctx) {
     );
   }
 
-  async function executeTool(rawName, args = {}, meta = {}) {
+  // Everything the AI does is attributed to it, so it can take the pathfinder over
+  // from running scripts (GearUp, mining...) and hand it back when it is done.
+  function executeTool(rawName, args = {}, meta = {}) {
+    return runWithPathOwner("AI", 2, () => executeToolInner(rawName, args, meta));
+  }
+
+  async function executeToolInner(rawName, args = {}, meta = {}) {
     let name = resolveTool(rawName);
     if (!name) {
       return `Error: unknown tool ${rawName}. Use run_commands with simple commands like "walk to Steve"`;

@@ -19,6 +19,7 @@ const {
 } = require("./movements");
 const {
   injectBaritonePathfinder,
+  runWithPathOwner,
   splicePaths,
   areGoalsEquivalent,
   getTurnAngleRad,
@@ -43,6 +44,7 @@ module.exports = {
   Move,
   isDoorOrGateOpen,
   injectBaritonePathfinder,
+  runWithPathOwner,
   splicePaths,
   areGoalsEquivalent,
   getTurnAngleRad,

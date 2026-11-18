@@ -9,6 +9,7 @@
 // - Integrated BacktrackMemory: stuck nodes & failed dig/place edges are penalized so replans detour cleanly
 
 const { performance } = require("perf_hooks");
+const { AsyncLocalStorage } = require("async_hooks");
 const { Vec3 } = require("vec3");
 const { BaritoneAStar } = require("./astar");
 const { BacktrackMemory } = require("./calculationContext");
@@ -112,6 +113,28 @@ function getTurnAngleRad(p, n1, n2) {
   const dot = Math.max(-1, Math.min(1, (v1x * v2x + v1z * v2z) / (m1 * m2)));
   return Math.acos(dot);
 }
+
+// --- Path ownership -----------------------------------------------------------
+// Several things drive the one pathfinder at once (GearUp and other scripts, the AI
+// agent, the panel). Each caller can run inside runWithPathOwner(name, priority, fn).
+// A higher-priority owner (the AI answering a player) takes the path over; a
+// lower-priority one (a script) is held back instead of fighting for the goal, and
+// its latest goal is resumed when the higher-priority owner is done.
+const ownerStore = new AsyncLocalStorage();
+const PATH_PRIORITY = { system: 1, script: 1, ai: 2, user: 3 };
+
+function runWithPathOwner(owner, priority, fn) {
+  const prio =
+    typeof priority === "number"
+      ? priority
+      : PATH_PRIORITY[String(priority || "").toLowerCase()] || 1;
+  return ownerStore.run({ owner: String(owner || "system"), priority: prio }, fn);
+}
+
+const LEASE_TTL_MS = 45000; // a static goal that never finishes stops blocking after this
+const LEASE_GRACE_MS = 4000; // internal helpers may clear and restore a goal briefly
+const DEFERRED_TTL_MS = 60000;
+const BUSY_WAIT_MS = 30000;
 
 function injectBaritonePathfinder(bot) {
   loadPathfinderHelpers();
@@ -465,9 +488,10 @@ function injectBaritonePathfinder(bot) {
     pathIsSegment = false;
     bot.emit("path_stop");
     legalStop();
+    releaseLease();
   }
 
-  bot.pathfinder.setGoal = (goal, dynamic = false) => {
+  function rawSetGoal(goal, dynamic = false) {
     const isDyn = Boolean(dynamic);
     // Avoid thrashing active path when scripts re-send an equivalent goal,
     // while keeping `bot.pathfinder.goal === goal` true for reference checks.
@@ -485,6 +509,93 @@ function injectBaritonePathfinder(bot) {
     dynamicGoal = isDyn;
     bot.emit("goal_updated", goal, isDyn);
     resetPath("goal_updated");
+  }
+
+  let lease = null; // { owner, priority, at, dynamic, graceUntil }
+  const deferred = new Map(); // owner -> { ctx, goal, dynamic, at }
+
+  function leaseActive() {
+    if (!lease) return false;
+    const now = Date.now();
+    if (stateGoal) return lease.dynamic || now - lease.at < LEASE_TTL_MS;
+    return Boolean(lease.graceUntil && now < lease.graceUntil);
+  }
+
+  // Unattributed callers (physics hooks, setback recovery) act for the current holder.
+  function resolveCtx() {
+    const stored = ownerStore.getStore();
+    if (stored) return { ...stored, explicit: true };
+    if (leaseActive()) {
+      return { owner: lease.owner, priority: lease.priority, explicit: false };
+    }
+    return { owner: "system", priority: 1, explicit: false };
+  }
+
+  function isBlocked(ctx) {
+    return leaseActive() && lease.owner !== ctx.owner && ctx.priority < lease.priority;
+  }
+
+  function releaseLease() {
+    lease = null;
+    const now = Date.now();
+    let best = null;
+    for (const d of deferred.values()) {
+      if (now - d.at > DEFERRED_TTL_MS) continue;
+      if (
+        !best ||
+        d.ctx.priority > best.ctx.priority ||
+        (d.ctx.priority === best.ctx.priority && d.at > best.at)
+      ) {
+        best = d;
+      }
+    }
+    deferred.clear();
+    bot.emit("path_lease_released");
+    if (best) {
+      setImmediate(() => {
+        if (leaseActive()) return;
+        ownerStore.run({ owner: best.ctx.owner, priority: best.ctx.priority }, () =>
+          bot.pathfinder.setGoal(best.goal, best.dynamic),
+        );
+      });
+    }
+  }
+
+  bot.pathfinder.runAs = runWithPathOwner;
+  bot.pathfinder.getPathOwner = () => (leaseActive() ? lease.owner : null);
+
+  bot.pathfinder.setGoal = (goal, dynamic = false) => {
+    const ctx = resolveCtx();
+    const now = Date.now();
+    if (isBlocked(ctx)) {
+      if (goal) deferred.set(ctx.owner, { ctx, goal, dynamic: Boolean(dynamic), at: now });
+      else deferred.delete(ctx.owner);
+      bot.emit("path_denied", ctx.owner, lease.owner);
+      return;
+    }
+    if (!goal) {
+      rawSetGoal(null, false);
+      if (lease && !ctx.explicit) lease.graceUntil = now + LEASE_GRACE_MS;
+      else releaseLease();
+      return;
+    }
+    if (leaseActive() && lease.owner !== ctx.owner && stateGoal && ctx.priority > lease.priority) {
+      deferred.set(lease.owner, {
+        ctx: { owner: lease.owner, priority: lease.priority },
+        goal: stateGoal,
+        dynamic: dynamicGoal,
+        at: now,
+      });
+    }
+    lease = {
+      owner: ctx.owner,
+      priority: ctx.priority,
+      at: now,
+      dynamic: Boolean(dynamic),
+      graceUntil: 0,
+    };
+    deferred.delete(ctx.owner);
+    rawSetGoal(goal, dynamic);
   };
 
   bot.pathfinder.setMovements = (movements) => {
@@ -500,9 +611,10 @@ function injectBaritonePathfinder(bot) {
   bot.pathfinder.isMining = () => digging;
   bot.pathfinder.isBuilding = () => placing;
   bot.pathfinder.stop = () => {
+    if (isBlocked(resolveCtx())) return;
     stopPathing = true;
   };
-  bot.pathfinder.goto = (goal) => {
+  function gotoNow(goal) {
     if (gotoUtil) return gotoUtil(bot, goal);
     return new Promise((resolve, reject) => {
       const cleanup = () => {
@@ -520,6 +632,29 @@ function injectBaritonePathfinder(bot) {
       bot.once("goal_reached", onReached);
       bot.once("path_stop", onStop);
       bot.pathfinder.setGoal(goal, false);
+    });
+  }
+
+  // Held-back callers wait for the current owner instead of failing or fighting.
+  bot.pathfinder.goto = (goal) => {
+    const ctx = resolveCtx();
+    if (!isBlocked(ctx)) return gotoNow(goal);
+    return new Promise((resolve, reject) => {
+      const holder = lease ? lease.owner : "another task";
+      const timer = setTimeout(() => {
+        bot.removeListener("path_lease_released", onFree);
+        reject(new Error(`Pathfinder busy: ${holder} is using it`));
+      }, BUSY_WAIT_MS);
+      const onFree = () => {
+        if (isBlocked(ctx)) return;
+        clearTimeout(timer);
+        bot.removeListener("path_lease_released", onFree);
+        const run = ctx.explicit
+          ? () => ownerStore.run({ owner: ctx.owner, priority: ctx.priority }, () => gotoNow(goal))
+          : () => gotoNow(goal);
+        run().then(resolve, reject);
+      };
+      bot.on("path_lease_released", onFree);
     });
   };
 
@@ -691,6 +826,7 @@ function injectBaritonePathfinder(bot) {
             bot.emit("goal_reached", stateGoal);
             stateGoal = null;
             legalStop();
+            releaseLease();
           }
         } else if (!pathUpdated) {
           const results = bot.pathfinder.getPathTo(stateMovements, stateGoal);
@@ -887,6 +1023,7 @@ function injectBaritonePathfinder(bot) {
           bot.emit("goal_reached", stateGoal);
           stateGoal = null;
           legalStop();
+          releaseLease();
         } else if (pathIsSegment && stateGoal) {
           // Reached end of segment: immediately compute next segment without halting
           pathUpdated = false;
@@ -992,6 +1129,7 @@ function injectBaritonePathfinder(bot) {
 }
 
 module.exports = {
+  runWithPathOwner,
   injectBaritonePathfinder,
   splicePaths,
   areGoalsEquivalent,
