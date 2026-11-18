@@ -4,21 +4,16 @@ const os = require("os");
 const fs = require("fs");
 const path = require("path");
 const { spawn, execFile } = require("child_process");
+const { aiBrain } = require("./aiBrain");
 
 const DEFAULT_HOST = "http://127.0.0.1:11434";
 
 // tags: chat = good for talking, tools = supports function calling (AI Agent),
-// code = tuned for writing scripts. think = model emits reasoning we disable.
+// code = tuned for writing scripts.
+// badges: concise capability tags shown with mini icons in UI (max 3 per model):
+//   logic = 🧠 Logic, accuracy = 🎯 Accuracy, think = 💭 Thinking,
+//   code = 💻 Coding, chat = 💬 Human Chat, fast = ⚡ Fast
 const RECOMMENDED_MODELS = [
-  {
-    name: "llama3.2:1b",
-    label: "Llama 3.2 1B",
-    sizeLabel: "1.3 GB",
-    minRamGb: 4,
-    tier: "light",
-    tags: ["chat", "tools"],
-    desc: "Tiny and fast, fine for low-end PCs",
-  },
   {
     name: "qwen3:1.7b",
     label: "Qwen 3 1.7B",
@@ -26,8 +21,19 @@ const RECOMMENDED_MODELS = [
     minRamGb: 6,
     tier: "light",
     tags: ["chat", "tools"],
+    badges: ["accuracy", "logic", "chat"],
     think: true,
-    desc: "Best small model, multilingual, solid tool calling",
+    desc: "Best small all-rounder, Polish/English chat & reliable tool calling",
+  },
+  {
+    name: "llama3.2:1b",
+    label: "Llama 3.2 1B",
+    sizeLabel: "1.3 GB",
+    minRamGb: 4,
+    tier: "light",
+    tags: ["chat", "tools"],
+    badges: ["fast", "chat"],
+    desc: "Ultra-fast and tiny for low-end PCs (4 GB RAM)",
   },
   {
     name: "gemma3:1b",
@@ -36,35 +42,39 @@ const RECOMMENDED_MODELS = [
     minRamGb: 4,
     tier: "light",
     tags: ["chat"],
-    desc: "Very natural short chat replies (no actions)",
+    badges: ["chat", "fast"],
+    desc: "Very natural short player chat replies (chat only)",
   },
   {
     name: "qwen3:4b",
     label: "Qwen 3 4B",
     sizeLabel: "2.5 GB",
-    minRamGb: 10,
+    minRamGb: 8,
     tier: "balanced",
     tags: ["chat", "tools"],
+    badges: ["logic", "accuracy", "think"],
     think: true,
-    desc: "Smart all-rounder for chat and AI Agent actions",
+    desc: "Top balanced agent for multi-step Minecraft plans & natural chat",
   },
   {
     name: "gemma3:4b",
     label: "Gemma 3 4B",
     sizeLabel: "3.3 GB",
-    minRamGb: 10,
+    minRamGb: 8,
     tier: "balanced",
     tags: ["chat"],
-    desc: "Most human-sounding replies in its size",
+    badges: ["chat", "logic"],
+    desc: "Most human-sounding gamer replies (PL/EN) in its size class",
   },
   {
     name: "phi4-mini",
     label: "Phi-4 Mini 3.8B",
     sizeLabel: "2.5 GB",
-    minRamGb: 10,
+    minRamGb: 8,
     tier: "balanced",
     tags: ["chat", "tools"],
-    desc: "Strong reasoning and function calling",
+    badges: ["logic", "accuracy"],
+    desc: "Strong logical problem solving and strict instruction accuracy",
   },
   {
     name: "llama3.2:3b",
@@ -73,35 +83,81 @@ const RECOMMENDED_MODELS = [
     minRamGb: 8,
     tier: "balanced",
     tags: ["chat", "tools"],
-    desc: "Reliable balance of speed and game awareness",
+    badges: ["fast", "accuracy", "chat"],
+    desc: "Fast action execution and solid game-state awareness",
   },
   {
     name: "qwen3:8b",
     label: "Qwen 3 8B",
     sizeLabel: "5.2 GB",
-    minRamGb: 16,
+    minRamGb: 14,
     tier: "heavy",
     tags: ["chat", "tools"],
+    badges: ["logic", "think", "accuracy"],
     think: true,
-    desc: "High-intelligence agent for 16 GB+ RAM or a GPU",
+    desc: "High-intelligence Minecraft agent for 16 GB+ RAM or discrete GPU",
+  },
+  {
+    name: "hermes3:8b",
+    label: "Hermes 3 8B",
+    sizeLabel: "4.7 GB",
+    minRamGb: 14,
+    tier: "heavy",
+    tags: ["chat", "tools"],
+    badges: ["accuracy", "chat", "logic"],
+    desc: "Tuned for agentic tool calling and realistic human persona",
   },
   {
     name: "llama3.1:8b",
     label: "Llama 3.1 8B",
     sizeLabel: "4.9 GB",
-    minRamGb: 16,
+    minRamGb: 14,
     tier: "heavy",
     tags: ["chat", "tools"],
-    desc: "Proven 8B model with dependable tool use",
+    badges: ["accuracy", "logic"],
+    desc: "Proven 8B workhorse with dependable tool calling",
+  },
+  {
+    name: "mistral:7b",
+    label: "Mistral 7B v0.3",
+    sizeLabel: "4.4 GB",
+    minRamGb: 12,
+    tier: "heavy",
+    tags: ["chat", "tools"],
+    badges: ["chat", "accuracy"],
+    desc: "Natural European/Polish slang & low-assistant-slop chat",
+  },
+  {
+    name: "deepseek-r1:7b",
+    label: "DeepSeek R1 7B",
+    sizeLabel: "4.7 GB",
+    minRamGb: 14,
+    tier: "heavy",
+    tags: ["chat"],
+    badges: ["think", "logic"],
+    think: true,
+    desc: "Deep chain-of-thought reasoning for complex survival decisions",
   },
   {
     name: "gemma3:12b",
     label: "Gemma 3 12B",
     sizeLabel: "8.1 GB",
-    minRamGb: 24,
+    minRamGb: 20,
     tier: "heavy",
     tags: ["chat"],
-    desc: "Rich roleplay and conversation for strong GPUs",
+    badges: ["chat", "logic"],
+    desc: "Best human-like conversation & Polish fluency for strong GPUs",
+  },
+  {
+    name: "qwen3:14b",
+    label: "Qwen 3 14B",
+    sizeLabel: "9.0 GB",
+    minRamGb: 24,
+    tier: "heavy",
+    tags: ["chat", "tools"],
+    badges: ["logic", "accuracy", "think"],
+    think: true,
+    desc: "Flagship local agent for complex crafting trees & self-healing",
   },
   {
     name: "qwen2.5-coder:1.5b",
@@ -110,7 +166,8 @@ const RECOMMENDED_MODELS = [
     minRamGb: 4,
     tier: "light",
     tags: ["code"],
-    desc: "Fast script writer for the Studio tab",
+    badges: ["code", "fast"],
+    desc: "Fast Mineflayer script writer for the Studio tab",
   },
   {
     name: "qwen2.5-coder:3b",
@@ -119,7 +176,8 @@ const RECOMMENDED_MODELS = [
     minRamGb: 8,
     tier: "balanced",
     tags: ["code"],
-    desc: "Better Mineflayer scripts, still quick",
+    badges: ["code", "logic"],
+    desc: "Balanced Mineflayer script generator, quick & accurate",
   },
   {
     name: "qwen2.5-coder:7b",
@@ -128,7 +186,8 @@ const RECOMMENDED_MODELS = [
     minRamGb: 14,
     tier: "heavy",
     tags: ["code", "tools"],
-    desc: "Best local script generation quality",
+    badges: ["code", "accuracy", "logic"],
+    desc: "Best local Mineflayer script generation and runtime code fixing",
   },
 ];
 
@@ -219,9 +278,23 @@ function parseTextToolCalls(text, toolNames = [], resolve = null) {
       ) {
         args = { value: inner.slice(1, -1) };
       } else if (inner) {
-        args = parseLooseArgs(inner) || {
-          value: inner.replace(/^["'`]|["'`]$/g, ""),
-        };
+        const loose = parseLooseArgs(inner);
+        if (loose) {
+          args = loose;
+        } else if (inner.includes(",")) {
+          const parts = inner
+            .split(",")
+            .map((s) => s.trim().replace(/^["'`]|["'`]$/g, ""))
+            .filter((s) => s !== "");
+          args = {
+            _pos: parts,
+            value: inner.replace(/^["'`]|["'`]$/g, ""),
+          };
+        } else {
+          args = {
+            value: inner.replace(/^["'`]|["'`]$/g, ""),
+          };
+        }
       }
       calls.push({ function: { name: real, arguments: args } });
     }
@@ -308,24 +381,119 @@ function isThinkingOutLoud(text) {
   const t = cleanModelText(text);
   if (!t) return false;
   return (
-    /\b(commands?|tools?|syntax|function|parameters?|arguments?|api|scripts?|modules?|json)\b/i.test(
+    /\b(commands?|tools?|syntax|function|parameters?|arguments?|api|scripts?|modules?|json|system prompt|instruction)\b/i.test(
       t,
     ) ||
     /\b(write|type|use|format) (the |your )?(commands?|it|them) like\b/i.test(
       t,
     ) ||
     /\b(e\.g\.|for example|like this)\s*:/i.test(t) ||
-    /\b(exception|undefined|null|stack trace|TypeError|SyntaxError)\b/.test(
+    /\b(exception|undefined|null|stack trace|TypeError|SyntaxError|ReferenceError)\b/.test(
       t,
     ) ||
     /\b(don'?t|do not) (understand|know) what you mean by\b/i.test(t) ||
-    /^\s*(think|thought|thinking|plan|reasoning)\b/i.test(t) ||
-    /\b(it seems|seems like there|there was an issue|there was a problem|let'?s try|let me try|i'?ll try (again|to)|i should check|i need to check|coordinates?|try again with)\b/i.test(
+    /^\s*(think|thought|thinking|plan|reasoning|analysis|internal|my\s+thought|mój\s+plan|myślę|analiza)\s*[:\-]/i.test(
       t,
     ) ||
-    /["'`][^"'`]{2,40}["'`]\s*(and|,)\s*["'`]/.test(t) ||
-    /\|/.test(t)
+    /\b(it seems|seems like there|there was an issue|there was a problem|let'?s try|let me try|i'?ll try (again|to)|i should check|i need to check|try again with|i need to call|calling tool|wywołam funkcję|użyję narzędzia|trying unstuck|if not work|unstuck\.\s*now)\b/i.test(
+      t,
+    ) ||
+    /["'`][^"'`]{2,40}["'`]\s*(and|,)\s*["'`]/.test(t)
   );
+}
+
+// Strips AI assistant enthusiasm, robotic Polish/English openers ("Jasne! Już próbuję znaleźć diamenty..."),
+// and converts replies into natural, casual human Minecraft player style.
+function stripAssistantSlop(rawText, { isObey = false, sender = "" } = {}) {
+  let s = String(rawText || "").trim();
+  if (!s) return "";
+
+  // Strip leaked bracketed/parenthesized thoughts or stage directions: [thinking...], *nods*, (myślę...)
+  s = s
+    .replace(/\[(?:thought|thinking|plan|reasoning|note|ai|system)[^\]]*\]/gi, " ")
+    .replace(/\((?:thought|thinking|plan|reasoning|note)[^)]*\)/gi, " ")
+    .replace(/\*[^*]{1,40}\*/g, " ")
+    .trim();
+
+  // Strip Polish & English AI-assistant enthusiastic openers ("Jasne!", "Oczywiście!", "Pewnie!", "Sure!", "Of course!", "Certainly!")
+  for (let i = 0; i < 3; i++) {
+    const next = s
+      .replace(
+        /^\s*(?:jasne|oczywiście(?:,?\s+że\s+tak)?|pewnie|chętnie|z\s+przyjemnością|z\s+miłą\s+chęcią|już\s+się\s+robi|nie\s+ma\s+sprawy|nie\s+ma\s+problemu|bez\s+problemu|rozumiem|dobrze|naturalnie|jak\s+najbardziej)[!.,:\s]+/i,
+        "",
+      )
+      .replace(
+        /^\s*(?:sure(?:\s+thing)?|certainly|of\s+course|absolutely|gladly|right\s+away|no\s+problem(?:\s+at\s+all)?|understood|affirmative|roger\s+that|i'?d\s+be\s+happy\s+to|i\s+will\s+gladly|i\s+can\s+certainly)[!.,:\s]+/i,
+        "",
+      )
+      .trim();
+    if (next === s) break;
+    s = next;
+  }
+
+  // Rewrite robotic Polish/English "Już próbuję znaleźć X" / "I am currently trying to find X" into natural player speech
+  s = s
+    .replace(
+      /\bjuż\s+(?:próbuję|staram\s+się)\s+(?:znaleźć|wykopać|zrobić|zebrać)\s+/gi,
+      "szukam ",
+    )
+    .replace(/\bjuż\s+(?:próbuję|zaczynam)\s+/gi, "zaczynam ")
+    .replace(/\bpostaram\s+się\s+jak\s+najszybciej\s+/gi, "zaraz ")
+    .replace(
+      /\bi\s+am\s+(?:currently\s+)?(?:trying|attempting)\s+to\s+(?:find|mine|locate|craft)\s+/gi,
+      "looking for ",
+    )
+    .replace(/\bi\s+will\s+now\s+(?:proceed\s+to|try\s+to|attempt\s+to)\s+/gi, "gonna ")
+    .replace(/\bczy\s+mogę\s+w\s+czymś\s+jeszcze\s+pomóc\??/gi, "")
+    .replace(/\bw\s+czym\s+mogę\s+(?:ci\s+)?pomóc\??/gi, "")
+    .replace(/\bdaj\s+znać,?\s+jeśli\s+czegoś\s+potrzebujesz[.!]*/gi, "")
+    .replace(/\bjako\s+(?:ai|sztuczna\s+inteligencja|bot|asystent)[^.!?]*[.!?]*/gi, "")
+    .replace(/\bas\s+an?\s+(?:ai|artificial\s+intelligence|bot|assistant|language\s+model)[^.!?]*[.!?]*/gi, "")
+    .trim();
+
+  // Convert raw snake_case Minecraft item/block IDs into natural spaced words ("wooden_pickaxe" -> "wooden pickaxe")
+  s = s.replace(
+    /\b(wooden|stone|iron|golden|diamond|netherite|oak|birch|spruce|jungle|acacia|dark_oak|cherry|mangrove|pale_oak|raw|cooked|baked|enchanted|golden|cobbled|deepslate|crafting|blast|water|lava|ender|totem|powder|sweet)_(pickaxe|axe|sword|shovel|hoe|helmet|chestplate|leggings|boots|log|planks|wood|table|furnace|bucket|iron|gold|copper|beef|porkchop|chicken|mutton|salmon|cod|potato|apple|carrot|pearl|eye|chest|snow|berry_bush|of_undying)\b/gi,
+    (_, a, b) => `${a.replace(/_/g, " ")} ${b.replace(/_/g, " ")}`,
+  );
+
+  // Convert third-person references to the speaking player into second-person ("heading to ancynamon" -> "heading to you")
+  if (sender && sender !== "Player" && sender !== "System") {
+    const escSender = String(sender).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    s = s
+      .replace(
+        new RegExp(`\\b(heading|walking|coming|running|going)\\s+to\\s+${escSender}\\b`, "gi"),
+        "$1 to you",
+      )
+      .replace(
+        new RegExp(`\\bfollowing\\s+${escSender}\\b`, "gi"),
+        "following you",
+      )
+      .replace(
+        new RegExp(`\\b${escSender}\\s+nearby\\b`, "gi"),
+        "you're right here",
+      );
+  }
+
+  // Enforce obey rule: never say "no" / "nah, idc" / "nie" to an obeyed player
+  if (
+    isObey &&
+    /^(?:nah(?:\s*,?\s*idc)?|no|nope|not\s+now|i\s+don'?t\s+want\s+to|i\s+won'?t|idc|nie(?:\s+chce\s+mi\s+si[eę]|\s+teraz)?)[.!?\s]*$/i.test(
+      s,
+    )
+  ) {
+    s = "on it";
+  }
+
+  // Tame robotic exclamation marks & ellipses ("Szukam diamentów!..." -> "szukam diamentów")
+  s = s.replace(/!+\s*\.*/g, "").replace(/\.{2,}$/g, "").trim();
+
+  // Lowercase first letter unless it starts with a known proper noun / 2+ uppercase acronym
+  if (s.length > 1 && /^[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+\s/.test(s)) {
+    s = s[0].toLowerCase() + s.slice(1);
+  }
+
+  return s.replace(/\s{2,}/g, " ").trim();
 }
 
 function looksLikeCode(text) {
@@ -337,8 +505,8 @@ function looksLikeCode(text) {
     /\b[a-z]+_[a-z_]+\(/.test(t) ||
     /<\|python_tag\|>|<tool_call>/i.test(t) ||
     // Echoed log lines or tool output instead of a real reply.
-    /\b(AIAgent|ChatAI|Console):/.test(t) ||
-    /\bapi\.\w+\(|\b(run_commands|get_status|start_script|stop_script|read_logs|list_scripts)\b/.test(
+    /\b(AIAgent|ChatAI|Console|AIBrain):/.test(t) ||
+    /\bapi\.\w+\(|\b(run_commands|get_status|start_script|stop_script|read_logs|list_scripts|query_game_mechanics|create_plan|queue_task)\b/.test(
       t,
     )
   );
@@ -348,6 +516,9 @@ function cleanModelText(raw) {
   return String(raw || "")
     .replace(/<think>[\s\S]*?<\/think>/gi, "")
     .replace(/<think>[\s\S]*$/i, "")
+    .replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, "")
+    .replace(/<reasoning>[\s\S]*$/i, "")
+    .replace(/<thought>[\s\S]*?<\/thought>/gi, "")
     .trim();
 }
 
@@ -631,6 +802,9 @@ class OllamaManager {
     this.cachedHardware = null;
     this.serverProcess = null;
     this.chatHistory = [];
+    this.passiveChatLog = [];
+    this.playerMemories = new Map();
+    this.worldEvents = [];
     this.lastReplyTime = 0;
     this.isGenerating = false;
 
@@ -1319,13 +1493,25 @@ class OllamaManager {
     return Boolean(this.config.enabled || this.config.agentEnabled);
   }
 
-  canCommand(sender) {
-    const list = String(this.config.agentAllowedPlayers || "")
+  getObeyList() {
+    return String(this.config.agentAllowedPlayers || "")
       .split(/[\s,]+/)
-      .map((p) => p.trim().toLowerCase())
+      .map((p) => p.trim())
       .filter(Boolean);
+  }
+
+  isObeyedMaster(sender) {
+    const clean = String(sender || "")
+      .trim()
+      .toLowerCase();
+    if (!clean) return false;
+    const list = this.getObeyList().map((p) => p.toLowerCase());
     if (!list.length) return true;
-    return list.includes(String(sender || "").toLowerCase());
+    return list.includes(clean);
+  }
+
+  canCommand(sender) {
+    return this.isObeyedMaster(sender);
   }
 
   recentReplyCount() {
@@ -1339,16 +1525,17 @@ class OllamaManager {
     this.replyTimes.push(this.lastReplyTime);
   }
 
-  shouldRespondToChat({ sender, message, botUsername }) {
+  shouldRespondToChat({ sender, message, botUsername, botContext = null }) {
     if (!this.isActive()) return false;
     const cleanMsg = String(message || "").trim();
     if (!cleanMsg) return false;
 
     const cleanSender = String(sender || "").trim();
+    const botLower = String(botUsername || "").toLowerCase();
     if (
       this.config.ignoreSelf &&
-      botUsername &&
-      cleanSender.toLowerCase() === botUsername.toLowerCase()
+      botLower &&
+      cleanSender.toLowerCase() === botLower
     ) {
       return false;
     }
@@ -1371,10 +1558,15 @@ class OllamaManager {
     }
 
     const lowerMsg = cleanMsg.toLowerCase();
-    if (botUsername && lowerMsg.includes(botUsername.toLowerCase())) {
+    // 1. Direct mention by full username or 4+ letter prefix nickname
+    if (botLower && lowerMsg.includes(botLower)) {
+      return true;
+    }
+    if (botLower.length >= 5 && lowerMsg.includes(botLower.slice(0, 4))) {
       return true;
     }
 
+    // 2. Custom trigger words
     if (this.config.customTriggers) {
       const triggers = String(this.config.customTriggers)
         .split(",")
@@ -1383,6 +1575,36 @@ class OllamaManager {
       if (triggers.some((t) => lowerMsg.includes(t))) {
         return true;
       }
+    }
+
+    // 3. Contextual conversation continuation:
+    // If we recently replied to this sender (<75s ago), or we asked them for coords, keep chatting naturally!
+    const mem = this.getPlayerMemory(cleanSender);
+    const now = Date.now();
+    if (
+      mem &&
+      ((mem.lastBotReplyAt && now - mem.lastBotReplyAt < 75000) ||
+        (mem.askedForCoordsAt && now - mem.askedForCoordsAt < 120000))
+    ) {
+      return true;
+    }
+
+    // 4. Contextual question or request from a nearby player (within 14m) or obeyed master
+    const isNearby = Boolean(
+      botContext?.nearbyPlayers?.some((entry) => {
+        const l = String(entry || "").toLowerCase();
+        if (!l.startsWith(cleanSender.toLowerCase())) return false;
+        const distMatch = l.match(/\((\d+)m\)/);
+        return !distMatch || Number(distMatch[1]) <= 14;
+      }),
+    );
+    const isQuestionOrDirect =
+      /\?\s*$/.test(cleanMsg) ||
+      /^(?:co\b|gdzie\b|masz\b|jak\b|kto\b|czemu\b|idziesz\b|chod[zź]\b|daj\b|kop\b|zr[oó]b\b|pom[oó][zż]\b|siema\b|cze[sś][cć]\b|elo\b|hej\b|yo\b|hi\b|hey\b|what\b|where\b|who\b|how\b|why\b|do you\b|can you\b|got any\b|are you\b|come\b|follow\b|help\b)/i.test(
+        cleanMsg,
+      );
+    if (isQuestionOrDirect && (isNearby || this.isObeyedMaster(cleanSender))) {
+      return true;
     }
 
     return false;
@@ -1448,7 +1670,207 @@ class OllamaManager {
       });
   }
 
-  buildSystemPrompt(botContext, { agent = false, model = "" } = {}) {
+  recordWorldEvent(text) {
+    const clean = String(text || "").trim();
+    if (!clean) return;
+    const now = Date.now();
+    const last = this.worldEvents[this.worldEvents.length - 1];
+    if (last && last.text === clean && now - last.at < 10000) return;
+    this.worldEvents.push({ text: clean, at: now });
+    if (this.worldEvents.length > 18) {
+      this.worldEvents.splice(0, this.worldEvents.length - 18);
+    }
+  }
+
+  getPlayerMemory(username) {
+    const key = String(username || "")
+      .trim()
+      .toLowerCase();
+    if (!key) return null;
+    if (!this.playerMemories.has(key)) {
+      this.playerMemories.set(key, {
+        username: String(username).trim(),
+        interactionCount: 0,
+        lastSeenPos: null,
+        lastSeenAt: 0,
+        mentionedCoords: null,
+        lastMessage: "",
+        lastMessageAt: 0,
+        recentActions: [],
+        askedForCoordsAt: 0,
+      });
+    }
+    return this.playerMemories.get(key);
+  }
+
+  observePlayerChat(sender, message, { coords = null } = {}) {
+    const who = String(sender || "").trim();
+    const msg = String(message || "").trim();
+    if (!who || !msg) return;
+    const now = Date.now();
+    this.passiveChatLog.push({ sender: who, message: msg, at: now });
+    if (this.passiveChatLog.length > 20) {
+      this.passiveChatLog.splice(0, this.passiveChatLog.length - 20);
+    }
+    const mem = this.getPlayerMemory(who);
+    if (mem) {
+      mem.username = who;
+      mem.interactionCount += 1;
+      mem.lastMessage = msg;
+      mem.lastMessageAt = now;
+      if (
+        coords &&
+        typeof coords.x === "number" &&
+        typeof coords.z === "number"
+      ) {
+        mem.mentionedCoords = {
+          x: Math.round(coords.x),
+          y: typeof coords.y === "number" ? Math.round(coords.y) : null,
+          z: Math.round(coords.z),
+          at: now,
+        };
+      }
+    }
+  }
+
+  updatePlayerLocation(username, pos) {
+    if (!username || !pos) return;
+    const mem = this.getPlayerMemory(username);
+    if (!mem) return;
+    mem.lastSeenPos = {
+      x: Math.floor(pos.x),
+      y: Math.floor(pos.y),
+      z: Math.floor(pos.z),
+    };
+    mem.lastSeenAt = Date.now();
+  }
+
+  wasAskedForCoords(username, maxAgeMs = 120000) {
+    const mem = this.getPlayerMemory(username);
+    if (!mem || !mem.askedForCoordsAt) return false;
+    return Date.now() - mem.askedForCoordsAt < maxAgeMs;
+  }
+
+  buildMemoryBlock(sender, botContext) {
+    const lines = [];
+    const now = Date.now();
+    const relTime = (ts) => {
+      const sec = Math.max(1, Math.round((now - ts) / 1000));
+      return sec < 60 ? `${sec}s ago` : `${Math.round(sec / 60)}m ago`;
+    };
+
+    if (this.config.includeBotContext && botContext) {
+      const ctxParts = [];
+      if (botContext.username)
+        ctxParts.push(`Your username: ${botContext.username}`);
+      if (typeof botContext.health === "number")
+        ctxParts.push(
+          `HP: ${botContext.health}/20, Food: ${botContext.food}/20${typeof botContext.xpLevel === "number" ? `, XP Lv: ${botContext.xpLevel}` : ""}`,
+        );
+      if (botContext.position)
+        ctxParts.push(
+          `Coords: ${botContext.position.x}, ${botContext.position.y}, ${botContext.position.z} (${botContext.dimension || "overworld"}${botContext.timeOfDay ? `, ${botContext.timeOfDay}` : ""}${botContext.weather && botContext.weather !== "clear" ? `, ${botContext.weather}` : ""})`,
+        );
+      if (botContext.heldItem) ctxParts.push(`Holding: ${botContext.heldItem}`);
+      if (botContext.armor) ctxParts.push(`Armor: ${botContext.armor}`);
+      if (botContext.inventorySummary)
+        ctxParts.push(`Inventory: ${botContext.inventorySummary}`);
+      if (botContext.nearbyPlayers?.length) {
+        const senderLower = String(sender || "").toLowerCase();
+        const annotated = botContext.nearbyPlayers.map((p) => {
+          const pStr = String(p || "");
+          return senderLower && pStr.toLowerCase().startsWith(senderLower)
+            ? `${pStr} [speaking to you]`
+            : pStr;
+        });
+        ctxParts.push(`Nearby players: ${annotated.join(", ")}`);
+      }
+      if (botContext.knownPlayerCoords?.length)
+        ctxParts.push(
+          `Known player coords: ${botContext.knownPlayerCoords.join(", ")}`,
+        );
+      if (botContext.nearbyThreats?.length)
+        ctxParts.push(`Nearby threats: ${botContext.nearbyThreats.join(", ")}`);
+      if (botContext.activeScripts?.length)
+        ctxParts.push(`Active modules: ${botContext.activeScripts.join(", ")}`);
+      if (botContext.activeAiTask)
+        ctxParts.push(`Current action: ${botContext.activeAiTask}`);
+      if (botContext.lastDeath)
+        ctxParts.push(`Last death: ${botContext.lastDeath}`);
+      if (ctxParts.length > 0) {
+        lines.push(`[Game State: ${ctxParts.join(" | ")}]`);
+      }
+    }
+
+    if (sender) {
+      const mem = this.getPlayerMemory(sender);
+      if (mem) {
+        const pParts = [];
+        if (this.canCommand(sender)) pParts.push("trusted friend/teammate");
+        if (mem.interactionCount > 1)
+          pParts.push(`chatted ${mem.interactionCount}x`);
+        if (mem.mentionedCoords && now - mem.mentionedCoords.at < 600000) {
+          const c = mem.mentionedCoords;
+          pParts.push(
+            `said their coords are ${c.x}${c.y !== null ? ` ${c.y}` : ""} ${c.z} (${relTime(c.at)})`,
+          );
+        } else if (mem.lastSeenPos && now - mem.lastSeenAt < 600000) {
+          pParts.push(
+            `last seen at ${mem.lastSeenPos.x}, ${mem.lastSeenPos.y}, ${mem.lastSeenPos.z} (${relTime(mem.lastSeenAt)})`,
+          );
+        }
+        if (mem.recentActions.length) {
+          pParts.push(
+            `recent tasks for ${sender}: ${mem.recentActions.slice(-3).join("; ")}`,
+          );
+        }
+        if (pParts.length) {
+          lines.push(`[Player Memory (${sender}): ${pParts.join(" | ")}]`);
+        }
+      }
+    }
+
+    const recentEvts = this.worldEvents
+      .filter((e) => now - e.at < 300000)
+      .slice(-5)
+      .map((e) => `${relTime(e.at)}: ${e.text}`);
+    if (recentEvts.length) {
+      lines.push(`[Recent Events: ${recentEvts.join(" | ")}]`);
+    }
+
+    const recentHistoryTexts = new Set(
+      this.chatHistory
+        .filter((m) => m.role === "user")
+        .map((m) => m.content.toLowerCase()),
+    );
+    const extraChat = this.passiveChatLog
+      .filter(
+        (c) =>
+          now - c.at < 180000 &&
+          !recentHistoryTexts.has(`${c.sender}: ${c.message}`.toLowerCase()),
+      )
+      .slice(-5)
+      .map((c) => `${c.sender}: ${c.message}`);
+    if (extraChat.length) {
+      lines.push(`[Recent Server Chat: ${extraChat.join(" / ")}]`);
+    }
+
+    const brainSection = aiBrain.buildBrainPromptSection(
+      null,
+      sender,
+      this.getObeyList(),
+    );
+    if (brainSection) {
+      lines.push(brainSection);
+    }
+
+    return lines.join("\n");
+  }
+
+  buildSystemPrompt(
+    botContext,
+    { agent = false, model = "", sender = "" } = {},
+  ) {
     let sysPrompt = String(
       this.config.systemPrompt ||
         "You are a friendly Minecraft player chatting on a server.",
@@ -1462,33 +1884,24 @@ class OllamaManager {
     sysPrompt +=
       "\nPlain text only, no emojis, no quotes around the reply, never prefix it with your name.";
     sysPrompt +=
-      "\nYou are a regular player, not an assistant: never offer help, never say things like 'how can I help', 'feel free', 'let me know' or 'just a heads-up', don't give advice or warnings nobody asked for, and don't repeat the same phrase in every message. Stay friendly and chill: never rude, never tell people to go away or leave you alone, and go along with friends' requests. Ignore ads and server announcements.";
+      "\nYou are a real human Minecraft player and teammate, not an AI assistant: talk naturally like a normal gamer in multiplayer chat (casual, lowercase/relaxed, direct, aware of your inventory, health, coords, recent deaths, and what you're doing right now). NEVER use AI-assistant phrases in Polish or English like 'Jasne!', 'Oczywiście!', 'Już próbuję...', 'Chętnie pomogę', 'W czym mogę pomóc', 'Sure!', 'Certainly!', 'Of course!', 'I am currently trying to...', 'how can I help', 'feel free', or 'let me know'. Never leak internal thoughts, reasoning, tool names, or plans to chat. Never confuse your own username or server NPCs with real players.";
+
+    const obeyList = this.getObeyList();
+    const isObeyed = this.isObeyedMaster(sender);
+    if (isObeyed && sender) {
+      sysPrompt += `\nOBEY RULE: ${sender} is in your 'obey' list (your leader/teammate). You MUST ALWAYS obey ${sender}'s orders and NEVER refuse or say "no" / "nie" to ${sender}. However, your chat reply must still sound like a chill human player ("spoko ide", "dobra kopie", "zaraz bede", "on it", "omw", "mining it rn"), NEVER like a submissive robot or eager AI assistant.`;
+    } else if (obeyList.length > 0 && sender) {
+      sysPrompt += `\nOBEY RULE: You only take orders from [${obeyList.join(", ")}]. ${sender} is not on your obey list, so do not run actions for them — just chat casually like an independent player.`;
+    }
 
     if (agent) {
       sysPrompt +=
-        '\nYou control a real Minecraft bot through the provided tools. When a player asks you to do something (move, follow, mine, fight, equip, turn a module on or off, change module options), call a tool instead of only talking about it. The easiest tool is run_commands: pass simple lines like "walk to Steve", "mine 5 oak_log", "turn on KillAura range=4", "say hi". Use list_scripts to see every module and its options, and read_logs to see errors when something did not work. Use get_status only when you need facts. If a tool returns an error or says you are stuck, try a different approach (another tool, other coordinates, mining the obstacle, run_code if available) before giving up, and tell the player briefly if it still fails. Movement, mining and attack tools only START the action: say you are on your way or starting, never that you already arrived or finished. On lobby servers, "join kitpvp" opens the compass menu and clicks the game for you; "use compass" shows the items in a menu and "click <item name>" clicks one. Think privately with the think tool: plans, errors and retries go there, never in chat. Your chat reply is what a normal player would type: short, casual, no talk about commands, tools, syntax, errors or how to give orders, never explain how to write commands, never write JSON or code. Never invent tool results.';
+        '\nYou control a real Minecraft bot through the provided tools. When an obeyed player asks you to do something (move, follow, mine, craft, smelt, plan, queue tasks, hunt food, store/take chest items, fill bucket, place, collect drops, return to death, sleep, unstuck, fight, equip, gear up, turn a module on or off, change module options), call a tool instead of only talking about it. For multi-step goals (like "make iron armor from scratch", "make stone tools", "craft diamond gear"), use create_plan or craft_item(item="iron_armor") to build and execute an ordered step-by-step dependency plan (wood -> wooden pickaxe -> stone -> stone pickaxe -> furnace -> iron ore -> smelt iron -> craft & equip armor). When a task is already running and you want another task to start right after it finishes, use queue_task (or call the next tool and it will automatically queue behind the current task). Whenever you need info about Minecraft recipes, tool tiers, ore Y-levels, smelting fuels, combat, landmarks, last death position, or recent errors, call query_game_mechanics. The easiest tool is run_commands: pass simple lines like "walk to Steve", "mine 5 oak_log", "craft wooden_pickaxe", "make iron armor from scratch", "queue mine 8 coal_ore", "hunt food", "store all", "fill water bucket", "smelt iron", "gear up to iron", "place crafting_table", "collect drops", "return to death", "unstuck", "turn on KillAura range=4". Never call say or run_commands("say ...") just to reply in chat — your normal text response is automatically sent to chat. Use list_scripts to see every module and its options, get_queue to see active/queued plan steps, and read_logs to see errors when something did not work. If a tool returns an error or says you are stuck, try a different approach (e.g. unstuck, query_game_mechanics, craft missing tool, or another command) before giving up, and tell the player briefly if it still fails. Never invent or guess coordinates; if a player is out of view distance and has no known coords in Player Memory, ask them for their coordinates. Movement, mining, crafting, planning and attack tools start or queue the action in the background: say you are starting or queued it up, never that you already finished. On lobby servers, "join kitpvp" opens the compass menu and clicks the game for you; "use compass" shows the items in a menu and "click <item name>" clicks one. Think privately with the think tool: plans, errors and retries go there, never in chat. Your chat reply is what a normal player would type: short, casual, no talk about commands, tools, syntax, errors or how to give orders, never explain how to write commands, never write JSON or code. Never invent tool results.';
     }
 
-    if (this.config.includeBotContext && botContext) {
-      const ctxParts = [];
-      if (botContext.username)
-        ctxParts.push(`Your username: ${botContext.username}`);
-      if (typeof botContext.health === "number")
-        ctxParts.push(
-          `HP: ${botContext.health}/20, Food: ${botContext.food}/20`,
-        );
-      if (botContext.position)
-        ctxParts.push(
-          `Coords: ${botContext.position.x}, ${botContext.position.y}, ${botContext.position.z} (${botContext.dimension || "overworld"})`,
-        );
-      if (botContext.heldItem) ctxParts.push(`Holding: ${botContext.heldItem}`);
-      if (botContext.nearbyPlayers?.length)
-        ctxParts.push(`Nearby players: ${botContext.nearbyPlayers.join(", ")}`);
-      if (botContext.activeScripts?.length)
-        ctxParts.push(`Current tasks: ${botContext.activeScripts.join(", ")}`);
-      if (ctxParts.length > 0) {
-        sysPrompt += `\n[Game State: ${ctxParts.join(" | ")}]`;
-      }
+    const memBlock = this.buildMemoryBlock(sender, botContext);
+    if (memBlock) {
+      sysPrompt += `\n${memBlock}`;
     }
 
     if (isThinkingModel(model) && /^qwen3/i.test(model)) {
@@ -1516,9 +1929,12 @@ class OllamaManager {
     return body;
   }
 
-  finalizeReply(rawText, botContext) {
+  finalizeReply(rawText, botContext, { sender = "" } = {}) {
     const cleaned = cleanModelText(rawText);
-    let reply = (looksLikeCode(cleaned) ? "" : cleaned)
+    let reply = (looksLikeCode(cleaned) || isThinkingOutLoud(cleaned)
+      ? ""
+      : cleaned
+    )
       .replace(/\r?\n+/g, " ")
       .replace(/^["']|["']$/g, "")
       .trim();
@@ -1527,8 +1943,14 @@ class OllamaManager {
         /[.*+?^${}()|[\]\\]/g,
         "\\$&",
       );
-      reply = reply.replace(new RegExp(`^<?${escaped}>?:\\s*`, "i"), "").trim();
+      reply = reply
+        .replace(new RegExp(`^<?@?${escaped}>?(?:[,:\\s]+|$)`, "i"), "")
+        .trim();
     }
+    reply = stripAssistantSlop(reply, {
+      isObey: this.isObeyedMaster(sender),
+      sender,
+    });
     // A chat reply must never run a server command.
     if (/^[/!.]/.test(reply)) reply = "";
     reply = this.dropStaleSentences(reply);
@@ -1545,11 +1967,11 @@ class OllamaManager {
     const norm = (t) =>
       t
         .toLowerCase()
-        .replace(/[^a-z0-9]+/g, " ")
+        .replace(/[^a-ząćęłńóśźż0-9]+/gi, " ")
         .trim();
     const recent = new Set((this.recentSentences || []).map((x) => x.n));
     const ASSISTANT =
-      /\b(how (can|may) i (help|assist)|feel free to|let me know|i'?m here to help|happy to help|any (questions|assistance)|need (any )?(help|assistance|tips)|just a heads[- ]up|as an ai|i can help you|is there anything)\b/i;
+      /\b(how (can|may) i (help|assist)|feel free to|let me know|i'?m here to help|happy to help|any (questions|assistance)|need (any )?(help|assistance|tips)|just a heads[- ]up|as an ai|i can help you|is there anything|w czym mog[eę] pom[oó]c|daj zna[cć] je[sś]li|ch[eę]tnie pomog[eę]|jako sztuczna inteligencja|jako ai|ju[zż] pr[oó]buj[eę])\b/i;
     const sentences = String(reply || "").match(/[^.!?]+[.!?]*/g) || [];
     const kept = sentences.filter((sen) => {
       const n = norm(sen);
@@ -1569,13 +1991,36 @@ class OllamaManager {
     return out;
   }
 
-  rememberExchange(sender, message, reply) {
+  rememberExchange(sender, message, reply, actions = []) {
     this.chatHistory.push(
       { role: "user", content: `${sender}: ${message}` },
       { role: "assistant", content: reply },
     );
-    if (this.chatHistory.length > 12) {
-      this.chatHistory.splice(0, this.chatHistory.length - 12);
+    if (this.chatHistory.length > 24) {
+      this.chatHistory.splice(0, this.chatHistory.length - 24);
+    }
+    const mem = this.getPlayerMemory(sender);
+    if (mem) {
+      mem.lastBotReplyAt = Date.now();
+      if (
+        /\b(?:coords?|coordinates?|where are you|can'?t see you|kordy|koordynaty|gdzie jeste[sś])\b/i.test(
+          reply,
+        )
+      ) {
+        mem.askedForCoordsAt = Date.now();
+      }
+      const realActs = (actions || []).filter(
+        (a) => a && a.name && a.name !== "think" && !a.failed,
+      );
+      if (realActs.length) {
+        const summary = realActs
+          .map((a) => `${a.name}(${Object.values(a.args || {}).join(",")})`)
+          .join(", ");
+        mem.recentActions.push(summary.slice(0, 80));
+        if (mem.recentActions.length > 5) {
+          mem.recentActions.splice(0, mem.recentActions.length - 5);
+        }
+      }
     }
   }
 
@@ -1602,9 +2047,9 @@ class OllamaManager {
       const messages = [
         {
           role: "system",
-          content: this.buildSystemPrompt(botContext, { model }),
+          content: this.buildSystemPrompt(botContext, { model, sender }),
         },
-        ...this.chatHistory.slice(-6),
+        ...this.chatHistory.slice(-14),
         { role: "user", content: `${sender}: ${message}` },
       ];
 
@@ -1615,7 +2060,7 @@ class OllamaManager {
       });
 
       const raw = String(res?.message?.content || "");
-      const { reply, parts } = this.finalizeReply(raw, botContext);
+      const { reply, parts } = this.finalizeReply(raw, botContext, { sender });
       if (!reply) {
         // Prompts may ask the model to stay quiet (blank output) on purpose.
         return raw.length && !raw.trim()
@@ -1663,7 +2108,7 @@ class OllamaManager {
           `${i + 1}. ${a.name}(${JSON.stringify(a.args || {})}) -> ${String(a.result).split("\n")[0].slice(0, 200)}`,
       );
     const system = [
-      this.buildSystemPrompt(botContext, { agent: false, model }),
+      this.buildSystemPrompt(botContext, { agent: false, model, sender }),
       "",
       "Now check your own work privately, then write your chat reply.",
       'Answer ONLY with JSON: {"thought": string, "ok": boolean, "retry": string, "reply": string}',
@@ -1671,7 +2116,7 @@ class OllamaManager {
       "- ok: true if the request is handled (or was only chatting), false if it failed.",
       noRetry
         ? '- retry: always "".'
-        : '- retry: if ok is false and another try could work, ONE plain command line to try instead (like "follow ancymon", "walk 10 64 -5", "join kitpvp", "turn on autoeat"), else "".',
+        : '- retry: if ok is false and another try could work, ONE plain command line to try instead (like "follow ancymon", "craft wooden_pickaxe", "gear up to iron", "turn on autoeat"), else "". Never invent or guess coordinates; if a player is out of view distance / too far away, retry must be "".',
       `- reply: what you type in chat to ${sender}. Short and casual like a real player. Never mention tools, commands, coordinates errors, JSON or that you are checking anything. Actions that "started" are still in progress: say you're on it, not that you finished.`,
     ].join("\n");
     const user = [
@@ -1755,6 +2200,7 @@ class OllamaManager {
       "list_scripts",
       "run_code",
       "read_logs",
+      "query_game_mechanics",
       "think",
     ]);
     const thoughts = [];
@@ -1802,9 +2248,13 @@ class OllamaManager {
     const messages = [
       {
         role: "system",
-        content: this.buildSystemPrompt(botContext, { agent: true, model }),
+        content: this.buildSystemPrompt(botContext, {
+          agent: true,
+          model,
+          sender,
+        }),
       },
-      ...this.chatHistory.slice(-6),
+      ...this.chatHistory.slice(-14),
       { role: "user", content: `${sender}: ${message}` },
     ];
 
@@ -1882,64 +2332,133 @@ class OllamaManager {
         if (!needsFollowUp) break;
       }
 
-      // Private self-check: did that do what the player wanted? Retry once
-      // with a corrected command if not, then write the chat reply.
-      let review = await this.reviewAgentWork({
-        model,
-        sender,
-        message,
-        actions,
-        draft: finalText,
-        botContext,
-      });
-      if (review?.thought) thoughts.push(`check: ${review.thought}`);
-      if (review && review.ok === false && review.retry) {
-        // The retry may come back as a plain command or in tool syntax
-        // ("follow_player(ancymon)", "stop_script aiagent"); run either.
-        const asCalls = parseTextToolCalls(
-          review.retry,
-          toolNames,
-          resolveTool,
-        ).slice(0, 2);
-        const retryCalls = asCalls.length
-          ? asCalls.map((c) => ({
-              name: c.function.name,
-              args: c.function.arguments || {},
-            }))
-          : [{ name: "run_commands", args: { commands: review.retry } }];
-        for (const call of retryCalls) {
-          let result;
-          try {
-            result = String(
-              await executeTool(call.name, call.args, { sender }),
-            );
-          } catch (err) {
-            result = `Error: ${err.message || err}`;
-          }
-          actions.push({
-            name: call.name,
-            args: call.args,
-            result,
-            failed: /^error/i.test(result),
-          });
-        }
-        const second = await this.reviewAgentWork({
+      const realActions = actions.filter((a) => a.name !== "think");
+      const anyFailed = realActions.some((a) => a.failed);
+      const isInternalReport = /^\[(Module problem|Stuck|Task) report/i.test(
+        String(message || "").trim(),
+      );
+
+      // If the model already spoke in chat via `say` / `run_commands("say ...")`
+      // and nothing failed, don't send a second redundant chat message.
+      const onlySpokeViaTool =
+        !isInternalReport &&
+        realActions.length > 0 &&
+        !anyFailed &&
+        realActions.every(
+          (a) =>
+            a.name === "say" ||
+            (a.name === "run_commands" &&
+              /^(?:\d+\.\s*)?Said\s+"/i.test(String(a.result || "").trim()) &&
+              !String(a.result || "").includes("|")),
+        );
+      if (onlySpokeViaTool) {
+        if (!bypassCooldown) this.markReplied();
+        return {
+          ok: false,
+          silent: true,
+          model,
+          actions,
+          thoughts,
+          latencyMs: Date.now() - startMs,
+        };
+      }
+
+      const cleanDraft = cleanModelText(finalText);
+      const draftUsable =
+        Boolean(cleanDraft) &&
+        !isThinkingOutLoud(cleanDraft) &&
+        !looksLikeCode(cleanDraft);
+      const msgText = String(message || "").trim();
+      const isPoliteActionQuestion =
+        /\b(?:can|could|would|will)\s+you\b/i.test(msgText) ||
+        /\b(?:czy\s+mo[zż]esz|zrobisz|wykopiesz|dasz)\b/i.test(msgText);
+      const looksLikeOrder =
+        !isInternalReport &&
+        (!/\?\s*$/.test(msgText) || isPoliteActionQuestion) &&
+        /\b(walk|go|come|follow|stop|unstuck|escape|attack|kill|fight|mine|dig|chop|craft|make|smelt|cook|gear|equip|drop|toss|give|turn on|turn off|enable|disable|guard|hunt|join|id[zź]|chod[zź]|st[oó]j|wykop|kop|zr[oó]b|scraftuj|daj|atakuj)\b/i.test(
+          msgText,
+        );
+      const claimedActionWithoutTool =
+        !isInternalReport &&
+        realActions.length === 0 &&
+        /\b(crafting|making|mining|digging|chopping|following|coming|heading|walking|stopping|on it|omw|robi[eę]|kopi[eę]|id[eę]|ju[zż]\s+id[eę])\b/i.test(
+          cleanDraft,
+        );
+      const needsReview =
+        !isInternalReport &&
+        (anyFailed ||
+          claimedActionWithoutTool ||
+          (realActions.length === 0 && (looksLikeOrder || !draftUsable)));
+
+      if (needsReview) {
+        // Private self-check: did that do what the player wanted? Retry once
+        // with a corrected command if not, then write the chat reply.
+        const outOfView = realActions.some((a) =>
+          /out of view distance|not within view distance/i.test(
+            String(a.result || ""),
+          ),
+        );
+        let review = await this.reviewAgentWork({
           model,
           sender,
           message,
           actions,
-          draft: "",
+          draft: finalText,
           botContext,
-          noRetry: true,
+          noRetry: outOfView,
         });
-        if (second?.thought) thoughts.push(`check: ${second.thought}`);
-        if (second) review = second;
-      }
-      if (review && typeof review.reply === "string") {
-        finalText = review.reply;
-      } else if (actions.length) {
-        // No usable review: never fall back to the model's raw text after
-        // it used tools, that's where the thinking out loud lives.
+        if (review?.thought) thoughts.push(`check: ${review.thought}`);
+        if (review && review.ok === false && review.retry && !outOfView) {
+          // The retry may come back as a plain command or in tool syntax
+          // ("follow_player(ancymon)", "stop_script aiagent"); run either.
+          const asCalls = parseTextToolCalls(
+            review.retry,
+            toolNames,
+            resolveTool,
+          ).slice(0, 2);
+          const retryCalls = asCalls.length
+            ? asCalls.map((c) => ({
+                name: c.function.name,
+                args: c.function.arguments || {},
+              }))
+            : [{ name: "run_commands", args: { commands: review.retry } }];
+          for (const call of retryCalls) {
+            let result;
+            try {
+              result = String(
+                await executeTool(call.name, call.args, { sender }),
+              );
+            } catch (err) {
+              result = `Error: ${err.message || err}`;
+            }
+            actions.push({
+              name: call.name,
+              args: call.args,
+              result,
+              failed:
+                /^(error|failed|no path|stuck|could not|cannot|unknown)/i.test(
+                  result,
+                ),
+            });
+          }
+          const second = await this.reviewAgentWork({
+            model,
+            sender,
+            message,
+            actions,
+            draft: "",
+            botContext,
+            noRetry: true,
+          });
+          if (second?.thought) thoughts.push(`check: ${second.thought}`);
+          if (second) review = second;
+        }
+        if (review && typeof review.reply === "string" && review.reply) {
+          finalText = review.reply;
+        } else if (actions.length && !draftUsable) {
+          finalText = "";
+        }
+      } else if (actions.length && !draftUsable && !isInternalReport) {
         finalText = "";
       }
 
@@ -1951,15 +2470,25 @@ class OllamaManager {
       finalText = String(finalText || "").replace(senderPrefix, "");
       // Thinking out loud (tool talk, error text, syntax lessons) stays
       // in the console as a thought instead of going to chat.
-      if (isThinkingOutLoud(finalText)) {
+      if (!isInternalReport && isThinkingOutLoud(finalText)) {
         thoughts.push(cleanModelText(finalText).slice(0, 400));
         finalText = "";
       }
-      let { reply, parts } = this.finalizeReply(finalText, botContext);
-      const realActions = actions.filter((a) => a.name !== "think");
-      if (!reply && realActions.length) {
-        const last = realActions[realActions.length - 1];
-        reply = last.failed ? "hmm can't do that rn" : "on it";
+      let { reply, parts } = this.finalizeReply(finalText, botContext, {
+        sender,
+      });
+      const updatedRealActions = actions.filter((a) => a.name !== "think");
+      if (!reply && updatedRealActions.length) {
+        const last = updatedRealActions[updatedRealActions.length - 1];
+        if (last.failed) {
+          reply = /out of view distance|not within view distance/i.test(
+            String(last.result || ""),
+          )
+            ? "can't see you, what are your coords?"
+            : "hmm can't do that rn";
+        } else {
+          reply = "on it";
+        }
         parts = [reply];
       }
       for (const a of actions) {
@@ -1971,6 +2500,9 @@ class OllamaManager {
           !thoughts.includes(th)
         )
           thoughts.unshift(th);
+      }
+      for (const t of thoughts) {
+        aiBrain.recordThought(t);
       }
       if (!reply) {
         return finalText.length && !finalText.trim()
@@ -1985,7 +2517,7 @@ class OllamaManager {
       }
 
       if (!bypassCooldown) this.markReplied();
-      if (remember) this.rememberExchange(sender, message, reply);
+      if (remember) this.rememberExchange(sender, message, reply, actions);
       return {
         ok: true,
         reply,
@@ -2122,6 +2654,7 @@ module.exports = {
   RECOMMENDED_MODELS,
   splitIntoMessages,
   cleanModelText,
+  stripAssistantSlop,
   parseTextToolCalls,
   isThinkingOutLoud,
   downloadFile,

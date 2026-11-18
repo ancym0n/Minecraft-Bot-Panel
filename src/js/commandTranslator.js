@@ -40,11 +40,20 @@ const FILLER = new Set([
   "items",
   "my",
   "your",
+  "down",
   "x",
 ]);
 
-// Words that mean "the player who asked".
-const SELF_WORDS = new Set(["me", "here", "myself", "us", "sender", "you"]);
+// Words that mean "the player who asked" (or reflexive "yourself" in "make yourself a pickaxe").
+const SELF_WORDS = new Set([
+  "me",
+  "here",
+  "myself",
+  "yourself",
+  "us",
+  "sender",
+  "you",
+]);
 
 const VERBS = {
   move: [
@@ -63,24 +72,52 @@ const VERBS = {
     "tp",
     "teleport",
   ],
-  follow: ["follow", "escort", "accompany", "trail"],
+  follow: ["follow", "following", "escort", "accompany", "trail"],
   stop: ["stop", "halt", "cancel", "stay", "freeze", "abort", "quit", "end"],
   look: ["look", "face", "lookat", "stare", "watch"],
-  attack: ["attack", "kill", "hit", "fight", "slay", "punch", "murder"],
-  hunt: ["hunt", "chase", "pursue"],
-  guard: ["guard", "protect", "defend", "escort", "bodyguard"],
+  attack: [
+    "attack",
+    "attacking",
+    "kill",
+    "killing",
+    "hit",
+    "fight",
+    "fighting",
+    "slay",
+    "punch",
+    "murder",
+  ],
+  hunt: ["hunt", "hunting", "chase", "chasing", "pursue"],
+  guard: [
+    "guard",
+    "guarding",
+    "protect",
+    "protecting",
+    "defend",
+    "escort",
+    "bodyguard",
+  ],
   mine: [
     "mine",
+    "mining",
     "dig",
+    "digging",
     "break",
     "chop",
+    "chopping",
     "cut",
     "collect",
     "gather",
+    "gathering",
     "harvest",
     "get",
     "farm",
+    "find",
+    "search",
+    "obtain",
   ],
+  craft: ["craft", "crafting", "make", "making", "create", "forge"],
+  smelt: ["smelt", "smelting", "cook", "cooking", "melt"],
   eat: ["eat", "food", "consume"],
   gear: ["gear", "armor", "armour", "geared", "gearup"],
   hold: ["hold", "wield", "select", "equip", "grab", "take"],
@@ -131,8 +168,18 @@ const VERBS = {
   click: ["click", "leftclick", "pick", "choose"],
   close: ["close", "exit", "leave"],
   hotbar: ["hotbar", "slot"],
-  join: ["join", "play", "queue", "connect"],
+  join: ["join", "play", "connect"],
   respawn: ["respawn", "revive"],
+  unstuck: ["unstuck", "escape", "recover", "unstick", "free"],
+  place: ["place", "putdown"],
+  sleep: ["sleep", "bed", "rest", "nap"],
+  pickup: ["pickup", "loot", "grabdrops", "collectdrops"],
+  death: ["deathpoint", "deathpos", "grave", "corpse", "return"],
+  plan: ["plan"],
+  queue: ["queue", "enqueue", "tasks"],
+  store: ["store", "deposit", "stash"],
+  withdraw: ["withdraw"],
+  bucket: ["fill", "bucket"],
   repeat: ["repeat", "loop"],
 };
 
@@ -272,10 +319,64 @@ function cleanLine(line, botName = "") {
   if (botName) {
     const esc = botName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     s = s.replace(new RegExp(`^@?${esc}[,:]?\\s+`, "i"), "");
+    if (botName.length >= 5) {
+      const nickPrefix = botName
+        .slice(0, 4)
+        .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      s = s.replace(new RegExp(`^@?${nickPrefix}[a-z0-9_]*[,:]?\\s+`, "i"), "");
+    }
   }
-  s = s.replace(/^(?:please|pls|plz|now|then|and|also|ok|okay)[,]?\s+/i, "");
-  s = s.replace(/^(?:can you|could you|would you|i want you to)\s+/i, "");
+  // Strip repeated conversational prefixes like "no bro you do it make..." or "just start following me"
+  for (let i = 0; i < 4; i++) {
+    const next = s
+      .replace(
+        /^(?:no|nah|yo|hey|hi|bro|dude|man|mate|bot|please|pls|plz|just|now|then|and|also|ok|okay)[,!]?\s+/i,
+        "",
+      )
+      .replace(
+        /^(?:can you|could you|would you|i want you to|you do it|do it|go ahead and)\s+/i,
+        "",
+      )
+      .replace(
+        /^start\s+(following|hunting|chasing|mining|digging|chopping|crafting|making|smelting|cooking|attacking|fighting|guarding|walking|moving|running)\b/i,
+        "$1",
+      );
+    if (next === s) break;
+    s = next;
+  }
+  s = s.replace(/\s+-\s+.*$/, "").trim();
   s = s.replace(/[.!?]+$/, "").trim();
+  // Common Polish chat commands ("idz za mna", "chodz tu", "stoj", "zrob kilof", "wykop drewno")
+  s = s
+    .replace(/^id[zź]\s+za\s+mn[aą](?=\s|$)/i, "follow me")
+    .replace(/^chod[zź]\s+(?:tu|tutaj|do\s+mnie)(?=\s|$)/i, "come to me")
+    .replace(/^(?:st[oó]j|zatrzymaj\s+si[eę]|przesta[nń])(?=\s|$)/i, "stop")
+    .replace(/^(?:ubierz|ekwipuj)\s+si[eę](?=\s|$)/i, "gear up")
+    .replace(
+      /^(?:odblokuj\s+si[eę]|wydosta[nń]\s+si[eę]|wyjd[zź]\s+z\s+dziury)(?=\s|$)/i,
+      "unstuck",
+    )
+    .replace(/^(?:wykop|kop|zbierz|nar[aą]b)\s+/i, "mine ")
+    .replace(/^(?:zr[oó]b|stw[oó]rz|scraftuj)\s+(?:sobie\s+)?/i, "craft ")
+    .replace(/^(?:przepal|upiecz)\s+/i, "smelt ")
+    .replace(/^(?:atakuj|zabij|bij)\s+/i, "attack ")
+    .replace(/^(?:bro[nń]|chro[nń])\s+/i, "guard ")
+    .replace(/^(?:zjedz|jedz)(?=\s|$)/i, "eat")
+    .replace(/^skocz(?=\s|$)/i, "jump")
+    .replace(/\bdrewniany\s+kilof\b/gi, "wooden_pickaxe")
+    .replace(/\bkamienny\s+kilof\b/gi, "stone_pickaxe")
+    .replace(/\b[zż]elazny\s+kilof\b/gi, "iron_pickaxe")
+    .replace(/\bdiamentowy\s+kilof\b/gi, "diamond_pickaxe")
+    .replace(/\bdrewniany\s+miecz\b/gi, "wooden_sword")
+    .replace(/\bkamienny\s+miecz\b/gi, "stone_sword")
+    .replace(/\b[zż]elazny\s+miecz\b/gi, "iron_sword")
+    .replace(/\bdrewno\b/gi, "oak_log")
+    .replace(/\bkamie[nń]\b/gi, "cobblestone");
+  // Map "get out of this hole/pit/water/trap" or "climb out" to unstuck
+  s = s.replace(
+    /\b(?:get\s+out(?:\s+of\s+(?:here|this|the)\s+\w+|\s+of\s+here)?|climb\s+out(?:\s+of\s+\w+)?|dig\s+out\s+of\s+(?:this|the)\s+\w+)\b/gi,
+    "unstuck",
+  );
   s = s
     .replace(/\ba few\b/gi, "3")
     .replace(
@@ -304,8 +405,15 @@ function splitCommands(text) {
     const pieces = part.split(/\s+and\s+|,\s+/i);
     let cur = pieces[0];
     for (const piece of pieces.slice(1)) {
-      const first = piece.split(/\s+/)[0].toLowerCase();
-      if (VERB_OF.has(first) || /^(turn|switch|toggle)$/.test(first)) {
+      const stripped = piece
+        .replace(/^(?:just|please|pls|plz|now|also|then)\s+/i, "")
+        .trim();
+      const first = (stripped.split(/\s+/)[0] || "").toLowerCase();
+      if (
+        stripped.startsWith("/") ||
+        VERB_OF.has(first) ||
+        /^(turn|switch|toggle)$/.test(first)
+      ) {
         out.push(cur);
         cur = piece;
       } else {
@@ -357,19 +465,26 @@ function translateLine(raw, ctx) {
   // The bot's own name is who's being talked to, never the target
   // ("follow me mlodysiur" → "follow me").
   const botKey = String(ctx.botName || "").toLowerCase();
+  const isBotNameOrNick = (w) => {
+    if (!botKey) return false;
+    const c = String(w || "")
+      .toLowerCase()
+      .replace(/^@|[,:!.?]+$/g, "");
+    if (!c) return false;
+    if (c === botKey) return true;
+    return botKey.length >= 5 && c.length >= 4 && botKey.startsWith(c);
+  };
   const words = line
     .split(/\s+/)
-    .filter(
-      (w, i) =>
-        !botKey ||
-        i === 0 ||
-        w.toLowerCase().replace(/^@|[,:!.?]+$/g, "") !== botKey,
-    );
+    .filter((w, i) => i === 0 || !isBotNameOrNick(w));
   const lower = words.map((w) => w.toLowerCase());
   let verb = lower[0];
   let args = words.slice(1);
   let kind = VERB_OF.get(verb);
   const who = (list) => {
+    if (list.some((t) => SELF_WORDS.has(String(t || "").toLowerCase()))) {
+      return sender;
+    }
     const name = cleanWords(list).find((t) => !isNum(t));
     if (!name || SELF_WORDS.has(name.toLowerCase())) return sender;
     return name.replace(/^@/, "");
@@ -401,15 +516,62 @@ function translateLine(raw, ctx) {
 
   // "walk forward 2" → direction
   if (kind === "move" && VERB_OF.get(lower[1]) === "dir") {
+    if (
+      lower[1] === "back" &&
+      lower.some((w) =>
+        /^(death|died|items?|drops?|grave|corpse|spot|where)$/.test(w),
+      )
+    ) {
+      return `api.return_to_death({})`;
+    }
     kind = "dir";
     verb = lower[1];
     args = words.slice(2);
+  }
+  // "go to bed" / "go sleep"
+  if (kind === "move" && lower.some((w) => /^(bed|sleep)$/.test(w))) {
+    return `api.sleep_in_bed({})`;
+  }
+  // "get unstuck" / "get free" / "get out"
+  if (
+    kind === "mine" &&
+    lower[1] &&
+    /^(unstuck|free|out)$/.test(lower[1])
+  ) {
+    return `api.unstuck({})`;
+  }
+  // "pick up items" / "pick up drops"
+  if (kind === "click" && verb === "pick" && lower[1] === "up") {
+    return `api.collect_drops({})`;
   }
   // "go mine diamonds", "go kill zombies"
   if (kind === "move" && lower[1] && !["to", "player"].includes(lower[1])) {
     const next = VERB_OF.get(lower[1]);
     if (next && !["move", "dir", "stop"].includes(next)) {
       return translateLine(words.slice(1).join(" "), ctx);
+    }
+  }
+
+  // Coordinate messages: "120 64 -300", "im at 120 64 -300", "my coords are 120 64 -300", "x 120 y 64 z -300"
+  if (
+    !kind &&
+    (/^(?:i'?m\s+at|i\s+am\s+at|my\s+coords?\s+(?:are|is)|coords?|pos|position|location|at)\b/i.test(
+      line,
+    ) ||
+      /^\s*x\s*[:=]?\s*-?\d+/i.test(line) ||
+      /^\s*-?\d+(?:\.\d+)?(?:\s*,\s*|\s+)-?\d+(?:\.\d+)?(?:\s*,\s*|\s+)-?\d+(?:\.\d+)?\s*$/.test(
+        line,
+      ))
+  ) {
+    const cleanedCoordTokens = words
+      .map((w) => w.replace(/^[,xXyYzZ:=]+|[,]+$/g, ""))
+      .filter(isNum)
+      .map(toNum);
+    if (cleanedCoordTokens.length >= 3) {
+      return `api.go_to({ x: ${cleanedCoordTokens[0]}, y: ${cleanedCoordTokens[1]}, z: ${cleanedCoordTokens[2]} })`;
+    }
+    if (cleanedCoordTokens.length === 2) {
+      return `api.go_to({ x: ${cleanedCoordTokens[0]}, z: ${cleanedCoordTokens[1]} })`;
     }
   }
 
@@ -429,7 +591,16 @@ function translateLine(raw, ctx) {
         return `api.go_to({ x: ${nums[0]}, y: ${nums[1]}, z: ${nums[2]} })`;
       if (nums.length === 2)
         return `api.go_to({ x: ${nums[0]}, z: ${nums[1]} })`;
-      const target = who(args);
+      const nonNum = args.filter((t) => !isNum(t));
+      const clean = cleanWords(nonNum);
+      if (clean.length > 2 || clean.some((w) => VERB_OF.has(w.toLowerCase()))) {
+        return { error: "who should I walk to? e.g. walk to Steve" };
+      }
+      const target =
+        clean.length === 2 &&
+        !clean.some((w) => SELF_WORDS.has(w.toLowerCase()))
+          ? clean.join(" ")
+          : who(args);
       if (!target) return { error: "who should I walk to? e.g. walk to Steve" };
       return `api.come_to_player({ player: ${q(target)} })`;
     }
@@ -471,19 +642,93 @@ function translateLine(raw, ctx) {
       return `api.attack({ target: ${q(target)} })`;
     }
     case "mine": {
+      if (
+        lower.some((w) => /^(drops?|loot|ground)$/.test(w)) ||
+        (verb === "collect" && lower.includes("items"))
+      ) {
+        return `api.collect_drops({})`;
+      }
+      if (
+        /^(get|find|grab)$/i.test(verb) &&
+        lower.some((w) => /^(death|died|grave|corpse)$/.test(w))
+      ) {
+        return `api.return_to_death({})`;
+      }
       const nums = args.filter(isNum).map(toNum);
-      const rest = cleanWords(args.filter((t) => !isNum(t)));
-      if (!rest.length) return { error: "mine what? e.g. mine 10 oak_log" };
+      const rest = cleanWords(args.filter((t) => !isNum(t))).filter(
+        (t) => !SELF_WORDS.has(t.toLowerCase()),
+      );
+      if (!rest.length) {
+        if (
+          /^(find|search)$/i.test(verb) &&
+          args.some((t) => SELF_WORDS.has(t.toLowerCase()))
+        ) {
+          return `api.come_to_player({ player: ${q(sender)} })`;
+        }
+        return { error: "mine what? e.g. mine 10 oak_log" };
+      }
       const count = nums[0] || (/^(all|lots|many)$/i.test(rest[0]) ? 32 : 1);
       const block = rest
         .filter((t) => !/^(all|lots|many|more)$/i.test(t))
         .join("_");
+      if (/^(food|meat|animals?)$/i.test(block)) {
+        return `api.hunt_food({ count: ${nums[0] || 3} })`;
+      }
+      if (/^(water|lava)$/i.test(block)) {
+        return `api.fill_bucket({ liquid: ${q(block.toLowerCase())} })`;
+      }
       return `api.mine_block({ block: ${q(block)}, count: ${count} })`;
+    }
+    case "craft": {
+      if (/^plan$/i.test(lower[1] || "")) {
+        const goal = words.slice(2).join(" ").trim();
+        if (!goal) return { error: "plan what? e.g. plan make iron armor" };
+        return `api.create_plan({ goal: ${q(goal)} })`;
+      }
+      const nums = args.filter(isNum).map(toNum);
+      const rest = cleanWords(args.filter((t) => !isNum(t))).filter(
+        (t) =>
+          !SELF_WORDS.has(t.toLowerCase()) &&
+          !/^(all|lots|many|more|up|it|from|scratch|full|set)$/i.test(t),
+      );
+      if (!rest.length)
+        return { error: "craft what? e.g. craft wooden_pickaxe" };
+      const joined = rest.join("_").toLowerCase();
+      const count = nums[0] || 1;
+      return `api.craft_item({ item: ${q(joined)}, count: ${count} })`;
+    }
+    case "smelt": {
+      const nums = args.filter(isNum).map(toNum);
+      const rest = cleanWords(args.filter((t) => !isNum(t))).filter(
+        (t) =>
+          !SELF_WORDS.has(t.toLowerCase()) &&
+          !/^(all|lots|many|more|up|it)$/i.test(t),
+      );
+      const item = rest.join("_").toLowerCase() || "raw_iron";
+      const count = nums[0] || 1;
+      return `api.smelt_item({ item: ${q(item)}, count: ${count} })`;
     }
     case "eat":
       return `api.eat({})`;
-    case "gear":
+    case "gear": {
+      const tierWord = lower.find((w) =>
+        /^(wood|wooden|stone|iron|diamond)$/.test(w),
+      );
+      const wantsGearUp =
+        verb === "gearup" ||
+        lower.includes("up") ||
+        Boolean(tierWord) ||
+        lower.some((w) =>
+          /^(find|mine|craft|make|full|progression|get)$/.test(w),
+        );
+      if (wantsGearUp) {
+        const tier = tierWord === "wooden" ? "wood" : tierWord;
+        return tier
+          ? `api.start_script({ name: "GearUp", options: { tier: ${q(tier)} } })`
+          : `api.start_script({ name: "GearUp" })`;
+      }
       return `api.equip_best_gear({})`;
+    }
     case "hold": {
       if (/^slot$/i.test(lower[1] || "") && isNum(lower[2] || ""))
         return `api.hotbar({ slot: ${toNum(lower[2])} })`;
@@ -544,6 +789,14 @@ function translateLine(raw, ctx) {
       return `api.control({ control: ${q(kind)}, on: ${!off} })`;
     }
     case "dir": {
+      if (
+        verb === "back" &&
+        lower.some((w) =>
+          /^(death|died|items?|drops?|grave|corpse|spot|where)$/.test(w),
+        )
+      ) {
+        return `api.return_to_death({})`;
+      }
       const dir = verb.startsWith("forward")
         ? "forward"
         : verb.startsWith("back")
@@ -642,6 +895,15 @@ function translateLine(raw, ctx) {
     }
     case "guard":
     case "hunt": {
+      if (
+        kind === "hunt" &&
+        lower.some((w) =>
+          /^(food|meat|animals?|cows?|pigs?|sheep|chickens?|rabbits?)$/.test(w),
+        )
+      ) {
+        const nums = args.filter(isNum).map(toNum);
+        return `api.hunt_food({ count: ${nums[0] || 3} })`;
+      }
       const target = who(args);
       if (!target) return { error: `${kind} who? e.g. ${kind} Steve` };
       const mod = kind === "guard" ? "Guard" : "Hunt";
@@ -656,25 +918,76 @@ function translateLine(raw, ctx) {
     }
     case "respawn":
       return `api.respawn({})`;
+    case "unstuck":
+      return `api.unstuck({})`;
+    case "place": {
+      const rest = cleanWords(args.filter((t) => !isNum(t))).filter(
+        (t) =>
+          !SELF_WORDS.has(t.toLowerCase()) && !/^(down|here|nearby)$/i.test(t),
+      );
+      if (!rest.length)
+        return { error: "place what? e.g. place crafting_table" };
+      return `api.place_block({ block: ${q(rest.join("_"))} })`;
+    }
+    case "sleep":
+      return `api.sleep_in_bed({})`;
+    case "pickup":
+      return `api.collect_drops({})`;
+    case "death":
+      return `api.return_to_death({})`;
+    case "plan": {
+      const goal = args.join(" ").trim();
+      if (!goal || /^(status|show|list)$/i.test(goal)) {
+        return `api.get_queue({})`;
+      }
+      return `api.create_plan({ goal: ${q(goal)} })`;
+    }
+    case "queue": {
+      const cmdText = args.join(" ").trim();
+      if (!cmdText || /^(status|show|list)$/i.test(cmdText)) {
+        return `api.get_queue({})`;
+      }
+      return `api.queue_task({ commands: ${q(cmdText)} })`;
+    }
+    case "store": {
+      const nums = args.filter(isNum).map(toNum);
+      const rest = cleanWords(args.filter((t) => !isNum(t))).filter(
+        (t) => !/^(in|into|chest|barrel|container)$/i.test(t),
+      );
+      const item = rest.join("_") || "all";
+      return `api.store_items({ item: ${q(item)}${nums[0] ? `, count: ${nums[0]}` : ""} })`;
+    }
+    case "withdraw": {
+      const nums = args.filter(isNum).map(toNum);
+      const rest = cleanWords(args.filter((t) => !isNum(t))).filter(
+        (t) => !/^(from|out|chest|barrel|container)$/i.test(t),
+      );
+      const item = rest.join("_") || "all";
+      return `api.take_items({ item: ${q(item)}${nums[0] ? `, count: ${nums[0]}` : ""} })`;
+    }
+    case "bucket": {
+      const liq = lower.includes("lava") ? "lava" : "water";
+      return `api.fill_bucket({ liquid: ${q(liq)} })`;
+    }
     default:
       return { error: `don't know "${words[0]}"` };
   }
 }
 
 const HELP = [
-  "walk to Steve | walk 100 64 -20 | come here",
-  "follow Steve | stop",
+  "walk to Steve | walk 100 64 -20 | come here | return to death",
+  "follow Steve | stop | unstuck | collect drops | sleep",
   "look at Steve | attack zombie | attack hostile | attack Steve",
-  "mine 10 oak_log | eat | gear | hold diamond_sword | drop 5 dirt | drop all",
+  "plan make iron armor | queue mine 5 oak_log | mine 10 oak_log | craft iron_armor | smelt iron | gear up to iron | hunt food | store all | fill bucket | place crafting_table | eat | gear | hold diamond_sword | drop 5 dirt | drop all",
   "say hello | wait 3 | jump 2 | sneak on | sprint off | forward 2 | left 1",
   "turn on KillAura players=on range=4 | turn off KillAura | stop all scripts",
-  "set Spam message hi | status | logs 20 | logs error | scripts | respawn",
+  "set Spam message hi | status | queue | logs 20 | logs error | scripts | respawn",
   "guard Steve | hunt Steve | join kitpvp | use compass | click kitpvp | click slot 13 | close | hotbar 1 | /server kitpvp",
 ].join("\n");
 
 // Short list for errors, so models don't copy example sentences into chat.
 const VERB_LIST =
-  "walk, follow, stop, look, attack, mine, eat, gear, hold, drop, say, wait, jump, sneak, forward, use, click, close, hotbar, join, guard, hunt, turn on, turn off, set, status, logs, scripts, /command";
+  "walk, follow, stop, unstuck, look, attack, mine, craft, smelt, plan, queue, gear up, hunt food, store, place, collect drops, sleep, return, eat, gear, hold, drop, say, wait, jump, sneak, forward, use, click, close, hotbar, join, guard, hunt, turn on, turn off, set, status, logs, scripts, /command";
 
 // text → { js, steps, errors, long, needsCode }
 function translate(text, ctx = {}) {
@@ -736,7 +1049,9 @@ function translate(text, ctx = {}) {
   const long = runnable.some(
     (s) =>
       s.raw ||
-      /^api\.(mine_block|attack|wait|jump|walk_direction)\(/.test(s.js) ||
+      /^api\.(mine_block|craft_item|smelt_item|attack|hunt_food|store_items|take_items|fill_bucket|wait|jump|walk_direction)\(/.test(
+        s.js,
+      ) ||
       (/^api\.(go_to|come_to_player)\(/.test(s.js) && runnable.length > 1),
   );
   return {

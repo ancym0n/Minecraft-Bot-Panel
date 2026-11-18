@@ -12,13 +12,36 @@ const {
   clearPathfinderGoal,
   configureSmartMovements,
   isHostile,
+  attachCraftingFix,
+  cleanCraftingGrid,
+  setBotControlOverride,
+  diagnoseWalkingObstruction,
+  performVerifiedJumpOrUnwedge,
+  escapeHazardsAndObstructions,
+  isLikelyNpcOrFakePlayer,
+  isRealPlayerName,
 } = require("./botUtils");
+const { aiBrain } = require("./aiBrain");
+const {
+  craftItemByName,
+  craftAnyPlanks,
+  ensureCraftingTablePlaced,
+  ensureSticksAndPlanks,
+  placeBlockNearby,
+  smeltInFurnace,
+  smeltIronInFurnace,
+} = require("./scripts/gearup");
 const {
   translate,
   resolveScriptName,
   HELP: COMMANDS_HELP,
   VERB_LIST,
 } = require("./commandTranslator");
+const {
+  COMPOSITE_SETS,
+  resolveTargetItems,
+  buildCraftingPlan,
+} = require("./minecraftPlanner");
 
 const fn = (name, description, properties = {}, required = []) => ({
   type: "function",
@@ -77,16 +100,113 @@ const TOOL_SCHEMAS = [
     },
     ["block"],
   ),
+  fn(
+    "craft_item",
+    "Craft an item (e.g. wooden_pickaxe, stone_pickaxe, crafting_table, furnace, iron_pickaxe, stick, oak_planks), gathering wood/stone and placing a crafting table automatically if needed.",
+    {
+      item: str("Item id like wooden_pickaxe or crafting_table"),
+      count: num("How many to craft (default 1)"),
+    },
+    ["item"],
+  ),
+  fn(
+    "smelt_item",
+    "Smelt ores into ingots (e.g. iron_ingot from raw_iron/iron_ore) in a furnace, mining ore/cobblestone and crafting a furnace if needed.",
+    {
+      item: str("Item to smelt or produce, e.g. iron_ingot"),
+      count: num("How many ingots (default 1)"),
+    },
+    ["item"],
+  ),
   fn("equip_best_gear", "Equip the best armor and weapon in the inventory."),
   fn("eat", "Eat the best available food."),
   fn(
     "toss_item",
     "Drop items from the inventory to give them to nearby players.",
     {
-      item: str("Item id like bread or diamond"),
+      item: str("Item id like bread or diamond, or category like food/pickaxe"),
       count: num("Amount, default all of that item"),
+      player: str("Optional player username to walk to before dropping"),
     },
     ["item"],
+  ),
+  fn(
+    "place_block",
+    "Place a block from inventory onto a nearby surface (e.g. crafting_table, furnace, torch, chest, bed).",
+    {
+      block: str("Block/item id like crafting_table, furnace, torch, chest"),
+    },
+    ["block"],
+  ),
+  fn(
+    "collect_drops",
+    "Walk to and pick up nearby dropped items on the ground.",
+  ),
+  fn(
+    "return_to_death",
+    "Walk back to where the bot last died and pick up dropped items.",
+  ),
+  fn(
+    "sleep_in_bed",
+    "Find a nearby bed (or place one from inventory) and sleep / set respawn point.",
+  ),
+  fn(
+    "unstuck",
+    "Escape physical hazards (powder_snow, cobwebs, water, holes, obstructions), clean crafting grid, and recover movement.",
+  ),
+  fn(
+    "create_plan",
+    "Create and execute a step-by-step plan for a complex goal (e.g. 'make iron armor from scratch', 'stone tools', 'diamond gear') or an ordered list of semicolon-separated commands. Steps are queued and run one after another.",
+    {
+      goal: str("Goal like 'make iron armor from scratch' or 'stone tools'"),
+      steps: str(
+        "Optional semicolon-separated command steps to queue in order",
+      ),
+    },
+  ),
+  fn(
+    "queue_task",
+    "Queue one or more commands to start automatically after the currently running task or plan finishes.",
+    {
+      commands: str("Commands to queue, e.g. 'craft iron_sword; come to me'"),
+    },
+    ["commands"],
+  ),
+  fn(
+    "get_queue",
+    "Get the status of the active step-by-step plan and any queued tasks waiting to run.",
+  ),
+  fn(
+    "hunt_food",
+    "Find nearby food animals (cows, pigs, sheep, chickens) or crops, harvest/hunt them, collect drops, and cook raw meat.",
+    {
+      count: num("How many food animals/items to gather (default 3)"),
+    },
+  ),
+  fn(
+    "store_items",
+    "Store items into a nearby chest or barrel (crafting and placing a chest if needed).",
+    {
+      item: str("Item id or 'all'"),
+      count: num("Amount (optional)"),
+    },
+    ["item"],
+  ),
+  fn(
+    "take_items",
+    "Take items out of a nearby chest or barrel.",
+    {
+      item: str("Item id or 'all'"),
+      count: num("Amount (optional)"),
+    },
+    ["item"],
+  ),
+  fn(
+    "fill_bucket",
+    "Fill an empty bucket with water or lava from a nearby source block.",
+    {
+      liquid: str("'water' or 'lava' (default 'water')"),
+    },
   ),
   fn(
     "think",
@@ -139,6 +259,15 @@ const TOOL_SCHEMAS = [
     {
       lines: num("How many recent lines (default 15, max 80)"),
       filter: str("Only lines containing this text, e.g. error"),
+    },
+  ),
+  fn(
+    "query_game_mechanics",
+    "Look up Minecraft recipes, required pickaxe/tool tiers, smelting fuels, ore Y-levels, combat/dimension mechanics, remembered spatial landmarks, last death coords, and recent problem diagnoses.",
+    {
+      topic: str(
+        "Item/block name or topic, e.g. 'iron_chestplate', 'smelting', 'diamond_ore', 'landmarks', 'errors'",
+      ),
     },
   ),
 ];
@@ -206,13 +335,24 @@ function createAiTools(ctx) {
   };
 
   // Exact name, else a unique close match (prefix or a couple of typos).
+  // Never matches the bot's own username or entities flagged as NPC / FakePlayer.
   const matchPlayerName = (bot, name) => {
     const wanted = String(name || "")
       .replace(/^@/, "")
       .toLowerCase();
-    const names = Object.keys(bot.players || {}).filter(
-      (u) => u !== bot.username,
-    );
+    const botLower = String(bot.username || "").toLowerCase();
+    if (!wanted || wanted === botLower) return null;
+    const remembered = Array.from(bot._mcbpLastSeenPlayers?.values() || [])
+      .map((v) => v?.username)
+      .filter(Boolean);
+    const names = [
+      ...new Set([...Object.keys(bot.players || {}), ...remembered]),
+    ].filter((u) => {
+      if (!u || u.toLowerCase() === botLower) return false;
+      const ent = bot.players?.[u]?.entity;
+      if (ent && isLikelyNpcOrFakePlayer(bot, ent)) return false;
+      return true;
+    });
     const exact = names.find((u) => u.toLowerCase() === wanted);
     if (exact || wanted.length < 3) return exact || null;
     const scored = names
@@ -236,7 +376,9 @@ function createAiTools(ctx) {
     const entity = key ? bot.players[key]?.entity : null;
     if (!entity) {
       throw new Error(
-        `${name} is not within view distance (too far or not online)`,
+        key
+          ? `${key} is too far away (out of view distance, coordinates unknown) — ask ${key} for their coordinates`
+          : `${name} is not online`,
       );
     }
     return entity;
@@ -287,6 +429,7 @@ function createAiTools(ctx) {
   const ALIASES = {
     wood: "oak_log",
     log: "oak_log",
+    logs: "oak_log",
     tree: "oak_log",
     trees: "oak_log",
     cobble: "cobblestone",
@@ -296,8 +439,29 @@ function createAiTools(ctx) {
     coal: "coal_ore",
     gold: "gold_ore",
     sword: "diamond_sword",
-    pick: "diamond_pickaxe",
-    pickaxe: "diamond_pickaxe",
+    pick: "wooden_pickaxe",
+    pickaxe: "wooden_pickaxe",
+    wood_pickaxe: "wooden_pickaxe",
+    wood_pick: "wooden_pickaxe",
+    wooden_pick: "wooden_pickaxe",
+    stone_pick: "stone_pickaxe",
+    iron_pick: "iron_pickaxe",
+    diamond_pick: "diamond_pickaxe",
+    wood_sword: "wooden_sword",
+    wood_axe: "wooden_axe",
+    wood_shovel: "wooden_shovel",
+    table: "crafting_table",
+    workbench: "crafting_table",
+    planks: "oak_planks",
+    plank: "oak_planks",
+    sticks: "stick",
+    ingot: "iron_ingot",
+    ingots: "iron_ingot",
+    ignot: "iron_ingot",
+    ignots: "iron_ingot",
+    iron_ignot: "iron_ingot",
+    iron_ignots: "iron_ingot",
+    iron_ingots: "iron_ingot",
   };
 
   // Chat components / JSON strings / § codes → plain text.
@@ -377,17 +541,20 @@ function createAiTools(ctx) {
   // --- Movement modes -----------------------------------------------------
   function setHardMode(bot, on) {
     const { mcData, Movements } = loadLibraries();
-    if (on) {
+    const inProtected = Boolean(
+      bot._mcbpProtectedZoneUntil && Date.now() < bot._mcbpProtectedZoneUntil,
+    );
+    if (on && !inProtected) {
       configureSmartMovements(bot, mcData, Movements, {
         canDig: true,
-        allowPillaring: true,
-        allowBridging: true,
+        allowPillaring: false,
+        allowBridging: false,
         allowParkour: true,
       });
     } else {
       configureSmartMovements(bot, mcData, Movements);
     }
-    bot._mcbpAiHardMode = on;
+    bot._mcbpAiHardMode = Boolean(on && !inProtected);
   }
 
   function stopWatch(bot) {
@@ -426,14 +593,25 @@ function createAiTools(ctx) {
       lastPos: bot.entity.position.clone(),
       still: 0,
       attempt: 0,
+      busy: false,
       timer: null,
     };
     bot._mcbpAiWatch = w;
     const TICK = 1500;
-    w.timer = setInterval(() => {
+    w.timer = setInterval(async () => {
+      if (w.busy) return;
       if (getBot() !== bot || !bot.entity || bot.pathfinder.goal !== goal) {
         stopWatch(bot);
         return;
+      }
+      if (dynamic && goal.entity && goal.entity.isValid === false) {
+        const fresh = bot.players?.[label]?.entity || null;
+        if (fresh && fresh.isValid !== false && fresh.position) {
+          goal.entity = fresh;
+        } else {
+          stopWatch(bot);
+          return;
+        }
       }
       const pos = bot.entity.position;
       if (!dynamic && goal.isEnd(pos.floored())) {
@@ -446,28 +624,63 @@ function createAiTools(ctx) {
         return;
       }
       w.still += TICK;
-      if (w.still < 6000) return;
+      if (w.still < 5500) return;
       w.still = 0;
       w.attempt += 1;
-      if (w.attempt === 1) {
-        log(`AIAgent: Stuck going to ${label}, jumping and re-pathing`);
-        bot.setControlState("jump", true);
-        setTimeout(() => bot.setControlState("jump", false), 450);
-        bot.pathfinder.setGoal(goal, dynamic);
-      } else if (w.attempt === 2) {
-        log(`AIAgent: Still stuck, allowing digging and bridging`);
-        setHardMode(bot, true);
-        bot.pathfinder.setGoal(goal, dynamic);
-      } else {
-        log(`AIAgent: Gave up going to ${label} (stuck)`);
-        stopWatch(bot);
-        clearPathfinderGoal(bot);
-        onTaskDone({
-          name: "move",
-          ok: false,
-          sender,
-          result: `Stuck: could not reach ${label} even after jumping, re-pathing, digging and bridging`,
-        });
+      w.busy = true;
+      try {
+        const diag = diagnoseWalkingObstruction(bot);
+        if (w.attempt === 1) {
+          log(
+            `AIAgent: Stuck going to ${label} (${diag.summary}), jumping / un-wedging`,
+          );
+          await performVerifiedJumpOrUnwedge(bot, {
+            log,
+            reason: `AIAgent Stuck (${label})`,
+          }).catch(() => {});
+          if (getBot() === bot && bot.entity) {
+            bot.pathfinder.setGoal(goal, dynamic);
+          }
+        } else if (w.attempt === 2) {
+          log(
+            `AIAgent: Still stuck going to ${label} (${diag.summary}), allowing block clearing`,
+          );
+          setHardMode(bot, true);
+          bot.pathfinder.setGoal(goal, dynamic);
+        } else if (w.attempt === 3) {
+          log(
+            `AIAgent: Backing off and strafing around obstacle toward ${label} (${diag.summary})`,
+          );
+          const side = Math.random() < 0.5 ? "left" : "right";
+          clearPathfinderGoal(bot);
+          setBotControlOverride(bot, {
+            durationMs: 800,
+            controls: {
+              back: true,
+              [side]: true,
+              forward: false,
+              jump: false,
+              sprint: false,
+            },
+            yaw: bot.entity.yaw,
+          });
+          await sleep(830);
+          if (getBot() === bot && bot.entity) {
+            bot.pathfinder.setGoal(goal, dynamic);
+          }
+        } else {
+          log(`AIAgent: Gave up going to ${label} (stuck at ${diag.summary})`);
+          stopWatch(bot);
+          clearPathfinderGoal(bot);
+          onTaskDone({
+            name: "move",
+            ok: false,
+            sender,
+            result: `Stuck: could not reach ${label} (${diag.summary})`,
+          });
+        }
+      } finally {
+        w.busy = false;
       }
     }, TICK);
   }
@@ -480,14 +693,38 @@ function createAiTools(ctx) {
     { dynamic = false, label, sender, isFar },
   ) {
     stopWatch(bot);
+    let activeGoal = goal;
     let verdict = pathVerdict(bot);
-    bot.pathfinder.setGoal(goal, dynamic);
+    bot.pathfinder.setGoal(activeGoal, dynamic);
     let status = await verdict;
     if (status === "noPath") {
+      await escapeHazardsAndObstructions(bot, { log }).catch(() => {});
       setHardMode(bot, true);
       verdict = pathVerdict(bot);
-      bot.pathfinder.setGoal(goal, dynamic);
+      bot.pathfinder.setGoal(activeGoal, dynamic);
       status = await verdict;
+      if (
+        status === "noPath" &&
+        !dynamic &&
+        typeof goal?.x === "number" &&
+        typeof goal?.z === "number"
+      ) {
+        // Long-distance waypoint fallback: step 24 blocks toward the target XZ
+        const me = bot.entity.position;
+        const dx = goal.x - me.x;
+        const dz = goal.z - me.z;
+        const horiz = Math.hypot(dx, dz);
+        if (horiz > 22) {
+          const { goals } = loadLibraries();
+          const stepDist = Math.min(24, horiz * 0.5);
+          const wx = Math.round(me.x + (dx / horiz) * stepDist);
+          const wz = Math.round(me.z + (dz / horiz) * stepDist);
+          activeGoal = new goals.GoalXZ(wx, wz);
+          verdict = pathVerdict(bot);
+          bot.pathfinder.setGoal(activeGoal, false);
+          status = await verdict;
+        }
+      }
       if (status === "noPath") {
         clearPathfinderGoal(bot);
         setHardMode(bot, false);
@@ -498,11 +735,12 @@ function createAiTools(ctx) {
     }
     if (status !== "reached") {
       watchGoal(bot, {
-        goal,
+        goal: activeGoal,
         dynamic,
         label,
         sender,
-        isFar: isFar || (() => !goal.isEnd(bot.entity.position.floored())),
+        isFar:
+          isFar || (() => !activeGoal.isEnd(bot.entity.position.floored())),
       });
     }
     return status;
@@ -580,6 +818,205 @@ function createAiTools(ctx) {
   }
 
   let inSequence = false;
+
+  // Sequential task & plan queue so complex multi-step goals ("make iron armor")
+  // and queued tasks run one after another instead of overwriting each other.
+  const queueState = {
+    running: false,
+    cancelled: false,
+    planTitle: "",
+    sender: "",
+    current: null,
+    pending: [],
+    completed: [],
+    total: 0,
+  };
+
+  function getQueueStatus() {
+    if (!queueState.running && !queueState.pending.length) return "";
+    const curIdx = queueState.completed.length + 1;
+    const curLabel = queueState.current?.label || "starting";
+    const nextPart = queueState.pending.length
+      ? ` ➙ Next: ${queueState.pending
+          .slice(0, 4)
+          .map((s) => s.label)
+          .join(
+            " ➙ ",
+          )}${queueState.pending.length > 4 ? ` (+${queueState.pending.length - 4} more)` : ""}`
+      : "";
+    return `Plan [${curIdx}/${queueState.total}]: ${curLabel}${nextPart}`;
+  }
+
+  function syncBrainPlan() {
+    const bot = getBot();
+    if (!queueState.running) {
+      aiBrain.syncPlan({ goal: "Idle", currentStep: "", steps: [] }, bot);
+      return;
+    }
+    const allSteps = [
+      ...queueState.completed.map((c) => ({ label: c.label, status: "done" })),
+      ...(queueState.current
+        ? [{ label: queueState.current.label, status: "active" }]
+        : []),
+      ...queueState.pending.map((p) => ({ label: p.label, status: "pending" })),
+    ];
+    aiBrain.syncPlan(
+      {
+        goal: queueState.planTitle || "Task Plan",
+        currentStep: queueState.current
+          ? `[${queueState.current.index}/${queueState.total}] ${queueState.current.label}`
+          : "",
+        steps: allSteps,
+      },
+      bot,
+    );
+  }
+
+  function clearTaskQueue() {
+    queueState.cancelled = true;
+    queueState.running = false;
+    queueState.current = null;
+    queueState.pending = [];
+    const bot = getBot();
+    if (bot) bot._mcbpActivePlanSummary = "";
+    syncBrainPlan();
+  }
+
+  function enqueueSteps(
+    steps,
+    { planTitle = "Task Plan", sender = "Player" } = {},
+  ) {
+    if (!steps || !steps.length) return "Nothing to queue";
+    requireBot();
+    if (queueState.running) {
+      queueState.pending.push(...steps);
+      queueState.total += steps.length;
+      syncBrainPlan();
+      const labels = steps.map((s) => s.label).join(" ➙ ");
+      log(
+        `AIAgent Queue (+${steps.length}): Added [${labels}] after "${queueState.current?.label || "current task"}"`,
+      );
+      return `Queued ${steps.length} step(s) to start when "${queueState.current?.label || "current task"}" finishes: ${labels}`;
+    }
+
+    queueState.running = true;
+    queueState.cancelled = false;
+    queueState.planTitle = planTitle;
+    queueState.sender = sender;
+    queueState.completed = [];
+    queueState.pending = [...steps];
+    queueState.total = steps.length;
+    aiBrain.setGoal(planTitle, sender, getBot());
+    syncBrainPlan();
+
+    const numbered = steps.map((s, i) => `${i + 1}. ${s.label}`).join(" ➙ ");
+    if (steps.length > 1) {
+      log(`AIAgent Plan (${steps.length} steps) ▸ ${numbered}`);
+    } else {
+      log(`AIAgent ▸ ${steps[0].label}`);
+    }
+
+    Promise.resolve()
+      .then(async () => {
+        while (queueState.pending.length > 0 && !queueState.cancelled) {
+          const step = queueState.pending.shift();
+          const idx = queueState.completed.length + 1;
+          queueState.current = { ...step, index: idx };
+          const bot = getBot();
+          if (bot) {
+            bot._mcbpActivePlanSummary = getQueueStatus();
+          }
+          syncBrainPlan();
+          if (queueState.total > 1) {
+            log(`AIAgent Plan [${idx}/${queueState.total}] ▸ ${step.label}`);
+          }
+          let res;
+          try {
+            inSequence = true;
+            res = await step.run();
+          } finally {
+            inSequence = false;
+          }
+          if (queueState.cancelled) break;
+          if (queueState.total > 1) {
+            log(
+              `AIAgent Plan [${idx}/${queueState.total}] ✓ ${String(res).split("\n")[0]}`,
+            );
+          }
+          aiBrain.recordAction(step.tool, step.args, res, false, getBot());
+          queueState.completed.push({
+            label: step.label,
+            tool: step.tool,
+            args: step.args,
+            result: String(res),
+          });
+          syncBrainPlan();
+        }
+        if (queueState.cancelled) return;
+        const single =
+          queueState.completed.length === 1 ? queueState.completed[0] : null;
+        const doneSummary = single
+          ? single.result
+          : queueState.completed
+              .map((c, i) => `${i + 1}. ${c.result}`)
+              .join(" | ");
+        const finalTitle = single?.tool || queueState.planTitle;
+        const finalArgs = single?.args || {};
+        const finalSender = queueState.sender;
+        queueState.running = false;
+        queueState.current = null;
+        const bot = getBot();
+        if (bot) bot._mcbpActivePlanSummary = "";
+        syncBrainPlan();
+        if (queueState.total > 1) {
+          log(
+            `AIAgent Plan ✓ Finished (${queueState.completed.length}/${queueState.total}): ${doneSummary.slice(0, 240)}`,
+          );
+        } else {
+          log(`AIAgent ✓ ${doneSummary.slice(0, 240)}`);
+        }
+        onTaskDone({
+          name: finalTitle,
+          args: finalArgs,
+          ok: true,
+          result: doneSummary,
+          sender: finalSender,
+        });
+      })
+      .catch((err) => {
+        if (queueState.cancelled) return;
+        const msg = err.message || String(err);
+        const failedStep = queueState.current;
+        const finalSender = queueState.sender;
+        aiBrain.recordAction(
+          failedStep?.tool || planTitle,
+          failedStep?.args || {},
+          msg,
+          true,
+          getBot(),
+        );
+        log(
+          `AIAgent Plan [${failedStep?.index || "?"}/${queueState.total}] failed (${failedStep?.label || planTitle}) → ${msg}`,
+        );
+        queueState.running = false;
+        queueState.current = null;
+        queueState.pending = [];
+        const bot = getBot();
+        if (bot) bot._mcbpActivePlanSummary = "";
+        syncBrainPlan();
+        onTaskDone({
+          name: failedStep?.tool || planTitle,
+          args: failedStep?.args || {},
+          ok: false,
+          result: msg,
+          sender: finalSender,
+        });
+      });
+
+    return steps.length > 1
+      ? `Created & started ${steps.length}-step plan: ${numbered}`
+      : `Started ${steps[0].label} in the background, you will get a report when it finishes`;
+  }
 
   // Translates plain commands to JS and runs them step by step.
   async function runTranslated(text, sender) {
@@ -701,7 +1138,12 @@ function createAiTools(ctx) {
         .slice(0, 8)
         .map((e) => `${e.name} ${Math.round(e.position.distanceTo(p))}m`);
       const players = Object.values(bot.players || {})
-        .filter((pl) => pl.entity && pl.username !== bot.username)
+        .filter(
+          (pl) =>
+            pl.entity &&
+            pl.username !== bot.username &&
+            !isLikelyNpcOrFakePlayer(bot, pl.entity),
+        )
         .map(
           (pl) =>
             `${pl.username} ${Math.round(pl.entity.position.distanceTo(p))}m`,
@@ -715,6 +1157,7 @@ function createAiTools(ctx) {
         `Players nearby: ${players.join(", ") || "none"}`,
         `Mobs nearby: ${mobs.join(", ") || "none"}`,
         `Moving: ${goal ? "yes" : "no"}${bot._mcbpAiWatch?.attempt ? " (recovering from being stuck)" : ""}`,
+        `Active plan/queue: ${getQueueStatus() || "none"}`,
         `Running scripts: ${scripts.active().join(", ") || "none"}`,
       ].join("\n");
     },
@@ -746,7 +1189,8 @@ function createAiTools(ctx) {
     async come_to_player({ player }, { sender }) {
       const bot = requireBot();
       const wanted = String(player || sender || "").replace(/^@/, "");
-      const isOnline = Boolean(matchPlayerName(bot, wanted));
+      const key = matchPlayerName(bot, wanted);
+      const isOnline = Boolean(key);
       // "go to kitpvp": not a player, so it's probably a game in a menu.
       if (
         !isOnline &&
@@ -756,6 +1200,21 @@ function createAiTools(ctx) {
         try {
           return await handlers.join_game({ name: wanted });
         } catch (_) {}
+      }
+      if (
+        key &&
+        !bot.players[key]?.entity &&
+        bot._mcbpLastSeenPlayers?.has(key.toLowerCase())
+      ) {
+        const last = bot._mcbpLastSeenPlayers.get(key.toLowerCase());
+        const { goals } = loadLibraries();
+        const p = last.position;
+        const dist = Math.round(p.distanceTo(bot.entity.position));
+        await startMove(bot, new goals.GoalNear(p.x, p.y, p.z, 2), {
+          label: key,
+          sender,
+        });
+        return `Walking toward ${key}'s last known position (${Math.floor(p.x)} ${Math.floor(p.y)} ${Math.floor(p.z)}, ${dist}m away)`;
       }
       const target = findPlayer(bot, player || sender);
       const who = target.username || player || sender;
@@ -780,11 +1239,13 @@ function createAiTools(ctx) {
       const goal = new goals.GoalFollow(target, 2);
       await startMove(bot, goal, {
         dynamic: true,
-        label: name,
+        label: target.username || name,
         sender,
         isFar: () =>
-          target.isValid !== false &&
-          target.position.distanceTo(bot.entity.position) > 4,
+          goal.entity &&
+          goal.entity.isValid !== false &&
+          goal.entity.position &&
+          goal.entity.position.distanceTo(bot.entity.position) > 4,
       });
       bot._mcbpFollowState = { entityId: target.id, range: 2 };
       return `Following ${target.username || name}`;
@@ -792,8 +1253,10 @@ function createAiTools(ctx) {
 
     stop() {
       const bot = requireBot();
+      clearTaskQueue();
       stopWatch(bot);
       bot._mcbpAiTask = null;
+      bot._mcbpControlOverride = null;
       if (!inSequence) bot._mcbpAiSeq = null;
       bot.clearControlStates();
       clearPathfinderGoal(bot);
@@ -802,7 +1265,27 @@ function createAiTools(ctx) {
           bot.stopDigging();
         } catch (_) {}
       }
-      return "Stopped everything";
+      // Also stop active movement/combat/mining modules so "stop" or "stop hunting me" halts Hunt, Follow, GoTo, etc.
+      const ACTION_SCRIPTS = [
+        "Hunt",
+        "Follow",
+        "GoTo",
+        "Guard",
+        "GearUp",
+        "Mine",
+        "Excavator",
+        "AutoBuild",
+      ];
+      const stoppedScripts = [];
+      for (const s of ACTION_SCRIPTS) {
+        if (scripts.active().includes(s)) {
+          scripts.stop(s);
+          stoppedScripts.push(s);
+        }
+      }
+      return stoppedScripts.length
+        ? `Stopped everything (turned off ${stoppedScripts.join(", ")}) and cleared task queue`
+        : "Stopped everything and cleared task queue";
     },
 
     async look_at_player({ player }, { sender }) {
@@ -812,32 +1295,138 @@ function createAiTools(ctx) {
       return `Looking at ${player || sender}`;
     },
 
-    async attack({ target }) {
+    async attack({ target }, { sender } = {}) {
       const bot = requireBot();
-      const wanted = String(target || "")
+      const senderLower = String(sender || "").toLowerCase();
+      const rawWanted = String(target || "")
         .replace(/^@/, "")
-        .toLowerCase();
-      const me = bot.entity.position;
-      const candidates = Object.values(bot.entities || {}).filter((e) => {
-        if (e === bot.entity || !e.position) return false;
-        if (e.position.distanceTo(me) > 24) return false;
-        if (wanted === "hostile") return isHostile(e);
-        if (e.type === "player")
-          return String(e.username || "").toLowerCase() === wanted;
-        return (
-          String(e.name || "").toLowerCase() ===
-          resolveName(wanted, bot.registry?.entitiesByName)
+        .toLowerCase()
+        .replace(/[_\s]+/g, " ")
+        .trim();
+      const isNpcTarget =
+        /\bnpc\b/i.test(rawWanted) ||
+        /\b(towny|smp|survival|lobby|hub|shop|crate|teleporter|portal)\b/i.test(
+          rawWanted,
         );
+      const wanted = rawWanted
+        .replace(/\b(the|a|an|npc)\b/g, " ")
+        .replace(/[_\s]+/g, " ")
+        .trim();
+      const wantedSlug = wanted.replace(/\s+/g, "_");
+      const wantedTokens = wanted.split(" ").filter((t) => t.length >= 2);
+      const extractEntityText = (e) => {
+        const parts = [
+          e.username,
+          e.name,
+          e.displayName,
+          e.customName,
+          typeof e.getCustomName === "function" ? e.getCustomName() : null,
+        ];
+        if (Array.isArray(e.metadata)) {
+          for (const m of e.metadata) {
+            if (!m) continue;
+            if (typeof m === "string") parts.push(m);
+            else if (typeof m === "object") {
+              try {
+                parts.push(JSON.stringify(m));
+              } catch {}
+            }
+          }
+        }
+        return parts
+          .filter(Boolean)
+          .join(" ")
+          .replace(/§[0-9a-fk-or]/gi, "")
+          .toLowerCase();
+      };
+      const me = bot.entity.position;
+      const allEntities = Object.values(bot.entities || {}).filter(
+        (e) =>
+          e &&
+          e !== bot.entity &&
+          e.position &&
+          e.position.distanceTo(me) <= 36,
+      );
+      let candidates = allEntities.filter((e) => {
+        if (rawWanted === "hostile" || wantedSlug === "hostile")
+          return isHostile(e);
+        if (e.type === "player") {
+          const uname = String(e.username || "").toLowerCase();
+          if (uname === rawWanted || uname === wantedSlug || uname === wanted)
+            return true;
+        }
+        const resolved = resolveName(
+          wantedSlug || rawWanted,
+          bot.registry?.entitiesByName,
+        );
+        if (String(e.name || "").toLowerCase() === resolved) return true;
+        if (wantedTokens.length > 0) {
+          const text = extractEntityText(e);
+          if (wantedTokens.every((tok) => text.includes(tok))) return true;
+        }
+        return false;
       });
       candidates.sort(
         (a, b) => a.position.distanceTo(me) - b.position.distanceTo(me),
       );
-      const victim = candidates[0];
+      let victim = candidates[0];
+      // If we matched a floating hologram (armor_stand / text_display), resolve the clickable NPC entity underneath/at the same XZ
+      if (
+        victim &&
+        /armor_stand|text_display/i.test(String(victim.name || ""))
+      ) {
+        const nearbyBody = allEntities
+          .filter(
+            (e) =>
+              e !== victim &&
+              (!senderLower ||
+                String(e.username || "").toLowerCase() !== senderLower) &&
+              !/armor_stand|text_display|item/i.test(String(e.name || "")) &&
+              Math.abs(e.position.x - victim.position.x) <= 1.75 &&
+              Math.abs(e.position.z - victim.position.z) <= 1.75 &&
+              Math.abs(e.position.y - victim.position.y) <= 3.5,
+          )
+          .sort((a, b) => {
+            const dXZ =
+              Math.hypot(
+                a.position.x - victim.position.x,
+                a.position.z - victim.position.z,
+              ) -
+              Math.hypot(
+                b.position.x - victim.position.x,
+                b.position.z - victim.position.z,
+              );
+            if (Math.abs(dXZ) > 0.1) return dXZ;
+            return (
+              a.position.distanceTo(victim.position) -
+              b.position.distanceTo(victim.position)
+            );
+          })[0];
+        if (nearbyBody) victim = nearbyBody;
+      }
+      // Fallback for lobby NPCs when hologram text is stored in unparsed packets: pick nearest non-self player/villager/interaction NPC
+      if (!victim && isNpcTarget) {
+        victim = allEntities
+          .filter(
+            (e) =>
+              (!senderLower ||
+                String(e.username || "").toLowerCase() !== senderLower) &&
+              (e.type === "player" ||
+                /villager|interaction|mannequin|npc/i.test(
+                  String(e.name || ""),
+                )),
+          )
+          .sort(
+            (a, b) => a.position.distanceTo(me) - b.position.distanceTo(me),
+          )[0];
+      }
       if (!victim) throw new Error(`No ${target} within 24 blocks`);
       stopWatch(bot);
       const task = {};
       bot._mcbpAiTask = task;
-      await equipBestWeapon(bot, { saveLowDurability: true }).catch(() => {});
+      if (!isNpcTarget) {
+        await equipBestWeapon(bot, { saveLowDurability: true }).catch(() => {});
+      }
       const { goals } = loadLibraries();
       bot.pathfinder.setGoal(new goals.GoalFollow(victim, 1.5), true);
       let hits = 0;
@@ -850,16 +1439,20 @@ function createAiTools(ctx) {
         getBot() === bot &&
         bot._mcbpAiTask === task &&
         bot.entities[victim.id] &&
-        Date.now() - started < 20000 &&
+        Date.now() - started < (isNpcTarget ? 10000 : 20000) &&
         !deniedNow()
       ) {
-        if (victim.position.distanceTo(bot.entity.position) <= 3.3) {
+        if (victim.position.distanceTo(bot.entity.position) <= 3.5) {
           await bot.lookAt(
             victim.position.offset(0, (victim.height || 1.6) * 0.85, 0),
             true,
           );
           bot.attack(victim);
+          if (isNpcTarget && typeof bot.activateEntity === "function") {
+            await bot.activateEntity(victim).catch(() => {});
+          }
           hits += 1;
+          if (isNpcTarget) break;
         }
         await sleep(600);
       }
@@ -869,6 +1462,9 @@ function createAiTools(ctx) {
         clearPathfinderGoal(bot);
       }
       const label = victim.username || victim.name;
+      if (isNpcTarget && hits > 0) {
+        return `Clicked NPC ${label}`;
+      }
       if (cancelled) return `Stopped attacking ${label}`;
       if (deniedNow()) {
         clearPathfinderGoal(bot);
@@ -896,24 +1492,148 @@ function createAiTools(ctx) {
         );
       const amount = Math.max(1, Math.min(32, Math.floor(Number(count) || 1)));
       const { goals } = loadLibraries();
+      const blocksByName = bot.registry?.blocksByName || {};
+
+      // Auto-resolve required pickaxe tier before mining stone/ores so drops aren't lost
+      const hasPickAtLeast = (minTier) => {
+        const order = [
+          "wooden_pickaxe",
+          "golden_pickaxe",
+          "stone_pickaxe",
+          "iron_pickaxe",
+          "diamond_pickaxe",
+          "netherite_pickaxe",
+        ];
+        const minIdx = order.indexOf(minTier);
+        return bot.inventory
+          .items()
+          .some((i) => order.indexOf(i.name) >= minIdx);
+      };
+      if (
+        (name === "stone" ||
+          name === "cobblestone" ||
+          name === "deepslate" ||
+          name === "cobbled_deepslate" ||
+          name === "coal_ore" ||
+          name === "deepslate_coal_ore") &&
+        !hasPickAtLeast("wooden_pickaxe")
+      ) {
+        log(
+          `AIAgent: Need wooden_pickaxe before mining ${name}, crafting one first...`,
+        );
+        await handlers
+          .craft_item({ item: "wooden_pickaxe", count: 1 })
+          .catch(() => {});
+      } else if (
+        (name === "iron_ore" ||
+          name === "deepslate_iron_ore" ||
+          name === "copper_ore" ||
+          name === "deepslate_copper_ore" ||
+          name === "lapis_ore" ||
+          name === "deepslate_lapis_ore") &&
+        !hasPickAtLeast("stone_pickaxe")
+      ) {
+        log(
+          `AIAgent: Need stone_pickaxe before mining ${name}, crafting one first...`,
+        );
+        await handlers
+          .craft_item({ item: "stone_pickaxe", count: 1 })
+          .catch(() => {});
+      } else if (
+        (name === "diamond_ore" ||
+          name === "deepslate_diamond_ore" ||
+          name === "gold_ore" ||
+          name === "deepslate_gold_ore" ||
+          name === "redstone_ore" ||
+          name === "emerald_ore") &&
+        !hasPickAtLeast("iron_pickaxe")
+      ) {
+        log(
+          `AIAgent: Need iron_pickaxe before mining ${name}, crafting one first...`,
+        );
+        await handlers
+          .craft_item({ item: "iron_pickaxe", count: 1 })
+          .catch(() => {});
+      }
+
+      const idsFor = (names) =>
+        names
+          .map((n) => blocksByName[n]?.id)
+          .filter((id) => typeof id === "number");
+      let matchIds = [blockType.id];
+      if (name === "cobblestone" || name === "stone") {
+        matchIds = idsFor([
+          "stone",
+          "cobblestone",
+          "deepslate",
+          "cobbled_deepslate",
+        ]);
+      } else if (name.endsWith("_ore") && !name.startsWith("deepslate_")) {
+        matchIds = idsFor([name, `deepslate_${name}`]);
+      } else if (name.endsWith("_log")) {
+        const allLogs = idsFor([
+          name,
+          "oak_log",
+          "birch_log",
+          "spruce_log",
+          "jungle_log",
+          "acacia_log",
+          "dark_oak_log",
+          "cherry_log",
+          "mangrove_log",
+          "pale_oak_log",
+        ]);
+        if (
+          /^(wood|logs?|trees?)$/i.test(String(block || "").trim()) ||
+          !bot.findBlock({ matching: blockType.id, maxDistance: 64 })
+        ) {
+          matchIds = [...new Set(allLogs)];
+        }
+      }
+      const matchSet = new Set(matchIds);
       stopWatch(bot);
       const task = {};
       bot._mcbpAiTask = task;
       const failed = new Set();
       const key = (p) => `${p.x},${p.y},${p.z}`;
+      const colKey = (p) => `col:${p.x},${p.z}`;
+      const isValidCandidate = (p) =>
+        !failed.has(key(p)) &&
+        !failed.has(colKey(p)) &&
+        !bot._mcbpProtectedBlocks?.has(key(p));
       let mined = 0;
       let fails = 0;
+      let explored = false;
       let denied = "";
       let lastError = "";
       try {
         while (mined < amount && fails < 4) {
           if (getBot() !== bot || bot._mcbpAiTask !== task) break;
-          const positions = bot.findBlocks({
-            matching: blockType.id,
+          let positions = bot.findBlocks({
+            matching: matchIds,
             maxDistance: 64,
-            count: 24,
+            count: 48,
           });
-          const pos = positions.find((p) => !failed.has(key(p)));
+          let pos = positions.find(isValidCandidate);
+          if (!pos && !explored) {
+            explored = true;
+            log(`AIAgent: No ${name} nearby, exploring 20m to search...`);
+            const me = bot.entity.position;
+            const angle = Math.random() * Math.PI * 2;
+            const ex = Math.round(me.x + Math.cos(angle) * 20);
+            const ez = Math.round(me.z + Math.sin(angle) * 20);
+            await withTimeout(
+              bot.pathfinder.goto(new goals.GoalXZ(ex, ez)),
+              8000,
+              () => bot.pathfinder.setGoal(null),
+            ).catch(() => {});
+            positions = bot.findBlocks({
+              matching: matchIds,
+              maxDistance: 64,
+              count: 48,
+            });
+            pos = positions.find(isValidCandidate);
+          }
           if (!pos) {
             lastError = `no more reachable ${name} within 64 blocks`;
             break;
@@ -927,7 +1647,7 @@ function createAiTools(ctx) {
               () => bot.pathfinder.setGoal(null),
             );
             const target = bot.blockAt(pos);
-            if (!target || target.type !== blockType.id) continue;
+            if (!target || !matchSet.has(target.type)) continue;
             const digStart = Date.now();
             const ok = await smartDig(bot, target, { autoTool: true });
             await sleep(250);
@@ -945,9 +1665,11 @@ function createAiTools(ctx) {
             ).catch(() => {});
           } catch (err) {
             failed.add(key(pos));
+            failed.add(colKey(pos));
             fails += 1;
             lastError = err.message || String(err);
-            // Blocked twice: let the pathfinder dig and bridge.
+            await escapeHazardsAndObstructions(bot, { log }).catch(() => {});
+            // Blocked twice: let the pathfinder clear obstructing blocks.
             if (fails === 2) setHardMode(bot, true);
           }
         }
@@ -970,6 +1692,435 @@ function createAiTools(ctx) {
       return `Mined ${mined}/${amount} ${name}${mined < amount && lastError ? ` (stopped: ${lastError})` : ""}`;
     },
 
+    async craft_item({ item, count }) {
+      const bot = requireBot();
+      attachCraftingFix(bot);
+      await cleanCraftingGrid(bot);
+      const rawId = itemId(item);
+      const CRAFT_MAP = {
+        iron: "iron_ingot",
+        iron_ingot: "iron_ingot",
+        iron_ingots: "iron_ingot",
+        iron_ignot: "iron_ingot",
+        iron_ignots: "iron_ingot",
+        ingot: "iron_ingot",
+        ingots: "iron_ingot",
+        ignot: "iron_ingot",
+        ignots: "iron_ingot",
+        pickaxe: "wooden_pickaxe",
+        pick: "wooden_pickaxe",
+        wood_pickaxe: "wooden_pickaxe",
+        wood_pick: "wooden_pickaxe",
+        wooden_pick: "wooden_pickaxe",
+        stone_pick: "stone_pickaxe",
+        iron_pick: "iron_pickaxe",
+        diamond_pick: "diamond_pickaxe",
+        wood_sword: "wooden_sword",
+        wood_axe: "wooden_axe",
+        wood_shovel: "wooden_shovel",
+        table: "crafting_table",
+        workbench: "crafting_table",
+        planks: "oak_planks",
+        plank: "oak_planks",
+        sticks: "stick",
+      };
+      const mapped =
+        CRAFT_MAP[rawId] || resolveName(item, bot.registry?.itemsByName);
+      const amount = Math.max(1, Math.min(32, Math.floor(Number(count) || 1)));
+      if (mapped === "iron_ingot") {
+        return handlers.smelt_item({ item: "iron_ingot", count: amount });
+      }
+      // Composite set (e.g. "iron_armor", "stone_tools", "diamond_gear", "starter_kit")
+      const compositeTargets = resolveTargetItems(rawId, amount);
+      if (
+        (compositeTargets &&
+          compositeTargets.length > 1 &&
+          COMPOSITE_SETS[rawId]) ||
+        (compositeTargets && !bot.registry?.itemsByName?.[mapped])
+      ) {
+        const plan = buildCraftingPlan(bot, compositeTargets, amount);
+        if (plan && plan.length > 0) {
+          log(
+            `AIAgent Plan for ${rawId} (${plan.length} steps): ${plan.map((s, i) => `${i + 1}. ${s.label}`).join(" ➙ ")}`,
+          );
+          const done = [];
+          for (let i = 0; i < plan.length; i++) {
+            const st = plan[i];
+            log(`AIAgent Plan [${i + 1}/${plan.length}]: ${st.label}...`);
+            const res = await handlers[st.tool](st.args, { sender: "Player" });
+            done.push(`${i + 1}. ${res}`);
+          }
+          return `Completed ${rawId} plan (${plan.length} steps): ${done.join(" | ")}`;
+        }
+      }
+      const itemType = bot.registry?.itemsByName?.[mapped];
+      if (!itemType) {
+        throw new Error(
+          `Unknown craftable item "${item}". Use an item id like wooden_pickaxe, crafting_table, stick`,
+        );
+      }
+      const { goals } = loadLibraries();
+      const stepLog = (msg) => log(`AIAgent: ${msg}`);
+
+      if (mapped.endsWith("_planks")) {
+        const hasLogs = bot.inventory
+          .items()
+          .some((i) => i.name.endsWith("_log") || i.name.endsWith("_stem"));
+        if (!hasLogs) {
+          await handlers.mine_block({ block: "oak_log", count: 2 });
+        }
+        let crafted = 0;
+        for (let i = 0; i < amount; i++) {
+          if (await craftAnyPlanks(bot)) crafted += 4;
+          else break;
+        }
+        if (!crafted) throw new Error("No logs in inventory to craft planks");
+        return `Crafted ${crafted} planks`;
+      }
+
+      // Gather wood/sticks automatically when crafting wood/stone/iron tools or tables
+      const totalWood =
+        bot.inventory
+          .items()
+          .filter((i) => i.name.endsWith("_log"))
+          .reduce((s, i) => s + i.count * 4, 0) +
+        bot.inventory
+          .items()
+          .filter((i) => i.name.endsWith("_planks"))
+          .reduce((s, i) => s + i.count, 0);
+      if (
+        totalWood < 8 &&
+        !bot.recipesFor(itemType.id, null, 1, null)?.length
+      ) {
+        await handlers
+          .mine_block({ block: "oak_log", count: 3 })
+          .catch(() => {});
+      }
+
+      if (mapped === "stick") {
+        await ensureSticksAndPlanks(bot, amount * 4, 2, stepLog);
+        return `Crafted sticks (now have ${bot.inventory
+          .items()
+          .filter((i) => i.name === "stick")
+          .reduce((s, i) => s + i.count, 0)})`;
+      }
+
+      if (mapped === "crafting_table") {
+        await ensureSticksAndPlanks(bot, 0, 4, stepLog);
+        const ok = await craftItemByName(bot, "crafting_table", amount, null);
+        if (!ok) throw new Error("Need 4 planks to craft a crafting_table");
+        return `Crafted ${amount}x crafting_table`;
+      }
+
+      if (mapped.startsWith("stone_") || mapped === "furnace") {
+        const neededCobble = mapped === "furnace" ? 8 : 3;
+        const haveCobble = bot.inventory
+          .items()
+          .filter(
+            (i) =>
+              i.name === "cobblestone" ||
+              i.name === "cobbled_deepslate" ||
+              i.name === "blackstone",
+          )
+          .reduce((s, i) => s + i.count, 0);
+        if (haveCobble < neededCobble) {
+          const hasPick = bot.inventory
+            .items()
+            .some((i) => i.name.endsWith("_pickaxe"));
+          if (!hasPick) {
+            const remainingWood =
+              bot.inventory
+                .items()
+                .filter((i) => i.name.endsWith("_log"))
+                .reduce((s, i) => s + i.count * 4, 0) +
+              bot.inventory
+                .items()
+                .filter((i) => i.name.endsWith("_planks"))
+                .reduce((s, i) => s + i.count, 0);
+            const remainingSticks = bot.inventory
+              .items()
+              .filter((i) => i.name === "stick")
+              .reduce((s, i) => s + i.count, 0);
+            if (remainingWood < 4 && remainingSticks < 2) {
+              await handlers
+                .mine_block({ block: "oak_log", count: 2 })
+                .catch(() => {});
+            }
+
+            await ensureSticksAndPlanks(bot, 4, 6, stepLog);
+            const t = await ensureCraftingTablePlaced(bot, goals, stepLog);
+            if (t) await craftItemByName(bot, "wooden_pickaxe", 1, t);
+          }
+          await handlers.mine_block({
+            block: "stone",
+            count: neededCobble - haveCobble,
+          });
+        }
+      }
+
+      // Auto-smelt iron_ingot when crafting iron gear/tools/shield/bucket
+      const IRON_COSTS = {
+        iron_pickaxe: 3,
+        iron_axe: 3,
+        iron_sword: 2,
+        iron_shovel: 1,
+        iron_hoe: 2,
+        iron_helmet: 5,
+        iron_chestplate: 8,
+        iron_leggings: 7,
+        iron_boots: 4,
+        shield: 1,
+        bucket: 3,
+        shears: 2,
+      };
+      if (IRON_COSTS[mapped]) {
+        const neededIron = IRON_COSTS[mapped] * amount;
+        const haveIron = bot.inventory
+          .items()
+          .filter((i) => i.name === "iron_ingot")
+          .reduce((s, i) => s + i.count, 0);
+        if (haveIron < neededIron) {
+          await handlers
+            .smelt_item({ item: "iron_ingot", count: neededIron - haveIron })
+            .catch(() => {});
+        }
+      }
+
+      const remainingWood =
+        bot.inventory
+          .items()
+          .filter((i) => i.name.endsWith("_log"))
+          .reduce((s, i) => s + i.count * 4, 0) +
+        bot.inventory
+          .items()
+          .filter((i) => i.name.endsWith("_planks"))
+          .reduce((s, i) => s + i.count, 0);
+      const remainingSticks = bot.inventory
+        .items()
+        .filter((i) => i.name === "stick")
+        .reduce((s, i) => s + i.count, 0);
+      if (remainingWood < 4 && remainingSticks < 2) {
+        await handlers
+          .mine_block({ block: "oak_log", count: 2 })
+          .catch(() => {});
+      }
+
+      await ensureSticksAndPlanks(bot, 4, 6, stepLog);
+      if (await craftItemByName(bot, mapped, amount, null)) {
+        await equipBestArmor(bot, { includeOffhand: true });
+        await equipBestWeapon(bot, { saveLowDurability: true });
+        return `Crafted ${amount}x ${mapped}`;
+      }
+
+      const table = await ensureCraftingTablePlaced(bot, goals, stepLog);
+      if (!table) {
+        throw new Error(
+          `Could not place a crafting_table to craft ${mapped} (need wood/planks)`,
+        );
+      }
+      await ensureSticksAndPlanks(bot, 4, 4, stepLog);
+      const ok = await craftItemByName(bot, mapped, amount, table);
+      if (!ok) {
+        throw new Error(
+          `Missing ingredients to craft ${mapped} (check inventory with get_status)`,
+        );
+      }
+      await equipBestArmor(bot, { includeOffhand: true });
+      await equipBestWeapon(bot, { saveLowDurability: true });
+      return `Crafted ${amount}x ${mapped}`;
+    },
+
+    async smelt_item({ item, count }) {
+      const bot = requireBot();
+      attachCraftingFix(bot);
+      await cleanCraftingGrid(bot);
+      const amount = Math.max(1, Math.min(32, Math.floor(Number(count) || 1)));
+      const { goals } = loadLibraries();
+      const stepLog = (msg) => log(`AIAgent: ${msg}`);
+
+      const rawKey = itemId(item || "iron_ingot");
+      const SMELT_RECIPES = {
+        gold: {
+          inputNames: ["raw_gold", "gold_ore", "deepslate_gold_ore"],
+          outputName: "gold_ingot",
+          mineBlock: "gold_ore",
+        },
+        gold_ingot: {
+          inputNames: ["raw_gold", "gold_ore", "deepslate_gold_ore"],
+          outputName: "gold_ingot",
+          mineBlock: "gold_ore",
+        },
+        raw_gold: {
+          inputNames: ["raw_gold", "gold_ore", "deepslate_gold_ore"],
+          outputName: "gold_ingot",
+          mineBlock: "gold_ore",
+        },
+        copper: {
+          inputNames: ["raw_copper", "copper_ore", "deepslate_copper_ore"],
+          outputName: "copper_ingot",
+          mineBlock: "copper_ore",
+        },
+        copper_ingot: {
+          inputNames: ["raw_copper", "copper_ore", "deepslate_copper_ore"],
+          outputName: "copper_ingot",
+          mineBlock: "copper_ore",
+        },
+        glass: {
+          inputNames: ["sand", "red_sand"],
+          outputName: "glass",
+          mineBlock: "sand",
+        },
+        sand: {
+          inputNames: ["sand", "red_sand"],
+          outputName: "glass",
+          mineBlock: "sand",
+        },
+        stone: {
+          inputNames: ["cobblestone"],
+          outputName: "stone",
+          mineBlock: "cobblestone",
+        },
+        charcoal: {
+          inputNames: [
+            "oak_log",
+            "birch_log",
+            "spruce_log",
+            "jungle_log",
+            "acacia_log",
+            "dark_oak_log",
+            "cherry_log",
+            "mangrove_log",
+            "pale_oak_log",
+          ],
+          outputName: "charcoal",
+          mineBlock: "oak_log",
+        },
+        beef: {
+          inputNames: ["beef"],
+          outputName: "cooked_beef",
+        },
+        cooked_beef: {
+          inputNames: ["beef"],
+          outputName: "cooked_beef",
+        },
+        steak: {
+          inputNames: ["beef"],
+          outputName: "cooked_beef",
+        },
+        porkchop: {
+          inputNames: ["porkchop"],
+          outputName: "cooked_porkchop",
+        },
+        cooked_porkchop: {
+          inputNames: ["porkchop"],
+          outputName: "cooked_porkchop",
+        },
+        chicken: {
+          inputNames: ["chicken"],
+          outputName: "cooked_chicken",
+        },
+        cooked_chicken: {
+          inputNames: ["chicken"],
+          outputName: "cooked_chicken",
+        },
+        mutton: {
+          inputNames: ["mutton"],
+          outputName: "cooked_mutton",
+        },
+        cooked_mutton: {
+          inputNames: ["mutton"],
+          outputName: "cooked_mutton",
+        },
+        potato: {
+          inputNames: ["potato"],
+          outputName: "baked_potato",
+        },
+        baked_potato: {
+          inputNames: ["potato"],
+          outputName: "baked_potato",
+        },
+      };
+
+      const spec = SMELT_RECIPES[rawKey] || {
+        inputNames: ["raw_iron", "iron_ore", "deepslate_iron_ore"],
+        outputName: "iron_ingot",
+        mineBlock: "iron_ore",
+      };
+
+      const countInput = () =>
+        bot.inventory
+          .items()
+          .filter((i) => spec.inputNames.includes(i.name))
+          .reduce((s, i) => s + i.count, 0);
+
+      if (countInput() < amount && spec.mineBlock) {
+        await handlers.mine_block({
+          block: spec.mineBlock,
+          count: amount - countInput(),
+        });
+      }
+
+      const haveCobble = bot.inventory
+        .items()
+        .filter(
+          (i) =>
+            i.name === "cobblestone" ||
+            i.name === "cobbled_deepslate" ||
+            i.name === "blackstone",
+        )
+        .reduce((s, i) => s + i.count, 0);
+      const hasFurnace =
+        bot.inventory.items().some((i) => i.name === "furnace") ||
+        Boolean(
+          bot.findBlock({
+            matching: [
+              bot.registry?.blocksByName?.furnace?.id,
+              bot.registry?.blocksByName?.blast_furnace?.id,
+            ].filter(Boolean),
+            maxDistance: 6,
+          }),
+        );
+      if (!hasFurnace && haveCobble < 8) {
+        await handlers
+          .mine_block({ block: "stone", count: 8 - haveCobble })
+          .catch(() => {});
+      }
+
+      // Ensure fuel (coal, charcoal, planks, or logs)
+      const hasFuel = bot.inventory
+        .items()
+        .some(
+          (i) =>
+            i.name === "coal" ||
+            i.name === "charcoal" ||
+            i.name.endsWith("_planks") ||
+            i.name.endsWith("_log"),
+        );
+      if (!hasFuel) {
+        await handlers
+          .mine_block({ block: "oak_log", count: 2 })
+          .catch(() => {});
+        await craftAnyPlanks(bot).catch(() => {});
+      }
+
+      const ok = await smeltInFurnace(bot, goals, {
+        inputNames: spec.inputNames,
+        outputName: spec.outputName,
+        neededCount: amount,
+        stepLog,
+      });
+      const totalOut = bot.inventory
+        .items()
+        .filter((i) => i.name === spec.outputName)
+        .reduce((s, i) => s + i.count, 0);
+      if (!ok && totalOut === 0) {
+        throw new Error(
+          `Could not smelt ${spec.outputName} (need ${spec.inputNames[0]}, furnace and fuel)`,
+        );
+      }
+      return `Smelted ${spec.outputName} (now have ${totalOut} ${spec.outputName})`;
+    },
+
     async equip_best_gear() {
       const bot = requireBot();
       await equipBestArmor(bot, { includeOffhand: true });
@@ -987,15 +2138,54 @@ function createAiTools(ctx) {
       return `Ate ${food.name}`;
     },
 
-    async toss_item({ item, count }, { sender }) {
+    async toss_item({ item, count, player }, { sender }) {
       const bot = requireBot();
+      const raw = itemId(item);
       const name = resolveName(item, bot.registry?.itemsByName);
-      const stacks = bot.inventory.items().filter((i) => i.name === name);
+      const inv = bot.inventory.items();
+      let stacks = inv.filter((i) => i.name === name);
+      if (!stacks.length) {
+        // Category match: "food", "pickaxe", "sword", "axe", "wood", "logs", "planks", "cobble"
+        if (raw === "food") {
+          const best = findBestFood(bot);
+          if (best) stacks = inv.filter((i) => i.name === best.name);
+        } else if (raw === "pickaxe" || raw === "pick") {
+          stacks = inv.filter((i) => i.name.endsWith("_pickaxe"));
+        } else if (raw === "sword" || raw === "weapon") {
+          stacks = inv.filter((i) => i.name.endsWith("_sword"));
+        } else if (raw === "axe") {
+          stacks = inv.filter((i) => i.name.endsWith("_axe"));
+        } else if (raw === "wood" || raw === "log" || raw === "logs") {
+          stacks = inv.filter((i) => i.name.endsWith("_log"));
+        } else if (raw === "planks" || raw === "plank") {
+          stacks = inv.filter((i) => i.name.endsWith("_planks"));
+        } else {
+          stacks = inv.filter((i) => i.name.includes(raw));
+        }
+      }
       if (!stacks.length) throw new Error(`No ${name} in inventory`);
-      const receiver = bot.players[sender]?.entity;
-      if (receiver) {
+      const targetWho = matchPlayerName(bot, player || sender) || sender;
+      const receiver = bot.players[targetWho]?.entity;
+      if (receiver && receiver.position) {
+        const d = receiver.position.distanceTo(bot.entity.position);
+        if (d > 3.5 && d <= 28) {
+          const { goals } = loadLibraries();
+          await withTimeout(
+            bot.pathfinder.goto(
+              new goals.GoalNear(
+                receiver.position.x,
+                receiver.position.y,
+                receiver.position.z,
+                2.5,
+              ),
+            ),
+            7000,
+            () => clearPathfinderGoal(bot),
+          ).catch(() => {});
+        }
         await bot.lookAt(receiver.position.offset(0, 1.4, 0), true);
       }
+      const dropLabel = stacks[0].name;
       let left = Number(count) > 0 ? Math.floor(Number(count)) : Infinity;
       let tossed = 0;
       for (const stack of stacks) {
@@ -1005,7 +2195,466 @@ function createAiTools(ctx) {
         tossed += n;
         left -= n;
       }
-      return `Dropped ${tossed} ${name}`;
+      return `Dropped ${tossed} ${dropLabel}${receiver ? ` to ${targetWho}` : ""}`;
+    },
+
+    async place_block({ block }) {
+      const bot = requireBot();
+      const raw = itemId(block);
+      const name = resolveName(block, bot.registry?.itemsByName);
+      let invItem =
+        bot.inventory.items().find((i) => i.name === name) ||
+        bot.inventory.items().find((i) => i.name.includes(raw));
+      if (
+        !invItem &&
+        (name === "crafting_table" || name === "furnace" || name === "chest")
+      ) {
+        await handlers.craft_item({ item: name, count: 1 });
+        invItem = bot.inventory.items().find((i) => i.name === name);
+      }
+      if (!invItem) throw new Error(`No ${name} in inventory to place`);
+      const ok = await placeBlockNearby(bot, invItem, invItem.name, (m) =>
+        log(`AIAgent: ${m}`),
+      );
+      if (!ok)
+        throw new Error(
+          `Could not find a clear spot nearby to place ${invItem.name}`,
+        );
+      return `Placed ${invItem.name}`;
+    },
+
+    async collect_drops() {
+      const bot = requireBot();
+      const { goals } = loadLibraries();
+      let collected = 0;
+      for (let i = 0; i < 8; i++) {
+        const me = bot.entity.position;
+        const drops = Object.values(bot.entities || {})
+          .filter(
+            (e) =>
+              e &&
+              e.position &&
+              (e.name === "item" ||
+                e.displayName === "Item" ||
+                e.objectType === "Item") &&
+              e.position.distanceTo(me) <= 18,
+          )
+          .sort(
+            (a, b) => a.position.distanceTo(me) - b.position.distanceTo(me),
+          );
+        if (!drops.length) break;
+        const drop = drops[0];
+        await withTimeout(
+          bot.pathfinder.goto(
+            new goals.GoalNear(
+              drop.position.x,
+              drop.position.y,
+              drop.position.z,
+              1,
+            ),
+          ),
+          5000,
+          () => clearPathfinderGoal(bot),
+        ).catch(() => {});
+        await sleep(250);
+        collected += 1;
+      }
+      return collected
+        ? `Collected ${collected} nearby item drop(s)`
+        : "No dropped items within 18 blocks";
+    },
+
+    async return_to_death({ sender } = {}) {
+      const bot = requireBot();
+      const death = bot._mcbpLastDeath;
+      if (!death || !death.position) {
+        throw new Error("No recorded death location in this session");
+      }
+      const p = death.position;
+      const { goals } = loadLibraries();
+      const label = `${Math.floor(p.x)} ${Math.floor(p.y)} ${Math.floor(p.z)}`;
+      await startMove(bot, new goals.GoalNear(p.x, p.y, p.z, 2), {
+        label: `death point (${label})`,
+        sender,
+      });
+      return `Walking back to death location (${label})`;
+    },
+
+    async sleep_in_bed() {
+      const bot = requireBot();
+      const { goals } = loadLibraries();
+      let bedBlock = bot.findBlock({
+        matching: (b) => b && b.name && b.name.endsWith("_bed"),
+        maxDistance: 24,
+      });
+      if (!bedBlock) {
+        const bedItem = bot.inventory
+          .items()
+          .find((i) => i.name.endsWith("_bed"));
+        if (bedItem) {
+          await placeBlockNearby(bot, bedItem, bedItem.name, (m) =>
+            log(`AIAgent: ${m}`),
+          );
+          bedBlock = bot.findBlock({
+            matching: (b) => b && b.name && b.name.endsWith("_bed"),
+            maxDistance: 8,
+          });
+        }
+      }
+      if (!bedBlock) throw new Error("No bed nearby or in inventory");
+      if (bedBlock.position.distanceTo(bot.entity.position) > 3.5) {
+        await withTimeout(
+          bot.pathfinder.goto(
+            new goals.GoalNear(
+              bedBlock.position.x,
+              bedBlock.position.y,
+              bedBlock.position.z,
+              2,
+            ),
+          ),
+          8000,
+          () => clearPathfinderGoal(bot),
+        ).catch(() => {});
+      }
+      try {
+        await bot.sleep(bedBlock);
+        return `Sleeping in ${bedBlock.name}`;
+      } catch (err) {
+        await bot.activateBlock(bedBlock).catch(() => {});
+        return `Set respawn point at ${bedBlock.name} (${err.message || "daytime"})`;
+      }
+    },
+
+    async unstuck() {
+      const bot = requireBot();
+      stopWatch(bot);
+      clearPathfinderGoal(bot);
+      if (bot.currentWindow) {
+        try {
+          bot.closeWindow(bot.currentWindow);
+        } catch (_) {}
+      }
+      const recovered = await escapeHazardsAndObstructions(bot, { log });
+      bot.setControlState("jump", true);
+      bot.setControlState("forward", true);
+      await sleep(450);
+      bot.setControlState("jump", false);
+      bot.setControlState("forward", false);
+      return recovered
+        ? `Recovered: ${recovered}`
+        : "Cleared pathfinder, crafting grid, and stepped free";
+    },
+
+    async create_plan({ goal, steps }, { sender } = {}) {
+      const bot = requireBot();
+      const rawGoal = String(goal || steps || "").trim();
+      if (!rawGoal) {
+        throw new Error(
+          "Specify a goal (e.g. 'make iron armor from scratch') or steps",
+        );
+      }
+
+      // 1. Check if goal can be expanded by the Minecraft dependency planner
+      const craftPlan = buildCraftingPlan(bot, rawGoal, 1);
+      if (craftPlan && craftPlan.length > 0 && !steps) {
+        const queueable = craftPlan.map((st) => ({
+          label: st.label,
+          tool: st.tool,
+          args: st.args,
+          run: () => handlers[st.tool](st.args, { sender }),
+        }));
+        return enqueueSteps(queueable, { planTitle: rawGoal, sender });
+      }
+
+      // 2. Otherwise translate semicolon/newline-separated command steps
+      const cmdText = String(steps || goal || "").trim();
+      const t = translate(cmdText, {
+        scripts: scripts.list(),
+        sender,
+        botName: bot.username,
+      });
+      const validSteps = t.steps.filter((s) => s.js);
+      if (!validSteps.length) {
+        throw new Error(
+          `Could not build a plan from "${rawGoal}". Try e.g. "make iron armor" or "mine 4 oak_log; craft wooden_pickaxe"`,
+        );
+      }
+      const queueable = validSteps.map((s) => ({
+        label: s.line,
+        tool: "run_commands",
+        args: { commands: s.line },
+        run: () => runTranslated(s.line, sender),
+      }));
+      return enqueueSteps(queueable, { planTitle: rawGoal, sender });
+    },
+
+    async queue_task({ commands }, { sender } = {}) {
+      const bot = requireBot();
+      const text = Array.isArray(commands)
+        ? commands.join("; ")
+        : String(commands || "").trim();
+      if (!text) throw new Error("No commands given to queue");
+
+      // Check if it's a composite crafting goal like "make iron armor"
+      const craftPlan = buildCraftingPlan(bot, text, 1);
+      if (craftPlan && craftPlan.length > 1) {
+        const queueable = craftPlan.map((st) => ({
+          label: st.label,
+          tool: st.tool,
+          args: st.args,
+          run: () => handlers[st.tool](st.args, { sender }),
+        }));
+        return enqueueSteps(queueable, { planTitle: text, sender });
+      }
+
+      const t = translate(text, {
+        scripts: scripts.list(),
+        sender,
+        botName: bot.username,
+      });
+      const validSteps = t.steps.filter((s) => s.js);
+      if (!validSteps.length) {
+        throw new Error(`Could not understand task "${text}"`);
+      }
+      const queueable = validSteps.map((s) => ({
+        label: s.line,
+        tool: "run_commands",
+        args: { commands: s.line },
+        run: () => runTranslated(s.line, sender),
+      }));
+      return enqueueSteps(queueable, { planTitle: text, sender });
+    },
+
+    get_queue() {
+      const status = getQueueStatus();
+      return status || "Task queue is empty (no active plan)";
+    },
+
+    async hunt_food({ count = 3 } = {}) {
+      const bot = requireBot();
+      const targetCount = Math.max(
+        1,
+        Math.min(12, Math.floor(Number(count) || 3)),
+      );
+      const FOOD_ANIMALS = new Set([
+        "cow",
+        "mooshroom",
+        "pig",
+        "sheep",
+        "chicken",
+        "rabbit",
+        "cod",
+        "salmon",
+      ]);
+      let hunted = 0;
+      for (let i = 0; i < targetCount; i++) {
+        const me = bot.entity.position;
+        const animals = Object.values(bot.entities || {})
+          .filter(
+            (e) =>
+              e &&
+              e !== bot.entity &&
+              e.position &&
+              FOOD_ANIMALS.has(String(e.name || "").toLowerCase()) &&
+              e.position.distanceTo(me) <= 32,
+          )
+          .sort(
+            (a, b) => a.position.distanceTo(me) - b.position.distanceTo(me),
+          );
+        if (!animals.length) break;
+        const animal = animals[0];
+        await handlers.attack({ target: animal.name }).catch(() => {});
+        await handlers.collect_drops().catch(() => {});
+        hunted += 1;
+      }
+
+      // If we got raw meat, cook it if possible
+      const rawMeat = bot.inventory
+        .items()
+        .find((i) =>
+          ["beef", "porkchop", "chicken", "mutton"].includes(i.name),
+        );
+      if (rawMeat) {
+        await handlers
+          .smelt_item({ item: rawMeat.name, count: rawMeat.count })
+          .catch(() => {});
+      }
+
+      if (!hunted && !rawMeat) {
+        throw new Error(
+          "No food animals (cow, pig, sheep, chicken, rabbit) within 32 blocks",
+        );
+      }
+      return `Hunted ${hunted} animal(s) and collected food drops`;
+    },
+
+    async store_items({ item = "all", count } = {}) {
+      const bot = requireBot();
+      const { goals } = loadLibraries();
+      let chestBlock = bot.findBlock({
+        matching: (b) =>
+          b &&
+          (b.name === "chest" ||
+            b.name === "trapped_chest" ||
+            b.name === "barrel"),
+        maxDistance: 12,
+      });
+      if (!chestBlock) {
+        const chestItem = bot.inventory
+          .items()
+          .find((i) => i.name === "chest" || i.name === "barrel");
+        if (!chestItem) {
+          await handlers
+            .craft_item({ item: "chest", count: 1 })
+            .catch(() => {});
+        }
+        const toPlace = bot.inventory
+          .items()
+          .find((i) => i.name === "chest" || i.name === "barrel");
+        if (toPlace) {
+          await placeBlockNearby(bot, toPlace, toPlace.name, (m) =>
+            log(`AIAgent: ${m}`),
+          );
+          chestBlock = bot.findBlock({
+            matching: (b) =>
+              b &&
+              (b.name === "chest" ||
+                b.name === "trapped_chest" ||
+                b.name === "barrel"),
+            maxDistance: 8,
+          });
+        }
+      }
+      if (!chestBlock) throw new Error("No chest nearby or in inventory");
+      if (chestBlock.position.distanceTo(bot.entity.position) > 3.8) {
+        await withTimeout(
+          bot.pathfinder.goto(
+            new goals.GoalNear(
+              chestBlock.position.x,
+              chestBlock.position.y,
+              chestBlock.position.z,
+              2,
+            ),
+          ),
+          6000,
+          () => clearPathfinderGoal(bot),
+        ).catch(() => {});
+      }
+      const container = await bot.openContainer(chestBlock);
+      let stored = 0;
+      try {
+        const raw = itemId(item);
+        const targetName =
+          raw === "all" ? "all" : resolveName(item, bot.registry?.itemsByName);
+        const stacks = bot.inventory.items().filter((i) => {
+          if (targetName === "all") {
+            return !i.name.endsWith("_pickaxe") && !i.name.endsWith("_sword");
+          }
+          return i.name === targetName || i.name.includes(raw);
+        });
+        let left = Number(count) > 0 ? Math.floor(Number(count)) : Infinity;
+        for (const st of stacks) {
+          if (left <= 0) break;
+          const n = Math.min(st.count, left);
+          await container.deposit(st.type, null, n).catch(() => {});
+          stored += n;
+          left -= n;
+        }
+      } finally {
+        container.close();
+      }
+      return `Stored ${stored} item(s) in ${chestBlock.name}`;
+    },
+
+    async take_items({ item = "all", count } = {}) {
+      const bot = requireBot();
+      const { goals } = loadLibraries();
+      const chestBlock = bot.findBlock({
+        matching: (b) =>
+          b &&
+          (b.name === "chest" ||
+            b.name === "trapped_chest" ||
+            b.name === "barrel"),
+        maxDistance: 12,
+      });
+      if (!chestBlock) throw new Error("No chest or barrel within 12 blocks");
+      if (chestBlock.position.distanceTo(bot.entity.position) > 3.8) {
+        await withTimeout(
+          bot.pathfinder.goto(
+            new goals.GoalNear(
+              chestBlock.position.x,
+              chestBlock.position.y,
+              chestBlock.position.z,
+              2,
+            ),
+          ),
+          6000,
+          () => clearPathfinderGoal(bot),
+        ).catch(() => {});
+      }
+      const container = await bot.openContainer(chestBlock);
+      let taken = 0;
+      try {
+        const raw = itemId(item);
+        const targetName =
+          raw === "all" ? "all" : resolveName(item, bot.registry?.itemsByName);
+        const items = container.containerItems().filter((i) => {
+          if (targetName === "all") return true;
+          return i.name === targetName || i.name.includes(raw);
+        });
+        let left = Number(count) > 0 ? Math.floor(Number(count)) : Infinity;
+        for (const st of items) {
+          if (left <= 0) break;
+          const n = Math.min(st.count, left);
+          await container.withdraw(st.type, null, n).catch(() => {});
+          taken += n;
+          left -= n;
+        }
+      } finally {
+        container.close();
+      }
+      return `Took ${taken} item(s) from ${chestBlock.name}`;
+    },
+
+    async fill_bucket({ liquid = "water" } = {}) {
+      const bot = requireBot();
+      const { goals } = loadLibraries();
+      const liqName = String(liquid || "water")
+        .toLowerCase()
+        .includes("lava")
+        ? "lava"
+        : "water";
+      let bucket = bot.inventory.items().find((i) => i.name === "bucket");
+      if (!bucket) {
+        await handlers.craft_item({ item: "bucket", count: 1 });
+        bucket = bot.inventory.items().find((i) => i.name === "bucket");
+      }
+      if (!bucket) throw new Error("Need an empty bucket (3 iron_ingot)");
+      const liqBlock = bot.findBlock({
+        matching: (b) => b && b.name === liqName,
+        maxDistance: 24,
+      });
+      if (!liqBlock) throw new Error(`No ${liqName} within 24 blocks`);
+      if (liqBlock.position.distanceTo(bot.entity.position) > 3.8) {
+        await withTimeout(
+          bot.pathfinder.goto(
+            new goals.GoalNear(
+              liqBlock.position.x,
+              liqBlock.position.y,
+              liqBlock.position.z,
+              2,
+            ),
+          ),
+          8000,
+          () => clearPathfinderGoal(bot),
+        ).catch(() => {});
+      }
+      await bot.equip(bucket, "hand");
+      await bot.lookAt(liqBlock.position.offset(0.5, 0.5, 0.5), true);
+      bot.activateItem();
+      await sleep(300);
+      bot.deactivateItem();
+      return `Filled bucket with ${liqName}`;
     },
 
     async list_scripts() {
@@ -1330,8 +2979,16 @@ function createAiTools(ctx) {
 
     think({ thought }) {
       const t = String(thought || "").trim();
-      if (t) log(`AIAgent (thinking): ${t.slice(0, 300)}`);
+      if (t) {
+        aiBrain.recordThought(t, getBot());
+        log(`AIAgent (thinking): ${t.slice(0, 300)}`);
+      }
       return "noted";
+    },
+
+    query_game_mechanics({ topic } = {}) {
+      const bot = getBot();
+      return aiBrain.queryGameKnowledge(bot, topic, getLogs());
     },
 
     respawn() {
@@ -1409,7 +3066,16 @@ function createAiTools(ctx) {
 
   // Long tasks run in the background so the bot can answer right away;
   // their outcome is reported back so the AI can fix failures.
-  const BACKGROUND = new Set(["attack", "mine_block"]);
+  const BACKGROUND = new Set([
+    "attack",
+    "mine_block",
+    "craft_item",
+    "smelt_item",
+    "hunt_food",
+    "store_items",
+    "take_items",
+    "fill_bucket",
+  ]);
 
   // Names small models invent for the real tools.
   const TOOL_ALIASES = {
@@ -1430,10 +3096,40 @@ function createAiTools(ctx) {
     kill: "attack",
     mine: "mine_block",
     dig: "mine_block",
+    craft: "craft_item",
+    make: "craft_item",
+    smelt: "smelt_item",
+    cook: "smelt_item",
     equip: "equip_best_gear",
+    gearup: "start_script",
+    gear_up: "start_script",
     drop: "toss_item",
     toss: "toss_item",
     give: "toss_item",
+    place: "place_block",
+    pickup: "collect_drops",
+    loot: "collect_drops",
+    collect: "collect_drops",
+    death: "return_to_death",
+    deathpoint: "return_to_death",
+    grave: "return_to_death",
+    sleep: "sleep_in_bed",
+    bed: "sleep_in_bed",
+    escape: "unstuck",
+    recover: "unstuck",
+    unstick: "unstuck",
+    plan: "create_plan",
+    make_plan: "create_plan",
+    queue: "queue_task",
+    enqueue: "queue_task",
+    tasks: "get_queue",
+    hunt_animals: "hunt_food",
+    get_food: "hunt_food",
+    gather_food: "hunt_food",
+    store: "store_items",
+    deposit: "store_items",
+    withdraw: "take_items",
+    bucket: "fill_bucket",
     chat: "say",
     send_chat: "say",
     list_modules: "list_scripts",
@@ -1451,6 +3147,12 @@ function createAiTools(ctx) {
     logs: "read_logs",
     get_logs: "read_logs",
     read_log: "read_logs",
+    query: "query_game_mechanics",
+    mechanics: "query_game_mechanics",
+    game_mechanics: "query_game_mechanics",
+    wiki: "query_game_mechanics",
+    recipe: "query_game_mechanics",
+    knowledge: "query_game_mechanics",
   };
 
   // Argument names small models use instead of the real ones.
@@ -1474,6 +3176,10 @@ function createAiTools(ctx) {
     text: ["message", "msg", "content"],
     option: ["key", "setting", "option_name"],
     value: ["val", "new_value", "setting_value"],
+    goal: ["plan", "task", "objective", "target", "item"],
+    steps: ["commands", "tasks", "list"],
+    liquid: ["fluid", "type", "item"],
+    topic: ["query", "item", "block", "question", "name", "subject"],
   };
 
   function fixArgs(name, rawArgs) {
@@ -1487,6 +3193,13 @@ function createAiTools(ctx) {
     );
     const props = Object.keys(schema?.function?.parameters?.properties || {});
     const out = { ...args };
+    if (Array.isArray(out._pos)) {
+      const pos = out._pos;
+      delete out._pos;
+      props.forEach((p, idx) => {
+        if (out[p] === undefined && pos[idx] !== undefined) out[p] = pos[idx];
+      });
+    }
     for (const k of Object.keys(out)) {
       const v = out[k];
       if (v && typeof v === "object" && v.type && v.description) delete out[k];
@@ -1498,6 +3211,27 @@ function createAiTools(ctx) {
           out[p] = args[alt];
           break;
         }
+      }
+    }
+    // Handle set_script_option({"value": "gearUp, tier, iron"}) or "GearUp tier=stone"
+    if (name === "set_script_option" && (!out.name || !out.option)) {
+      const packed = String(out.value ?? out.name ?? out.option ?? "").trim();
+      const parts = packed.includes(",")
+        ? packed
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : packed
+            .split(/[\s=:]+/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+      if (parts.length >= 3) {
+        out.name = parts[0];
+        out.option = parts[1];
+        out.value = parts.slice(2).join(" ");
+      } else if (parts.length === 2 && out.name && !out.option) {
+        out.option = parts[0];
+        out.value = parts[1];
       }
     }
     // A single unnamed value: put it into the only required field.
@@ -1559,52 +3293,144 @@ function createAiTools(ctx) {
     }
     safeArgs = fixArgs(name, safeArgs);
     const handler = handlers[name];
-    const argText = JSON.stringify(safeArgs);
+    const formatPrettyArgs = (obj) => {
+      if (!obj || typeof obj !== "object") return "";
+      const keys = Object.keys(obj);
+      if (!keys.length) return "";
+      if ((obj.item || obj.block) && keys.length <= 2) {
+        const target = obj.item || obj.block;
+        const cnt = obj.count && Number(obj.count) > 1 ? ` ×${obj.count}` : "";
+        return `${target}${cnt}`;
+      }
+      if (obj.player && keys.length === 1) return String(obj.player);
+      if (obj.target && keys.length === 1) return String(obj.target);
+      if (obj.commands && keys.length === 1) return `"${obj.commands}"`;
+      if (obj.topic && keys.length === 1) return `"${obj.topic}"`;
+      return keys
+        .map((k) => {
+          const v = obj[k];
+          return typeof v === "object"
+            ? `${k}=${JSON.stringify(v)}`
+            : `${k}=${v}`;
+        })
+        .join(", ");
+    };
+    const argText = formatPrettyArgs(safeArgs);
     let background = BACKGROUND.has(name);
+    let translatedCmd = null;
     if (name === "run_commands" || name === "run_code") {
       const bot = getBot();
       const text = String(safeArgs.commands ?? safeArgs.code ?? "");
-      background = translate(text, {
+      translatedCmd = translate(text, {
         scripts: scripts.list(),
         sender: meta.sender,
         botName: bot?.username,
-      }).long;
+      });
+      background = translatedCmd.long;
     }
     if (background) {
-      requireBot();
-      Promise.resolve()
-        .then(() => handler(safeArgs, meta))
-        .then((res) => {
-          log(`AIAgent: ${name} finished → ${res}`);
-          onTaskDone({
-            name,
-            args: safeArgs,
-            ok: true,
-            result: res,
+      const bot = requireBot();
+      // Expand multi-step crafting plans into individual queued steps
+      if (name === "craft_item") {
+        const plan = buildCraftingPlan(bot, safeArgs.item, safeArgs.count || 1);
+        if (plan && plan.length > 1) {
+          const queueable = plan.map((st) => ({
+            label: st.label,
+            tool: st.tool,
+            args: st.args,
+            run: () => handlers[st.tool](st.args, meta),
+          }));
+          return enqueueSteps(queueable, {
+            planTitle: `craft_item(${safeArgs.item})`,
             sender: meta.sender,
           });
-        })
-        .catch((err) => {
-          const msg = err.message || String(err);
-          log(`AIAgent: ${name} failed → ${msg}`);
-          onTaskDone({
-            name,
-            args: safeArgs,
-            ok: false,
-            result: msg,
+        }
+      }
+      // Expand multi-step or composite run_commands into queued steps
+      if (
+        name === "run_commands" &&
+        translatedCmd &&
+        !translatedCmd.needsCode
+      ) {
+        const validSteps = translatedCmd.steps.filter((s) => s.js);
+        if (validSteps.length === 1) {
+          const cm = String(validSteps[0].js || "").match(
+            /^api\.craft_item\(\{ item: "([^"]+)", count: (\d+) \}\)$/,
+          );
+          if (cm) {
+            const plan = buildCraftingPlan(bot, cm[1], Number(cm[2]));
+            if (plan && plan.length > 1) {
+              const queueable = plan.map((st) => ({
+                label: st.label,
+                tool: st.tool,
+                args: st.args,
+                run: () => handlers[st.tool](st.args, meta),
+              }));
+              return enqueueSteps(queueable, {
+                planTitle: validSteps[0].line,
+                sender: meta.sender,
+              });
+            }
+          }
+        } else if (validSteps.length > 1) {
+          const queueable = [];
+          for (const st of validSteps) {
+            const cm = String(st.js || "").match(
+              /^api\.craft_item\(\{ item: "([^"]+)", count: (\d+) \}\)$/,
+            );
+            const plan = cm
+              ? buildCraftingPlan(bot, cm[1], Number(cm[2]))
+              : null;
+            if (plan && plan.length > 1) {
+              for (const p of plan) {
+                queueable.push({
+                  label: p.label,
+                  tool: p.tool,
+                  args: p.args,
+                  run: () => handlers[p.tool](p.args, meta),
+                });
+              }
+            } else {
+              queueable.push({
+                label: st.line,
+                tool: "run_commands",
+                args: { commands: st.line },
+                run: () => runTranslated(st.line, meta.sender),
+              });
+            }
+          }
+          return enqueueSteps(queueable, {
+            planTitle: String(safeArgs.commands || ""),
             sender: meta.sender,
           });
-        });
-      log(`AIAgent: ${name}(${argText}) started`);
-      return `Started ${name.replace(/_/g, " ")} in the background, you will get a report when it finishes`;
+        }
+      }
+
+      return enqueueSteps(
+        [
+          {
+            label: `${name.replace(/_/g, " ")}${argText ? ` (${argText})` : ""}`,
+            tool: name,
+            args: safeArgs,
+            run: () => handler(safeArgs, meta),
+          },
+        ],
+        { planTitle: name, sender: meta.sender },
+      );
     }
     try {
       const result = await handler(safeArgs, meta);
-      log(`AIAgent: ${name}(${argText}) → ${String(result).split("\n")[0]}`);
+      aiBrain.recordAction(name, safeArgs, result, false, getBot());
+      if (name !== "think") {
+        log(
+          `AIAgent ▸ ${name}${argText ? `(${argText})` : ""} → ${String(result).split("\n")[0]}`,
+        );
+      }
       return result;
     } catch (err) {
       const msg = `Error: ${err.message || err}`;
-      log(`AIAgent: ${name}(${argText}) → ${msg}`);
+      aiBrain.recordAction(name, safeArgs, msg, true, getBot());
+      log(`AIAgent ✗ ${name}${argText ? `(${argText})` : ""} → ${msg}`);
       return msg;
     }
   }
@@ -1616,6 +3442,7 @@ function createAiTools(ctx) {
   }
 
   function stopAll() {
+    clearTaskQueue();
     const bot = getBot();
     if (!bot) return;
     stopWatch(bot);
@@ -1638,10 +3465,22 @@ function createAiTools(ctx) {
       "\\$&",
     );
     if (esc) text = text.replace(new RegExp(`^@?${esc}[,:]?\\s*`, "i"), "");
-    if (!text || text.length > 200) return null;
+    if (!text || text.length > 220) return null;
     // Long sentences are conversation, not orders.
-    if (text.split(/\s+/).length > 10) return null;
-    if (
+    if (text.split(/\s+/).length > 16) return null;
+    const isPoliteOrder =
+      /^(?:hey\s+|yo\s+|bro\s+|please\s+|pls\s+)*(?:can|could|would|will)\s+you\s+(?:please\s+|pls\s+|just\s+)?(?:make|craft|create|mine|dig|chop|break|get|gather|collect|follow|come|walk|go|move|stop|halt|unstuck|escape|eat|drop|give|toss|throw|equip|gear|hold|attack|kill|fight|hunt|guard|protect|smelt|cook|jump|place|sleep|turn|switch|enable|disable|start)\b/i.test(
+        text,
+      );
+    if (isPoliteOrder) {
+      text = text
+        .replace(
+          /^(?:hey\s+|yo\s+|bro\s+|please\s+|pls\s+)*(?:can|could|would|will)\s+you\s+(?:please\s+|pls\s+|just\s+)?/i,
+          "",
+        )
+        .replace(/\?+\s*$/, "")
+        .trim();
+    } else if (
       /\?\s*$/.test(text) ||
       /^(what|why|how|did|do|does|can|could|would|is|are|where|who|when|which|should|will|whats|what's)\b/i.test(
         text,
@@ -1656,21 +3495,39 @@ function createAiTools(ctx) {
     });
     if (!t.count || t.errors.length || t.needsCode) return null;
     // Following or looking at someone needs them to be online. ("go to
-    // kitpvp" is fine: come_to_player joins it via the lobby menu.)
+    // kitpvp" is only tried directly when the target is an online player or
+    // the bot has a lobby menu selector item.)
     const online = new Set(
       Object.keys(bot.players || {}).map((u) => u.toLowerCase()),
     );
+    const hasSelector =
+      Boolean(bot.currentWindow) ||
+      bot.inventory
+        ?.items()
+        ?.some((i) =>
+          /compass|clock|nether_star|book|chest|emerald|comparator|ender_eye|player_head/.test(
+            i.name,
+          ),
+        );
     for (const st of t.steps) {
       const m = String(st.js || "").match(
-        /^api\.(?:follow_player|look_at_player)\(\{ player: "([^"]*)" \}\)/,
+        /^api\.(follow_player|look_at_player|come_to_player)\(\{ player: "([^"]*)" \}\)/,
       );
-      if (m && !online.has(m[1].toLowerCase()) && !matchPlayerName(bot, m[1]))
-        return null;
+      if (m) {
+        const who = m[2];
+        const knownPlayer =
+          online.has(who.toLowerCase()) || Boolean(matchPlayerName(bot, who));
+        if (!knownPlayer && (m[1] !== "come_to_player" || !hasSelector)) {
+          return null;
+        }
+      }
     }
     // Info commands need the model to word the answer.
     if (
       t.steps.some((st) =>
-        /^api\.(get_status|read_logs|list_scripts)\(/.test(st.js || ""),
+        /^api\.(get_status|read_logs|list_scripts|get_queue)\(/.test(
+          st.js || "",
+        ),
       )
     ) {
       return null;
@@ -1691,6 +3548,7 @@ function createAiTools(ctx) {
     runCommands,
     resolveTool,
     tryDirect,
+    getQueueStatus,
   };
 }
 
