@@ -64,10 +64,17 @@ function attachStuckWatchdog(
     }
   };
 
-  const repath = (goal) => {
+  const repath = (goal, stuckPos = null) => {
     if (!bot || !bot.pathfinder || !goal) return;
     try {
-      bot.pathfinder.setGoal(goal, Boolean(goal && goal.entity));
+      if (stuckPos && typeof bot.pathfinder.penalizeNode === "function") {
+        bot.pathfinder.penalizeNode(stuckPos, 55);
+      }
+      if (bot.pathfinder.goal === goal && typeof bot.pathfinder.repath === "function") {
+        bot.pathfinder.repath();
+      } else {
+        bot.pathfinder.setGoal(goal, Boolean(goal && goal.entity));
+      }
     } catch (_) {}
   };
 
@@ -258,7 +265,7 @@ function attachStuckWatchdog(
           yaw: diag.openYaw,
         });
         await new Promise((r) => setTimeout(r, 680));
-        repath(goal);
+        repath(goal, pos);
       } else if (step === 3) {
         if (allowSafeDig()) {
           say(
@@ -266,7 +273,7 @@ function attachStuckWatchdog(
             "Stuck (Step 3: Allow Digging)",
             `Target: ${targetDesc} | ${diag.summary}`,
           );
-          repath(goal);
+          repath(goal, pos);
         } else {
           say(
             `Stuck: protected zone or digging unavailable — detouring around (${diag.summary})`,
@@ -280,7 +287,7 @@ function attachStuckWatchdog(
             yaw: diag.openYaw,
           });
           await new Promise((r) => setTimeout(r, 780));
-          repath(goal);
+          repath(goal, pos);
         }
       } else if (step === 4) {
         const side = Math.random() < 0.5 ? "left" : "right";
@@ -302,7 +309,7 @@ function attachStuckWatchdog(
           yaw: bot.entity.yaw,
         });
         await new Promise((r) => setTimeout(r, 830));
-        repath(goal);
+        repath(goal, pos);
       } else {
         say(
           `Stuck: still no progress after ${state.level} attempts, running full escape (${diag.summary})`,
@@ -313,7 +320,7 @@ function attachStuckWatchdog(
           log,
           onLogMovement: recordMovementEvent,
         }).catch(() => {});
-        repath(goal);
+        repath(goal, pos);
         if (onStuck && Date.now() - state.lastAiAt > 45000) {
           state.lastAiAt = Date.now();
           Promise.resolve()

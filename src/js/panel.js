@@ -862,8 +862,11 @@ const logFilterInput = document.getElementById("log-filter");
 const chatFilterInput = document.getElementById("chat-filter");
 const logsJumpLiveBtn = document.getElementById("logs-jump-live");
 const chatJumpLiveBtn = document.getElementById("chat-jump-live");
-const VIEWPORT_WINDOW_SIZE = 120;
-const PAGE_STEP_SIZE = 55;
+// Rows kept in the DOM: generous so the user never sees loading or trimming.
+const LIVE_KEEP_ROWS = 220;
+const WINDOW_MAX_ROWS = 420;
+const PAGE_ROWS = 80;
+const DISK_PAGE_ROWS = 160;
 const MAX_MEMORY_ENTRIES = 12000;
 const chatHistory = [];
 let chatHistoryIndex = -1;
@@ -1177,10 +1180,14 @@ function createVirtualStream({
   jumpBtn,
   buildRow,
 }) {
+  // The DOM only holds a sliding slice [winStart, winEnd) of the filtered list.
+  // Rows are added/removed incrementally on the side the user is not looking at,
+  // so scrolling stays smooth and nothing visibly jumps.
   const state = {
     entries: [],
     filterQuery: "",
-    windowEnd: 0,
+    winStart: 0,
+    winEnd: 0,
     pinnedLive: true,
     unseenCount: 0,
     diskCursor: {
@@ -1193,6 +1200,14 @@ function createVirtualStream({
     pendingIncoming: [],
     rafId: null,
   };
+
+  const rowsEl = () => (container ? container.children : []);
+  const margin = () =>
+    container ? Math.max(360, container.clientHeight * 1.6) : 360;
+  const top = (el) =>
+    el.getBoundingClientRect().top -
+    container.getBoundingClientRect().top +
+    container.scrollTop;
 
   function getFiltered() {
     if (!state.filterQuery) return state.entries;
@@ -1214,57 +1229,81 @@ function createVirtualStream({
     }
   }
 
-  function renderWindow({ preserveAnchor = null, scrollToBottom = false } = {}) {
+  function buildFrag(items) {
+    const frag = document.createDocumentFragment();
+    for (const item of items) frag.appendChild(buildRow(item));
+    return frag;
+  }
+
+  // Full rebuild; only used for filter changes, jump-to-live and clear.
+  function renderWindow({ scrollToBottom = true } = {}) {
     if (!container) return;
     const filtered = getFiltered();
-    const total = filtered.length;
-    if (state.pinnedLive || state.windowEnd > total || state.windowEnd === 0) {
-      state.windowEnd = total;
-    }
-    const end = Math.max(0, Math.min(total, state.windowEnd));
-    const start = Math.max(0, end - VIEWPORT_WINDOW_SIZE);
-    const slice = filtered.slice(start, end);
-
-    const prevScrollHeight = container.scrollHeight;
-    const prevScrollTop = container.scrollTop;
-
-    const frag = document.createDocumentFragment();
-    if (start > 0 || state.diskCursor.hasMore) {
-      const badge = document.createElement("div");
-      badge.className = "console-history-divider";
-      badge.textContent =
-        start > 0
-          ? `↑ Scroll up for older ${type} (${start} earlier in memory${state.diskCursor.hasMore ? " + session files" : ""})`
-          : `↑ Scroll up to load older ${type} from session .md files`;
-      frag.appendChild(badge);
-    }
-
-    let lastFile = "";
-    for (const item of slice) {
-      if (item.sourceFile && item.sourceFile !== lastFile) {
-        lastFile = item.sourceFile;
-        const fileDivider = document.createElement("div");
-        fileDivider.className = "console-history-divider";
-        fileDivider.textContent = `📄 Loaded from ${lastFile}`;
-        frag.appendChild(fileDivider);
-      }
-      frag.appendChild(buildRow(item));
-    }
-
-    container.replaceChildren(frag);
-
-    if (scrollToBottom || state.pinnedLive) {
+    state.winEnd = filtered.length;
+    state.winStart = Math.max(0, state.winEnd - LIVE_KEEP_ROWS);
+    container.replaceChildren(buildFrag(filtered.slice(state.winStart)));
+    if (scrollToBottom) {
+      state.pinnedLive = true;
       container.scrollTop = container.scrollHeight;
-    } else if (preserveAnchor === "top") {
-      const delta = container.scrollHeight - prevScrollHeight;
-      container.scrollTop = Math.max(12, prevScrollTop + delta);
-    } else if (preserveAnchor === "bottom") {
-      container.scrollTop = Math.max(
-        0,
-        container.scrollHeight - container.clientHeight - 28,
-      );
     }
     updateJumpButton();
+  }
+
+  // Removing rows above the viewport shifts content; compensate in one step.
+  function trimTopCompensated() {
+    const rows = rowsEl();
+    if (rows.length <= WINDOW_MAX_ROWS) return;
+    const limit = container.scrollTop - margin() * 1.5;
+    const before = container.scrollHeight;
+    const prevTop = container.scrollTop;
+    let removed = 0;
+    while (rows.length > WINDOW_MAX_ROWS - PAGE_ROWS) {
+      const first = rows[0];
+      if (top(first) + first.offsetHeight > limit) break;
+      first.remove();
+      removed++;
+    }
+    if (removed) {
+      state.winStart += removed;
+      container.scrollTop = prevTop - (before - container.scrollHeight);
+    }
+  }
+
+  function trimBottom() {
+    const rows = rowsEl();
+    if (rows.length <= WINDOW_MAX_ROWS) return;
+    const limit = container.scrollTop + container.clientHeight + margin() * 1.5;
+    let removed = 0;
+    while (rows.length > WINDOW_MAX_ROWS - PAGE_ROWS) {
+      const last = rows[rows.length - 1];
+      if (top(last) < limit) break;
+      last.remove();
+      removed++;
+    }
+    state.winEnd -= removed;
+  }
+
+  function prependOlderFromMemory() {
+    if (state.winStart <= 0) return false;
+    const filtered = getFiltered();
+    const from = Math.max(0, state.winStart - PAGE_ROWS);
+    const items = filtered.slice(from, state.winStart);
+    if (!items.length) return false;
+    const prevH = container.scrollHeight;
+    const prevTop = container.scrollTop;
+    container.prepend(buildFrag(items));
+    container.scrollTop = prevTop + (container.scrollHeight - prevH);
+    state.winStart = from;
+    return true;
+  }
+
+  function appendNewerFromMemory() {
+    const filtered = getFiltered();
+    if (state.winEnd >= filtered.length) return false;
+    const to = Math.min(filtered.length, state.winEnd + PAGE_ROWS);
+    container.appendChild(buildFrag(filtered.slice(state.winEnd, to)));
+    state.winEnd = to;
+    return true;
   }
 
   async function loadOlderFromDisk() {
@@ -1277,18 +1316,16 @@ function createVirtualStream({
     }
     state.diskCursor.loading = true;
     try {
-      // On first disk fetch, skip entries already captured in the live session buffer
-      const beforeIdx = state.diskCursor.initialized
-        ? state.diskCursor.beforeIndex
-        : Math.max(0, state.entries.length > 0 ? 0 : 999999);
       const startFileIdx = state.diskCursor.initialized
         ? state.diskCursor.fileIndex
         : 1;
       const res = await window.api.sessionLogReadHistory({
         type,
-        beforeIndex: state.diskCursor.initialized ? beforeIdx : null,
+        beforeIndex: state.diskCursor.initialized
+          ? state.diskCursor.beforeIndex
+          : null,
         fileIndex: startFileIdx,
-        limit: PAGE_STEP_SIZE,
+        limit: DISK_PAGE_ROWS,
         filter: "",
       });
       state.diskCursor.initialized = true;
@@ -1297,20 +1334,23 @@ function createVirtualStream({
       state.diskCursor.hasMore = Boolean(res?.hasMore);
 
       const fetched = Array.isArray(res?.entries) ? res.entries : [];
-      if (fetched.length > 0) {
-        const mapped = fetched.map((e) => ({
-          time: e.time || formatTime(),
-          raw: String(e.raw || ""),
-          rawLower: String(e.raw || "").toLowerCase(),
-          payload: e.payload || e.raw || "",
-          sourceFile: e.sourceFile || res.sourceFile || "",
-          html: "",
-        }));
-        state.entries.unshift(...mapped);
-        state.windowEnd += mapped.length;
-        return true;
-      }
-      return false;
+      if (!fetched.length) return false;
+      const mapped = fetched.map((e) => ({
+        time: e.time || formatTime(),
+        raw: String(e.raw || ""),
+        rawLower: String(e.raw || "").toLowerCase(),
+        payload: e.payload || e.raw || "",
+        sourceFile: e.sourceFile || res.sourceFile || "",
+        html: "",
+      }));
+      const q = state.filterQuery;
+      const added = q
+        ? mapped.filter((e) => e.rawLower.includes(q)).length
+        : mapped.length;
+      state.entries.unshift(...mapped);
+      state.winStart += added;
+      state.winEnd += added;
+      return added > 0;
     } catch (_) {
       state.diskCursor.hasMore = false;
       return false;
@@ -1323,47 +1363,54 @@ function createVirtualStream({
     state.rafId = null;
     if (!state.pendingIncoming.length || !container) return;
     const batch = state.pendingIncoming.splice(0, state.pendingIncoming.length);
+    const q = state.filterQuery;
+    const prevTotal = getFiltered().length;
+    const touchesLive = state.winEnd >= prevTotal;
+
     state.entries.push(...batch);
     if (state.entries.length > MAX_MEMORY_ENTRIES) {
-      const overflow = state.entries.length - MAX_MEMORY_ENTRIES;
-      state.entries.splice(0, overflow);
-      state.windowEnd = Math.max(0, state.windowEnd - overflow);
+      const overflow = state.entries.splice(
+        0,
+        state.entries.length - MAX_MEMORY_ENTRIES,
+      );
+      const gone = q
+        ? overflow.filter((e) => e.rawLower.includes(q)).length
+        : overflow.length;
+      state.winStart = Math.max(0, state.winStart - gone);
+      state.winEnd = Math.max(0, state.winEnd - gone);
     }
 
-    if (!state.pinnedLive) {
-      state.unseenCount += batch.length;
+    const matching = q ? batch.filter((e) => e.rawLower.includes(q)) : batch;
+    if (!matching.length) return;
+
+    if (!touchesLive) {
+      state.unseenCount += matching.length;
       updateJumpButton();
       return;
     }
 
-    // Fast path when pinned live: append matching rows directly and trim DOM to VIEWPORT_WINDOW_SIZE
-    const q = state.filterQuery;
-    const matching = q
-      ? batch.filter((e) => e.rawLower.includes(q))
-      : batch;
-    if (!matching.length) return;
-
-    if (matching.length >= VIEWPORT_WINDOW_SIZE) {
-      state.windowEnd = getFiltered().length;
-      renderWindow({ scrollToBottom: true });
+    // Window reaches the live edge: append in place, never rebuild.
+    if (matching.length >= WINDOW_MAX_ROWS) {
+      renderWindow({ scrollToBottom: state.pinnedLive });
       return;
     }
+    container.appendChild(buildFrag(matching));
+    state.winEnd = getFiltered().length;
 
-    const frag = document.createDocumentFragment();
-    for (const item of matching) {
-      frag.appendChild(buildRow(item));
+    if (state.pinnedLive) {
+      container.scrollTop = container.scrollHeight;
+      // Batch trimming: only once well past the cap, down to the live keep size.
+      if (rowsEl().length > WINDOW_MAX_ROWS) {
+        const extra = rowsEl().length - LIVE_KEEP_ROWS;
+        for (let i = 0; i < extra; i++) rowsEl()[0].remove();
+        state.winStart += extra;
+        container.scrollTop = container.scrollHeight;
+      }
+    } else {
+      state.unseenCount += matching.length;
+      trimTopCompensated();
+      updateJumpButton();
     }
-    container.appendChild(frag);
-    state.windowEnd = getFiltered().length;
-
-    const lineSelector = type === "chat" ? ".chat-line" : ".log-line";
-    const rows = container.querySelectorAll(lineSelector);
-    const excess = rows.length - VIEWPORT_WINDOW_SIZE;
-    for (let i = 0; i < excess; i++) {
-      rows[i].remove();
-    }
-    container.scrollTop = container.scrollHeight;
-    updateJumpButton();
   }
 
   function push(entry) {
@@ -1388,27 +1435,27 @@ function createVirtualStream({
     );
     const beforeLen = state.entries.length;
     state.entries = state.entries.filter((e) => !e.raw.includes(clean));
-    if (state.entries.length !== beforeLen && state.pinnedLive && container) {
-      container.querySelectorAll(".log-line, .chat-line").forEach((row) => {
-        if ((row.getAttribute("data-raw") || "").includes(clean)) {
-          row.remove();
-        }
-      });
-      state.windowEnd = getFiltered().length;
+    if (state.entries.length === beforeLen || !container) return;
+    const wasPinned = state.pinnedLive;
+    const prevTop = container.scrollTop;
+    renderWindow({ scrollToBottom: wasPinned });
+    if (!wasPinned) {
+      state.pinnedLive = false;
+      container.scrollTop = prevTop;
+      updateJumpButton();
     }
   }
 
   function jumpToLive() {
-    state.pinnedLive = true;
     state.unseenCount = 0;
-    state.windowEnd = getFiltered().length;
     renderWindow({ scrollToBottom: true });
   }
 
   function clear() {
     state.entries = [];
     state.pendingIncoming = [];
-    state.windowEnd = 0;
+    state.winStart = 0;
+    state.winEnd = 0;
     state.pinnedLive = true;
     state.unseenCount = 0;
     if (container) container.innerHTML = "";
@@ -1416,70 +1463,65 @@ function createVirtualStream({
   }
 
   if (container) {
-    let scrollBusy = false;
-    container.addEventListener("scroll", async () => {
-      if (scrollBusy) return;
-      const filtered = getFiltered();
-      const total = filtered.length;
-      const atBottom = isNearBottom(container);
-      const atTop = container.scrollTop <= 18;
+    let busy = false;
+    let queued = false;
 
-      if (atBottom) {
-        if (state.windowEnd < total) {
-          scrollBusy = true;
-          state.windowEnd = Math.min(total, state.windowEnd + PAGE_STEP_SIZE);
-          if (state.windowEnd >= total) state.pinnedLive = true;
-          renderWindow({
-            preserveAnchor: state.pinnedLive ? null : "bottom",
-            scrollToBottom: state.pinnedLive,
-          });
-          scrollBusy = false;
-        } else if (!state.pinnedLive) {
-          state.pinnedLive = true;
-          state.unseenCount = 0;
-          updateJumpButton();
-        }
+    async function onScroll() {
+      if (busy) {
+        queued = true;
         return;
       }
+      busy = true;
+      try {
+        do {
+          queued = false;
+          const m = margin();
+          const distBottom =
+            container.scrollHeight -
+            container.scrollTop -
+            container.clientHeight;
+          const atLiveEdge = state.winEnd >= getFiltered().length;
+          const wasPinned = state.pinnedLive;
+          state.pinnedLive = atLiveEdge && distBottom < 24;
+          if (state.pinnedLive !== wasPinned) updateJumpButton();
 
-      state.pinnedLive = false;
-      updateJumpButton();
-
-      if (atTop) {
-        scrollBusy = true;
-        try {
-          const currentStart = Math.max(
-            0,
-            state.windowEnd - VIEWPORT_WINDOW_SIZE,
-          );
-          if (currentStart > 0) {
-            state.windowEnd = Math.max(
-              Math.min(VIEWPORT_WINDOW_SIZE, total),
-              state.windowEnd - PAGE_STEP_SIZE,
-            );
-            renderWindow({ preserveAnchor: "top" });
-          } else if (state.diskCursor.hasMore) {
-            const loaded = await loadOlderFromDisk();
-            if (loaded) {
-              state.windowEnd = Math.max(
-                Math.min(VIEWPORT_WINDOW_SIZE, getFiltered().length),
-                state.windowEnd - PAGE_STEP_SIZE,
-              );
-              renderWindow({ preserveAnchor: "top" });
+          // Prefetch well before the user reaches the edge.
+          if (container.scrollTop < m) {
+            let grew = prependOlderFromMemory();
+            if (!grew && state.diskCursor.hasMore) {
+              if (await loadOlderFromDisk()) grew = prependOlderFromMemory();
             }
+            if (grew) trimBottom();
           }
-        } finally {
-          scrollBusy = false;
-        }
+          if (distBottom < m && !atLiveEdge) {
+            if (appendNewerFromMemory()) trimTopCompensated();
+            const nowLive = state.winEnd >= getFiltered().length;
+            if (nowLive) state.unseenCount = 0;
+            updateJumpButton();
+          }
+        } while (queued);
+      } finally {
+        busy = false;
       }
-    });
+    }
+
+    let scrollRaf = null;
+    container.addEventListener(
+      "scroll",
+      () => {
+        if (scrollRaf) return;
+        scrollRaf = requestAnimationFrame(() => {
+          scrollRaf = null;
+          onScroll();
+        });
+      },
+      { passive: true },
+    );
   }
 
   if (filterInput) {
     filterInput.addEventListener("input", () => {
       state.filterQuery = filterInput.value.trim().toLowerCase();
-      state.pinnedLive = true;
-      state.windowEnd = getFiltered().length;
       renderWindow({ scrollToBottom: true });
     });
   }

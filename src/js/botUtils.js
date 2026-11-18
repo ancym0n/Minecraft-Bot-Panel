@@ -1086,20 +1086,31 @@ function clearPathfinderGoal(bot) {
 }
 
 /**
- * Configures Mineflayer pathfinder Movements with Baritone-like options.
+ * Configures Baritone / Mineflayer pathfinder Movements with full safety & tick-cost rules.
  */
 function configureSmartMovements(bot, mcData, Movements, options = {}) {
-  if (!bot || !bot.pathfinder || !Movements) return null;
+  if (!bot || !bot.pathfinder) return null;
   try {
+    const { BaritoneMovements } = require("./baritone");
+    const MovementCtor = BaritoneMovements || Movements;
+    if (!MovementCtor) return null;
     const dataForVer =
       typeof mcData === "function" ? mcData(bot.version) : null;
-    const movement = new Movements(bot, dataForVer);
+    const movement = new MovementCtor(bot, dataForVer);
     movement.allowSprinting = options.allowSprinting !== false;
     movement.allowParkour = options.allowParkour !== false;
+    movement.allowParkourAscend = options.allowParkourAscend !== false;
     movement.canDig = Boolean(options.canDig);
     movement.allow1by1towers = Boolean(options.allowPillaring);
+    movement.canOpenDoors = options.canOpenDoors !== false;
+    movement.avoidAdjacentHazards = options.avoidAdjacentHazards !== false;
+    movement.protectValuableBlocks = options.protectValuableBlocks !== false;
     movement.maxDropDown =
       typeof options.maxDropDown === "number" ? options.maxDropDown : 4;
+
+    if (bot.pathfinder.backtrackMemory && movement.context) {
+      movement.context.backtrackMemory = bot.pathfinder.backtrackMemory;
+    }
 
     const blocksByName =
       dataForVer?.blocksByName || bot.registry?.blocksByName || {};
@@ -1119,6 +1130,8 @@ function configureSmartMovements(bot, mcData, Movements, options = {}) {
         "cactus",
         "lava",
         "fire",
+        "pointed_dripstone",
+        "big_dripleaf",
       ]) {
         const b = blocksByName[haz];
         if (b && typeof b.id === "number") {
@@ -1157,6 +1170,8 @@ function configureSmartMovements(bot, mcData, Movements, options = {}) {
       if (scaffoldIds.length > 0) {
         movement.scafoldingBlocks = scaffoldIds;
       }
+    } else {
+      movement.scafoldingBlocks = [];
     }
 
     bot.pathfinder.setMovements(movement);
@@ -1816,8 +1831,8 @@ function attachSmartMovement(bot, manualControls = {}) {
         }
       } catch (_) {}
     }
-    // Re-sync pathfinder from the actual server setback position (throttled) so it doesn't
-    // keep walking toward nodes that were already shifted off the path before the setback.
+    // Re-sync pathfinder from the actual server setback position (throttled) and penalize
+    // the setback node in Baritone BacktrackMemory so A* routes around anti-cheat/ghost-block traps.
     if (
       bot.pathfinder?.goal &&
       !bot._mcbpControlOverride &&
@@ -1825,8 +1840,15 @@ function attachSmartMovement(bot, manualControls = {}) {
     ) {
       bot._mcbpLastSetbackRepathAt = now;
       try {
-        const g = bot.pathfinder.goal;
-        bot.pathfinder.setGoal(g, Boolean(g && g.entity));
+        if (typeof bot.pathfinder.penalizeNode === "function" && bot.entity?.position) {
+          bot.pathfinder.penalizeNode(bot.entity.position, 40);
+        }
+        if (typeof bot.pathfinder.repath === "function") {
+          bot.pathfinder.repath();
+        } else {
+          const g = bot.pathfinder.goal;
+          bot.pathfinder.setGoal(g, Boolean(g && g.entity));
+        }
       } catch (_) {}
     }
   });

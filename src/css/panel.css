@@ -2332,6 +2332,8 @@ pre {
 
 .pre-logs,
 .pre-chat {
+  overflow-anchor: none;
+  scroll-behavior: auto;
   display: flex;
   flex-direction: column;
   gap: 0.18rem;

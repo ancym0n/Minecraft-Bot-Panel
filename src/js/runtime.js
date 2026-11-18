@@ -171,6 +171,10 @@ function loadLibraries() {
   const baseDir = selectActiveBaseDir();
   const req = createScopedRequire(baseDir);
   const { installViaVersionProtocolShims } = require("./viaAdapter");
+  const {
+    injectBaritonePathfinder,
+    BaritoneMovements,
+  } = require("./baritone");
   try {
     installViaVersionProtocolShims(req);
     const mineflayer = req("mineflayer");
@@ -192,8 +196,10 @@ function loadLibraries() {
       mineflayer,
       mcData,
       Vec3,
-      pathfinder: pathfinderPkg.pathfinder,
-      Movements: pathfinderPkg.Movements,
+      pathfinder: injectBaritonePathfinder,
+      Movements: BaritoneMovements,
+      stockPathfinder: pathfinderPkg.pathfinder,
+      stockMovements: pathfinderPkg.Movements,
       goals: pathfinderPkg.goals,
       Authflow: prismarineAuth ? prismarineAuth.Authflow : null,
       Titles: prismarineAuth ? prismarineAuth.Titles : null,
@@ -217,8 +223,10 @@ function loadLibraries() {
       mineflayer,
       mcData,
       Vec3,
-      pathfinder: pathfinderPkg.pathfinder,
-      Movements: pathfinderPkg.Movements,
+      pathfinder: injectBaritonePathfinder,
+      Movements: BaritoneMovements,
+      stockPathfinder: pathfinderPkg.pathfinder,
+      stockMovements: pathfinderPkg.Movements,
       goals: pathfinderPkg.goals,
       Authflow: prismarineAuth ? prismarineAuth.Authflow : null,
       Titles: prismarineAuth ? prismarineAuth.Titles : null,

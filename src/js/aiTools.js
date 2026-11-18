@@ -631,6 +631,9 @@ function createAiTools(ctx) {
       w.busy = true;
       try {
         const diag = diagnoseWalkingObstruction(bot);
+        if (typeof bot.pathfinder.penalizeNode === "function" && bot.entity?.position) {
+          bot.pathfinder.penalizeNode(bot.entity.position, 55);
+        }
         if (w.attempt === 1) {
           log(
             `AIAgent: Stuck going to ${label} (${diag.summary}), jumping / un-wedging`,
@@ -640,14 +643,22 @@ function createAiTools(ctx) {
             reason: `AIAgent Stuck (${label})`,
           }).catch(() => {});
           if (getBot() === bot && bot.entity) {
-            bot.pathfinder.setGoal(goal, dynamic);
+            if (bot.pathfinder.goal === goal && typeof bot.pathfinder.repath === "function") {
+              bot.pathfinder.repath();
+            } else {
+              bot.pathfinder.setGoal(goal, dynamic);
+            }
           }
         } else if (w.attempt === 2) {
           log(
             `AIAgent: Still stuck going to ${label} (${diag.summary}), allowing block clearing`,
           );
           setHardMode(bot, true);
-          bot.pathfinder.setGoal(goal, dynamic);
+          if (bot.pathfinder.goal === goal && typeof bot.pathfinder.repath === "function") {
+            bot.pathfinder.repath();
+          } else {
+            bot.pathfinder.setGoal(goal, dynamic);
+          }
         } else if (w.attempt === 3) {
           log(
             `AIAgent: Backing off and strafing around obstacle toward ${label} (${diag.summary})`,
