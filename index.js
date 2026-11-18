@@ -4328,7 +4328,7 @@ function registerIpcHandlers() {
   );
 
   ipcMain.handle("studio-validate", (_event, code) =>
-    scriptStudio.validateScript(String(code || "")),
+    scriptStudio.dryRunScript(String(code || "")),
   );
 
   ipcMain.handle("studio-open-script", (_event, file) =>
@@ -4339,8 +4339,10 @@ function registerIpcHandlers() {
     const code = scriptStudio.autoFixGeneratedScript(
       String(payload.code || ""),
     );
-    const check = scriptStudio.validateScript(code);
-    if (/^Syntax/.test(check.error || "")) return { ok: false, ...check };
+    const check = await scriptStudio.dryRunScript(code);
+    if (!check.ok && /^Syntax|^Runtime/.test(check.error || "")) {
+      return { ok: false, ...check };
+    }
     const name = check.name;
     if (!name) {
       return {
@@ -4442,29 +4444,71 @@ function registerIpcHandlers() {
       }
       if (ctrl.signal.aborted) return { ok: false, error: "Cancelled" };
 
+      // Stage 1: Give the AI time to think and design a structured technical plan
       progress({
-        stage: "writing",
-        message: `Writing with ${model}...`,
-        text: "",
+        stage: "planning",
+        message: `Thinking & planning architecture with ${model}...`,
       });
       sessionLogger.record("Studio", "Generate script", `${model}: ${request}`);
-      const messages = scriptStudio.buildGenerationMessages({
+      const planMessages = scriptStudio.buildPlanMessages({
         request,
         currentCode: payload.currentCode || "",
       });
+      let planText = "";
       let lastSent = 0;
+      const planRes = await ollamaManager.streamChat({
+        model,
+        messages: planMessages,
+        signal: ctrl.signal,
+        options: { temperature: 0.25, num_predict: 900, num_ctx: 8192 },
+        onToken: (text) => {
+          const now = Date.now();
+          if (now - lastSent > 120) {
+            lastSent = now;
+            const snippet = String(text || "")
+              .replace(/<think>[\s\S]*?<\/think>/gi, "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .slice(-110);
+            progress({
+              stage: "planning",
+              message: `Planning with ${model}: ${snippet || "analyzing requirements..."}`,
+            });
+          }
+        },
+      });
+      if (ctrl.signal.aborted) return { ok: false, error: "Cancelled" };
+      if (planRes.ok && planRes.text) {
+        planText = String(planRes.text)
+          .replace(/<think>[\s\S]*?<\/think>/gi, "")
+          .trim();
+        aiBrain.recordThought(`Studio Plan (${model}): ${planText.slice(0, 220)}`);
+      }
+
+      // Stage 2: Write the complete script from the plan + Mineflayer docs
+      progress({
+        stage: "writing",
+        message: `Writing script from plan with ${model}...`,
+        text: "",
+      });
+      const messages = scriptStudio.buildGenerationMessages({
+        request,
+        currentCode: payload.currentCode || "",
+        plan: planText,
+        attempt: 1,
+      });
       const res = await ollamaManager.streamChat({
         model,
         messages,
         signal: ctrl.signal,
-        options: { temperature: 0.2, num_predict: 2048, num_ctx: 8192 },
+        options: { temperature: 0.2, num_predict: 2560, num_ctx: 8192 },
         onToken: (text) => {
           const now = Date.now();
           if (now - lastSent > 100) {
             lastSent = now;
             progress({
               stage: "writing",
-              message: `Writing with ${model}...`,
+              message: `Writing script with ${model}...`,
               text,
             });
           }
@@ -4472,50 +4516,83 @@ function registerIpcHandlers() {
       });
       if (!res.ok) return { ok: false, error: res.error, model };
       let code = scriptStudio.extractCode(res.text);
-      let validation = scriptStudio.validateScript(code);
 
-      // If the local model produced a syntax or Mineflayer API error, run one automatic self-repair pass
-      if (!validation.ok && !ctrl.signal.aborted && validation.error) {
+      // Stage 3: Recheck (static + sandboxed runtime dry-run) and self-heal up to 3 passes
+      progress({
+        stage: "verifying",
+        message: "Rechecking syntax, contract & dry-running in sandbox...",
+        text: code,
+      });
+      let validation = await scriptStudio.dryRunScript(code);
+
+      const MAX_REPAIR_ATTEMPTS = 3;
+      for (
+        let attempt = 1;
+        attempt <= MAX_REPAIR_ATTEMPTS &&
+        !validation.ok &&
+        !ctrl.signal.aborted &&
+        validation.error;
+        attempt++
+      ) {
+        const isRebuild = attempt === MAX_REPAIR_ATTEMPTS;
         progress({
-          stage: "writing",
-          message: `Fixing ${validation.error} with ${model}...`,
+          stage: "repairing",
+          message: isRebuild
+            ? `Attempt ${attempt}/${MAX_REPAIR_ATTEMPTS}: Rebuilding clean script from scratch (${validation.error})...`
+            : `Attempt ${attempt}/${MAX_REPAIR_ATTEMPTS}: Fixing "${validation.error}" with ${model}...`,
           text: code,
         });
         const fixMessages = scriptStudio.buildGenerationMessages({
           request,
           currentCode: code,
+          plan: planText,
           fixError: validation.error,
+          attempt: attempt + 1,
         });
         const fixRes = await ollamaManager.streamChat({
           model,
           messages: fixMessages,
           signal: ctrl.signal,
-          options: { temperature: 0.1, num_predict: 2048, num_ctx: 8192 },
+          options: {
+            temperature: isRebuild ? 0.25 : 0.12,
+            num_predict: 2560,
+            num_ctx: 8192,
+          },
           onToken: (text) => {
             const now = Date.now();
             if (now - lastSent > 100) {
               lastSent = now;
               progress({
-                stage: "writing",
-                message: `Fixing script with ${model}...`,
+                stage: "repairing",
+                message: isRebuild
+                  ? `Rebuilding clean script with ${model}...`
+                  : `Fixing script (${attempt}/${MAX_REPAIR_ATTEMPTS}) with ${model}...`,
                 text,
               });
             }
           },
         });
-        if (fixRes.ok && fixRes.text) {
-          const repaired = scriptStudio.extractCode(fixRes.text);
-          const repairedCheck = scriptStudio.validateScript(repaired);
-          if (repairedCheck.ok || !/^Syntax/.test(repairedCheck.error || "")) {
-            code = repaired;
-            validation = repairedCheck;
-          }
+        if (!fixRes.ok || !fixRes.text) break;
+        const candidate = scriptStudio.extractCode(fixRes.text);
+        progress({
+          stage: "verifying",
+          message: `Rechecking repaired script (pass ${attempt}/${MAX_REPAIR_ATTEMPTS})...`,
+          text: candidate,
+        });
+        const candidateCheck = await scriptStudio.dryRunScript(candidate);
+        if (
+          candidateCheck.ok ||
+          !/^Syntax/.test(candidateCheck.error || "")
+        ) {
+          code = candidate;
+          validation = candidateCheck;
         }
       }
 
       return {
         ok: true,
         code,
+        plan: planText,
         model,
         validation,
       };

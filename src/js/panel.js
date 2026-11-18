@@ -4097,8 +4097,12 @@ async function validateStudio({ prefix = "", undo = false } = {}) {
   updateGutter();
   const lead = prefix ? `${prefix} · ` : "";
   if (res?.ok) {
-    setStudioCheck(`${lead}✓ ${res.name} looks good`, "ok", undoHtml);
-  } else if (res?.line || /^Syntax/.test(res?.error || "")) {
+    setStudioCheck(
+      `${lead}✓ ${res.name} verified (syntax + sandbox dry-run OK)`,
+      "ok",
+      undoHtml,
+    );
+  } else if (res?.line || /^Syntax|^Runtime/.test(res?.error || "")) {
     setStudioCheck(`${lead}${res.error}`, "error", undoHtml);
   } else {
     setStudioCheck(
@@ -4303,7 +4307,9 @@ async function runStudioGenerate() {
         label: `Generated with ${res.model}`,
       });
       if (studioGenStatus) {
-        studioGenStatus.textContent = `Done with ${res.model}. Review the code, then Save & Load.`;
+        studioGenStatus.textContent = res.validation?.ok
+          ? `✓ Planned, written & verified with ${res.model} (dry-run passed). Click Save & Load.`
+          : `Done with ${res.model} (${res.validation?.error || "review warnings"}).`;
       }
     } else {
       studioEditor.value = before;

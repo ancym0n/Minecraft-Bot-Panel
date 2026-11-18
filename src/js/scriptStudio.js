@@ -465,7 +465,46 @@ function pickBestTemplates(request, count = 2) {
   return picked;
 }
 
-function buildGenerationMessages({ request, currentCode = "", fixError = "" }) {
+function buildPlanMessages({ request, currentCode = "" }) {
+  const examples = pickBestTemplates(request, 2);
+  const examplesBlock = examples
+    .map((ex) => `// Example (${ex.title}):\n\`\`\`js\n${ex.code.trim()}\n\`\`\``)
+    .join("\n\n");
+  const docs = buildDocsContext(request, 4500);
+  const system = `You are a senior Mineflayer & MCBP script architect.
+Before writing code, carefully analyze the user's request and design a concise technical implementation plan.
+Do NOT write the full script yet — output a structured 5-bullet architecture plan covering:
+1. Script name (PascalCase) and info.options needed (ONLY type: "input", "checkbox", or "select" with choices).
+2. State variables & concurrency lock (\`let busy = false;\`) needed inside \`async function script(bot, log, clearLog, getOption, scriptRepeater, libs)\`.
+3. Exact Mineflayer API calls & \`bot.registry.blocksByName\` / \`bot.registry.itemsByName\` lookups required.
+4. Movement & pathfinding strategy (\`const { goals } = libs\`, \`bot.pathfinder.goto\` or \`setGoal\`) and tool equipping (\`bot.pathfinder.bestHarvestTool(block)\`).
+5. Edge cases, null checks, and cleanup in \`finally\` after \`await scriptRepeater(...)\`.
+
+${MINEFLAYER_CHEATSHEET}
+
+Reference templates:
+${examplesBlock}
+
+Relevant Mineflayer docs:
+${docs || "(docs unavailable)"}`;
+
+  const user = currentCode.trim()
+    ? `Create a concise architecture plan to modify this existing MCBP script.\nRequest: ${request}\n\nExisting code:\n\`\`\`js\n${currentCode.slice(0, 6000)}\n\`\`\``
+    : `Create a concise architecture plan for a new MCBP script.\nRequest: ${request}`;
+
+  return [
+    { role: "system", content: system },
+    { role: "user", content: user },
+  ];
+}
+
+function buildGenerationMessages({
+  request,
+  currentCode = "",
+  plan = "",
+  fixError = "",
+  attempt = 1,
+}) {
   const examples = pickBestTemplates(request, 2);
   const examplesBlock = examples
     .map((ex) => `// Example (${ex.title}):\n\`\`\`js\n${ex.code.trim()}\n\`\`\``)
@@ -496,13 +535,19 @@ ${examplesBlock}
 Relevant Mineflayer docs:
 ${docs || "(docs unavailable)"}`;
 
+  const planSection = plan.trim()
+    ? `\n\nApproved Architecture & Implementation Plan:\n${plan.trim()}\n`
+    : "";
+
   let user;
-  if (fixError && currentCode.trim()) {
-    user = `The script you generated has an error: ${fixError}\nFix the script so it follows the Mineflayer API rules and works properly.\nOriginal request: ${request}\n\nBroken script:\n\`\`\`js\n${currentCode.slice(0, 8000)}\n\`\`\``;
+  if (fixError && attempt >= 3) {
+    user = `Your previous script failed validation and runtime testing with: ${fixError}\nDiscard the broken parts and write a clean, fresh, rock-solid MCBP script from scratch that fulfills the request and follows every Mineflayer API rule.${planSection}\nOriginal request: ${request}`;
+  } else if (fixError && currentCode.trim()) {
+    user = `The script you generated failed validation/runtime testing with error: ${fixError}\nFix all issues so the script passes syntax validation, contract checks, and runtime execution without throwing.${planSection}\nOriginal request: ${request}\n\nBroken script:\n\`\`\`js\n${currentCode.slice(0, 8000)}\n\`\`\``;
   } else if (currentCode.trim()) {
-    user = `Modify this script as requested.\nRequest: ${request}\n\nCurrent script:\n\`\`\`js\n${currentCode.slice(0, 8000)}\n\`\`\``;
+    user = `Modify this script as requested.${planSection}\nRequest: ${request}\n\nCurrent script:\n\`\`\`js\n${currentCode.slice(0, 8000)}\n\`\`\``;
   } else {
-    user = `Write a complete, working MCBP script that does this: ${request}`;
+    user = `Write a complete, working MCBP script that implements this request and follows the architecture plan.${planSection}\nRequest: ${request}`;
   }
 
   return [
@@ -638,6 +683,505 @@ function validateScript(code) {
   };
 }
 
+// Creates a realistic sandboxed Mineflayer mock and dry-runs the generated script
+// (disconnected check + 1 connected tick + event cleanup) to verify it actually executes without throwing.
+async function dryRunScript(code) {
+  const staticCheck = validateScript(code);
+  if (!staticCheck.ok) return staticCheck;
+
+  const problems = [...staticCheck.problems];
+  let exported = null;
+  try {
+    const sandboxModule = { exports: {} };
+    const sandbox = {
+      module: sandboxModule,
+      exports: sandboxModule.exports,
+      require: (id) => {
+        throw new Error(
+          `Disallowed require("${id}") — use bot and libs = { goals, Movements, Vec3, mcData }`,
+        );
+      },
+      console: {
+        log: () => {},
+        warn: () => {},
+        error: () => {},
+      },
+      Math,
+      Date,
+      Number,
+      String,
+      Boolean,
+      Array,
+      Object,
+      Set,
+      Map,
+      RegExp,
+      JSON,
+      Promise,
+      Error,
+      TypeError,
+      RangeError,
+      parseInt,
+      parseFloat,
+      isNaN,
+      isFinite,
+      setTimeout: (fn) => {
+        try {
+          if (typeof fn === "function") fn();
+        } catch (_) {}
+        return 1;
+      },
+      clearTimeout: () => {},
+      setInterval: () => 1,
+      clearInterval: () => {},
+    };
+    const wrapped = new vm.Script(
+      `(function (exports, require, module) {\n${code}\n})(exports, require, module);`,
+      { filename: "script.js" },
+    );
+    const ctx = vm.createContext(sandbox);
+    wrapped.runInContext(ctx, { timeout: 1200 });
+    exported = sandboxModule.exports;
+  } catch (err) {
+    const lineMatch = String(err.stack || "").match(/script\.js:(\d+)/);
+    const line = lineMatch ? Math.max(1, Number(lineMatch[1]) - 1) : null;
+    return {
+      ok: false,
+      name: staticCheck.name,
+      line,
+      problems: [`Load error: ${err.message}`],
+      error: `Runtime load error${line ? ` on line ${line}` : ""}: ${err.message}`,
+    };
+  }
+
+  if (!exported || typeof exported !== "object") {
+    return {
+      ok: false,
+      name: staticCheck.name,
+      problems: ["module.exports did not export an object { info, script }"],
+      error: "module.exports must export { info, script }",
+    };
+  }
+  if (!exported.info || typeof exported.info.name !== "string") {
+    return {
+      ok: false,
+      name: staticCheck.name,
+      problems: ["Exported info.name is missing or not a string"],
+      error: "Exported info.name is missing or not a string",
+    };
+  }
+  if (typeof exported.script !== "function") {
+    return {
+      ok: false,
+      name: exported.info.name,
+      problems: ["Exported script is not a function"],
+      error: "Exported script must be an async function",
+    };
+  }
+
+  const options = Array.isArray(exported.info.options)
+    ? exported.info.options
+    : [];
+  const defaultOptionValues = {};
+  for (const opt of options) {
+    if (!opt || typeof opt !== "object") {
+      problems.push("Invalid option object in info.options");
+      continue;
+    }
+    const t = String(opt.type || "").toLowerCase();
+    if (!["input", "checkbox", "select"].includes(t)) {
+      problems.push(
+        `Invalid option type "${opt.type}" for "${opt.id}" (must be "input", "checkbox", or "select")`,
+      );
+    }
+    if (!opt.id || typeof opt.id !== "string") {
+      problems.push("Every option in info.options must have a string `id`");
+    } else if (t === "checkbox") {
+      defaultOptionValues[opt.id] = "on";
+    } else if (t === "select") {
+      if (!Array.isArray(opt.choices) || opt.choices.length === 0) {
+        problems.push(
+          `Select option "${opt.id}" must have a non-empty choices array`,
+        );
+      } else {
+        const first = opt.choices[0];
+        defaultOptionValues[opt.id] =
+          typeof first === "object" ? String(first.value || "") : String(first);
+      }
+    } else {
+      defaultOptionValues[opt.id] = "16";
+    }
+  }
+  if (problems.length > 0) {
+    return {
+      ok: false,
+      name: exported.info.name,
+      problems,
+      error: problems[0],
+    };
+  }
+
+  // Mock Vec3, goals, Movements, mcData, and bot
+  class MockVec3 {
+    constructor(x = 0, y = 64, z = 0) {
+      this.x = Number(x) || 0;
+      this.y = Number(y) || 0;
+      this.z = Number(z) || 0;
+    }
+    offset(dx, dy, dz) {
+      return new MockVec3(this.x + dx, this.y + dy, this.z + dz);
+    }
+    floored() {
+      return new MockVec3(
+        Math.floor(this.x),
+        Math.floor(this.y),
+        Math.floor(this.z),
+      );
+    }
+    clone() {
+      return new MockVec3(this.x, this.y, this.z);
+    }
+    distanceTo(other) {
+      if (!other) return 0;
+      return Math.hypot(
+        this.x - (other.x || 0),
+        this.y - (other.y || 0),
+        this.z - (other.z || 0),
+      );
+    }
+  }
+
+  const registryBlocks = new Proxy(
+    {
+      stone: { id: 1, name: "stone", displayName: "Stone", diggable: true },
+      oak_log: {
+        id: 17,
+        name: "oak_log",
+        displayName: "Oak Log",
+        diggable: true,
+      },
+      iron_ore: {
+        id: 15,
+        name: "iron_ore",
+        displayName: "Iron Ore",
+        diggable: true,
+      },
+      diamond_ore: {
+        id: 56,
+        name: "diamond_ore",
+        displayName: "Diamond Ore",
+        diggable: true,
+      },
+    },
+    {
+      get(target, prop) {
+        if (typeof prop === "string" && !(prop in target)) {
+          return {
+            id: 100,
+            name: prop,
+            displayName: prop,
+            diggable: true,
+          };
+        }
+        return target[prop];
+      },
+    },
+  );
+
+  const registryItems = new Proxy(
+    {
+      diamond_sword: {
+        id: 276,
+        name: "diamond_sword",
+        displayName: "Diamond Sword",
+      },
+      diamond_pickaxe: {
+        id: 278,
+        name: "diamond_pickaxe",
+        displayName: "Diamond Pickaxe",
+      },
+      cooked_beef: { id: 364, name: "cooked_beef", displayName: "Steak" },
+      oak_log: { id: 17, name: "oak_log", displayName: "Oak Log" },
+    },
+    {
+      get(target, prop) {
+        if (typeof prop === "string" && !(prop in target)) {
+          return { id: 200, name: prop, displayName: prop };
+        }
+        return target[prop];
+      },
+    },
+  );
+
+  const mockLibs = {
+    Vec3: MockVec3,
+    Movements: class MockMovements {},
+    goals: {
+      GoalNear: class GoalNear {
+        constructor(x, y, z, r) {
+          this.x = x;
+          this.y = y;
+          this.z = z;
+          this.range = r;
+        }
+      },
+      GoalBlock: class GoalBlock {
+        constructor(x, y, z) {
+          this.x = x;
+          this.y = y;
+          this.z = z;
+        }
+      },
+      GoalXZ: class GoalXZ {
+        constructor(x, z) {
+          this.x = x;
+          this.z = z;
+        }
+      },
+      GoalY: class GoalY {
+        constructor(y) {
+          this.y = y;
+        }
+      },
+      GoalFollow: class GoalFollow {
+        constructor(entity, r) {
+          this.entity = entity;
+          this.range = r;
+        }
+      },
+      GoalLookAtBlock: class GoalLookAtBlock {
+        constructor(pos) {
+          this.pos = pos;
+        }
+      },
+    },
+    mcData: new Proxy(() => ({ blocksByName: registryBlocks, itemsByName: registryItems }), {
+      get(_t, prop) {
+        if (prop === "blocks" || prop === "blocksByName") return registryBlocks;
+        if (prop === "items" || prop === "itemsByName") return registryItems;
+        return undefined;
+      },
+    }),
+  };
+
+  const mockBlock = {
+    id: 17,
+    type: 17,
+    name: "oak_log",
+    displayName: "Oak Log",
+    diggable: true,
+    boundingBox: "block",
+    position: new MockVec3(12, 64, 12),
+  };
+
+  const mockEntity = {
+    id: 2,
+    name: "zombie",
+    displayName: "Zombie",
+    type: "mob",
+    username: "PlayerOne",
+    position: new MockVec3(13, 64, 13),
+    height: 1.8,
+    isValid: true,
+  };
+
+  const mockItem = {
+    id: 276,
+    type: 276,
+    name: "diamond_sword",
+    displayName: "Diamond Sword",
+    count: 1,
+    slot: 36,
+  };
+
+  const mockBot = {
+    username: "TestBot",
+    version: "1.21.4",
+    health: 20,
+    food: 20,
+    foodSaturation: 5,
+    isRaining: false,
+    thunderState: 0,
+    time: { timeOfDay: 6000, day: 1 },
+    game: { dimension: "overworld", gameMode: "survival" },
+    experience: { level: 5, progress: 0.5 },
+    heldItem: mockItem,
+    quickBarSlot: 0,
+    entity: {
+      id: 1,
+      username: "TestBot",
+      position: new MockVec3(10, 64, 10),
+      velocity: new MockVec3(0, 0, 0),
+      yaw: 0,
+      pitch: 0,
+      height: 1.62,
+      onGround: true,
+    },
+    players: {
+      PlayerOne: {
+        username: "PlayerOne",
+        ping: 40,
+        entity: mockEntity,
+      },
+    },
+    entities: {
+      2: mockEntity,
+    },
+    registry: {
+      blocksByName: registryBlocks,
+      itemsByName: registryItems,
+      entitiesByName: {},
+    },
+    inventory: {
+      items: () => [mockItem],
+      slots: Array(46).fill(null),
+    },
+    pathfinder: {
+      goal: null,
+      movements: { canDig: true, allowSprinting: true, allowParkour: true },
+      isMoving: () => false,
+      setMovements: () => {},
+      setGoal: () => {},
+      goto: async () => {},
+      stop: () => {},
+      bestHarvestTool: () => mockItem,
+    },
+    findBlock: (opts) => {
+      if (opts && typeof opts === "object" && "find" in opts && !("matching" in opts)) {
+        throw new Error("bot.findBlock requires `matching:`, not `find:`");
+      }
+      return mockBlock;
+    },
+    findBlocks: (opts) => {
+      if (opts && typeof opts === "object" && "find" in opts && !("matching" in opts)) {
+        throw new Error("bot.findBlocks requires `matching:`, not `find:`");
+      }
+      return [mockBlock.position.clone()];
+    },
+    blockAt: () => mockBlock,
+    nearestEntity: (filter) => {
+      if (typeof filter === "function") {
+        try {
+          filter(mockEntity);
+        } catch (e) {
+          throw new Error(`nearestEntity predicate threw: ${e.message}`);
+        }
+      }
+      return mockEntity;
+    },
+    canDigBlock: () => true,
+    dig: async () => {},
+    stopDigging: () => {},
+    equip: async () => {},
+    unequip: async () => {},
+    toss: async () => {},
+    tossStack: async () => {},
+    consume: async () => {},
+    activateItem: () => {},
+    deactivateItem: () => {},
+    activateBlock: async () => {},
+    placeBlock: async () => {},
+    lookAt: async () => {},
+    look: async () => {},
+    attack: () => {},
+    swingArm: () => {},
+    chat: () => {},
+    setControlState: () => {},
+    clearControlStates: () => {},
+    setQuickBarSlot: () => {},
+    sleep: async () => {},
+    wake: async () => {},
+    respawn: () => {},
+    recipesFor: () => [],
+    craft: async () => {},
+    openContainer: async () => ({
+      slots: [],
+      containerItems: () => [],
+      deposit: async () => {},
+      withdraw: async () => {},
+      close: () => {},
+    }),
+    openFurnace: async () => ({
+      inputItem: () => null,
+      fuelItem: () => null,
+      outputItem: () => null,
+      putInput: async () => {},
+      putFuel: async () => {},
+      takeOutput: async () => {},
+      close: () => {},
+    }),
+    on: () => mockBot,
+    once: () => mockBot,
+    removeListener: () => mockBot,
+    off: () => mockBot,
+  };
+
+  const getOption = async (id) => defaultOptionValues[id] ?? "16";
+  const scriptRepeater = async (fn) => {
+    if (typeof fn === "function") {
+      await fn();
+    }
+    return true;
+  };
+
+  try {
+    // 1. Disconnected guard test (should not throw when bot is null)
+    await Promise.race([
+      Promise.resolve(
+        exported.script(
+          null,
+          () => {},
+          () => {},
+          getOption,
+          async () => true,
+          mockLibs,
+        ),
+      ),
+      new Promise((_, rej) =>
+        setTimeout(() => rej(new Error("Disconnected guard timed out")), 1500),
+      ),
+    ]);
+
+    // 2. Connected 1-tick simulation
+    await Promise.race([
+      Promise.resolve(
+        exported.script(
+          mockBot,
+          () => {},
+          () => {},
+          getOption,
+          scriptRepeater,
+          mockLibs,
+        ),
+      ),
+      new Promise((_, rej) =>
+        setTimeout(
+          () => rej(new Error("Script tick timed out (infinite loop or missing await)")),
+          2500,
+        ),
+      ),
+    ]);
+  } catch (err) {
+    const lineMatch = String(err.stack || "").match(/script\.js:(\d+)/);
+    const line = lineMatch ? Math.max(1, Number(lineMatch[1]) - 1) : null;
+    const msg = `Runtime test failed${line ? ` on line ${line}` : ""}: ${err.message}`;
+    return {
+      ok: false,
+      name: exported.info.name,
+      line,
+      problems: [msg],
+      error: msg,
+    };
+  }
+
+  return {
+    ok: true,
+    name: exported.info.name,
+    problems: [],
+    error: "",
+  };
+}
+
 function slugify(name) {
   return (
     String(name || "")
@@ -681,11 +1225,13 @@ module.exports = {
   downloadDocs,
   searchDocs,
   getSection,
+  buildPlanMessages,
   buildGenerationMessages,
   autoFixGeneratedScript,
   extractCode,
   extractScriptName,
   validateScript,
+  dryRunScript,
   slugify,
   listCustomScripts,
   readCustomScript,
