@@ -29,6 +29,7 @@ const {
 const { ollamaManager } = require("./src/js/ollamaManager");
 const { ChatQueue } = require("./src/js/chatQueue");
 const { createAiTools } = require("./src/js/aiTools");
+const { attachStuckWatchdog } = require("./src/js/stuckWatchdog");
 const scriptStudio = require("./src/js/scriptStudio");
 const { sessionLogger } = require("./src/js/sessionLogger");
 const updater = require("./src/js/updater");
@@ -392,6 +393,10 @@ const scriptOptionDefs = new Map();
 
 // Recent console lines and chat the AI Agent can read with read_logs.
 const recentLogs = [];
+// Same line with only numbers changed (status updates).
+const logShape = (t) => String(t).replace(/-?\d+(\.\d+)?/g, "#");
+const lastShapeAt = new Map();
+
 function rememberLog(line) {
   const d = new Date();
   const pad = (n) => String(n).padStart(2, "0");
@@ -399,6 +404,19 @@ function rememberLog(line) {
     .replace(/§#[0-9a-fA-F]{6}|§[0-9a-fk-or]/gi, "")
     .trim();
   if (!text) return;
+  // Status spam ("Hunt status: Hunting X (3.2m)" 3x a second): keep only
+  // the newest copy so the AI sees real events.
+  const shape = logShape(text);
+  for (
+    let i = recentLogs.length - 1;
+    i >= Math.max(0, recentLogs.length - 6);
+    i--
+  ) {
+    if (logShape(recentLogs[i].slice(9)) === shape) {
+      recentLogs.splice(i, 1);
+      break;
+    }
+  }
   recentLogs.push(
     `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} ${text}`,
   );
@@ -781,9 +799,32 @@ async function handleAiTaskDone(evt) {
   aiChatQueue.send(res.parts?.length ? res.parts : [res.reply]);
 }
 
+// Ads, server broadcasts and long promo lines are not conversation.
+const AD_RE =
+  /\/visit\b|\[ad\]|discord\.gg|https?:\/\/|www\.|\.(com|net|org|gg)\b|\bstore\b|\bshop\b|\bvote\b|\bgiveaway\b|\bper hour\b|\/hr\b|\bbuying\b|\bselling\b/i;
+
 async function handleAiChat(currentBot, text) {
   const parsed = parseChatSenderAndMessage(text, currentBot.username);
   if (!parsed || aiChatQueue.isBusy()) return;
+  const me = String(currentBot.username || "").toLowerCase();
+  if (parsed.sender.toLowerCase() === me) return;
+  // Only real players (in the tab list) get answers, not "version:" or
+  // "[Skyblock]" style server lines.
+  const tab = Object.keys(currentBot.players || {});
+  if (parsed.sender !== "Player" && tab.length) {
+    const real = tab.find(
+      (u) => u.toLowerCase() === parsed.sender.toLowerCase(),
+    );
+    if (!real) return;
+    parsed.sender = real;
+  }
+  const addressed =
+    Boolean(me) &&
+    new RegExp(
+      `(^|[^a-z0-9_])@?${me.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9_]|$)`,
+      "i",
+    ).test(parsed.content);
+  if (!addressed && AD_RE.test(parsed.content)) return;
   if (
     !ollamaManager.shouldRespondToChat({
       sender: parsed.sender,
@@ -793,9 +834,13 @@ async function handleAiChat(currentBot, text) {
   ) {
     return;
   }
+  // In "reply to all" mode, only messages that talk to the bot can make it
+  // do things; everything else is just conversation.
+  const allMode = ollamaManager.config.triggerMode === "all";
   const res = await runAiReply({
     sender: parsed.sender,
     message: parsed.content,
+    forceAgent: allMode && !addressed ? false : null,
   });
   if (bot !== currentBot) return;
   if (!res.ok) {
@@ -805,6 +850,62 @@ async function handleAiChat(currentBot, text) {
   }
   logAiResult(res, parsed.sender);
   await aiChatQueue.send(res.parts?.length ? res.parts : [res.reply]);
+}
+
+// Server replies that matter to the bot: protected areas and chat checks.
+const DENIAL_RE =
+  /(can'?t|cannot|not allowed to|aren'?t allowed to|no permission to|don'?t have permission to)\s+(break|place|build|pvp|attack|hit|use|interact|open|mine|dig)\b|you can'?t (do that|pvp) here/i;
+const MOVE_TO_CHAT_RE =
+  /move before (using )?chat|cannot chat until you move|must move before|move to (be able to )?chat/i;
+
+function handleServerNotice(currentBot, rawText) {
+  const text = String(rawText || "");
+  if (DENIAL_RE.test(text)) {
+    currentBot._mcbpDenied = { text: text.slice(0, 160), at: Date.now() };
+  }
+  if (MOVE_TO_CHAT_RE.test(text)) {
+    // Step a little so the anti-bot check passes, then resend.
+    try {
+      currentBot.setControlState("forward", true);
+      currentBot.setControlState("jump", true);
+      setTimeout(() => {
+        try {
+          currentBot.setControlState("forward", false);
+          currentBot.setControlState("jump", false);
+        } catch (_) {}
+        if (bot === currentBot) aiChatQueue.resendLast();
+      }, 450);
+    } catch (_) {}
+  }
+}
+
+// When the stuck watchdog gives up for a while, let the AI look at it.
+// Its thinking and actions go to the console only.
+async function askAiAboutStuck(currentBot, { target }) {
+  if (bot !== currentBot || !ollamaManager.config.agentEnabled) return;
+  if (ollamaManager.isGenerating) return;
+  const owner =
+    String(ollamaManager.config.agentAllowedPlayers || "")
+      .split(/[,\s]+/)
+      .filter(Boolean)[0] ||
+    sessionState.mcName ||
+    "owner";
+  log(`AIAgent: Bot is stuck going to ${target}, thinking about it`);
+  const res = await ollamaManager
+    .runAgent({
+      sender: owner,
+      message: `[Stuck report, not chat] You have been stuck for a while trying to reach ${target}. Recent console:\n${recentLogs.slice(-10).join("\n").slice(-1200)}\nGet unstuck with tools (jump, walk a direction, mine the block in the way, go around, or stop if it's unreachable). Never invent coordinates. Do not chat.`,
+      botContext: buildLiveBotAiContext(),
+      tools: aiTools.schemasFor(owner),
+      executeTool: aiTools.executeTool,
+      resolveTool: aiTools.resolveTool,
+      bypassCooldown: true,
+      remember: false,
+    })
+    .catch((err) => ({ ok: false, error: err.message }));
+  if (bot !== currentBot) return;
+  logAiThoughts(res);
+  log(`AIAgent unstuck: ${res.reply || res.error || "no idea"}`);
 }
 
 function sendToRenderer(channel, ...args) {
@@ -818,6 +919,11 @@ function log(text) {
   sendToRenderer("log", str);
   rememberLog(str);
   const now = Date.now();
+  const shape = logShape(str);
+  // Session log: one copy of a repeating status line per 15s.
+  if (now - (lastShapeAt.get(shape) || 0) < 15000) return;
+  lastShapeAt.set(shape, now);
+  if (lastShapeAt.size > 500) lastShapeAt.clear();
   if (str !== lastSessionLogText || now - lastSessionLogTime > 2000) {
     lastSessionLogText = str;
     lastSessionLogTime = now;
@@ -2034,7 +2140,7 @@ function loadScriptsFromDir(fullDirectory, type) {
 
 const AI_SELF_SCRIPTS = new Set(["aiagent", "chatai"]);
 const MODULE_PROBLEM_RE =
-  /\b(error|stuck|fail(?:ed|ing)?|couldn'?t|could not|can'?t|cannot|no path|unable|not found|timed out|gave up|giving up|missing|no target|enter a|is required|are required)\b/i;
+  /\b(error|stuck|fail(?:ed|ing)?|couldn'?t|could not|can'?t|cannot|no path|unable|not found|timed out|gave up|giving up|missing|no target|enter a|is required|are required|out of|no \w+ found|denied)\b/i;
 const aiFixState = new Map();
 
 // "AI Fixes Errors": when a module logs a problem, the agent looks at the
@@ -2075,7 +2181,7 @@ async function maybeAiFixModule(scriptName, text) {
         `[Module problem report, not a chat message] The ${scriptName} module said: "${text.slice(0, 300)}".`,
         line ? `Its current state: ${line}` : "",
         `Recent console:\n${recentLogs.slice(-12).join("\n").slice(-1500)}`,
-        `Work out why with think and read_logs, then fix it with tools: change ${scriptName}'s options with set_script_option, restart it, move somewhere better, or turn on a helper module. Do not chat. Reply with one short line saying what you changed, or "no fix" if nothing can be done.`,
+        `Work out why with think and read_logs, then fix it with tools: change ${scriptName}'s options with set_script_option, restart it, move somewhere better, or turn on a helper module. Never invent coordinates, only use ones from the console or get_status. If it can never work here (no materials, protected lobby, server denies it), turn ${scriptName} off with stop_script. Do not chat. Reply with one short line saying what you changed, or "no fix".`,
       ]
         .filter(Boolean)
         .join("\n"),
@@ -2986,6 +3092,11 @@ function registerIpcHandlers() {
 
         configureSmartMovements(currentBot, mcData, Movements);
         attachSmartMovement(currentBot, activeControlStates);
+        attachStuckWatchdog(currentBot, {
+          log: (t) => log(t),
+          loadLibraries,
+          onStuck: (info) => askAiAboutStuck(currentBot, info),
+        });
 
         if (isMicrosoft && currentBot.username) {
           sessionState.mcName = currentBot.username;
@@ -3144,6 +3255,7 @@ function registerIpcHandlers() {
         if (payload.text || payload.motd) {
           sendToRenderer("chat", payload);
           rememberLog(`[chat] ${payload.text || payload.motd}`);
+          handleServerNotice(currentBot, payload.text || payload.motd);
           sessionLogger.record(
             "Chat",
             "Server Message",

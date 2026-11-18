@@ -66,7 +66,9 @@ const VERBS = {
   follow: ["follow", "escort", "accompany", "trail"],
   stop: ["stop", "halt", "cancel", "stay", "freeze", "abort", "quit", "end"],
   look: ["look", "face", "lookat", "stare", "watch"],
-  attack: ["attack", "kill", "hit", "fight", "hunt", "slay", "punch", "murder"],
+  attack: ["attack", "kill", "hit", "fight", "slay", "punch", "murder"],
+  hunt: ["hunt", "chase", "pursue"],
+  guard: ["guard", "protect", "defend", "escort", "bodyguard"],
   mine: [
     "mine",
     "dig",
@@ -352,7 +354,17 @@ function translateLine(raw, ctx) {
   if (!line) return null;
   // Server commands like "/server kitpvp" are sent as chat.
   if (line.startsWith("/")) return `api.say({ text: ${q(line)} })`;
-  const words = line.split(/\s+/);
+  // The bot's own name is who's being talked to, never the target
+  // ("follow me mlodysiur" → "follow me").
+  const botKey = String(ctx.botName || "").toLowerCase();
+  const words = line
+    .split(/\s+/)
+    .filter(
+      (w, i) =>
+        !botKey ||
+        i === 0 ||
+        w.toLowerCase().replace(/^@|[,:!.?]+$/g, "") !== botKey,
+    );
   const lower = words.map((w) => w.toLowerCase());
   let verb = lower[0];
   let args = words.slice(1);
@@ -628,6 +640,13 @@ function translateLine(raw, ctx) {
       if (!rest.length) return { error: "join what? e.g. join kitpvp" };
       return `api.join_game({ name: ${q(rest.join(" "))}, allowCommand: true })`;
     }
+    case "guard":
+    case "hunt": {
+      const target = who(args);
+      if (!target) return { error: `${kind} who? e.g. ${kind} Steve` };
+      const mod = kind === "guard" ? "Guard" : "Hunt";
+      return `api.start_script({ name: ${q(mod)}, options: { playername: ${q(target)} } })`;
+    }
     case "close":
       return `api.close_window({})`;
     case "hotbar": {
@@ -650,12 +669,12 @@ const HELP = [
   "say hello | wait 3 | jump 2 | sneak on | sprint off | forward 2 | left 1",
   "turn on KillAura players=on range=4 | turn off KillAura | stop all scripts",
   "set Spam message hi | status | logs 20 | logs error | scripts | respawn",
-  "join kitpvp | use compass | click kitpvp | click slot 13 | close | hotbar 1 | /server kitpvp",
+  "guard Steve | hunt Steve | join kitpvp | use compass | click kitpvp | click slot 13 | close | hotbar 1 | /server kitpvp",
 ].join("\n");
 
 // Short list for errors, so models don't copy example sentences into chat.
 const VERB_LIST =
-  "walk, follow, stop, look, attack, mine, eat, gear, hold, drop, say, wait, jump, sneak, forward, use, click, close, hotbar, join, turn on, turn off, set, status, logs, scripts, /command";
+  "walk, follow, stop, look, attack, mine, eat, gear, hold, drop, say, wait, jump, sneak, forward, use, click, close, hotbar, join, guard, hunt, turn on, turn off, set, status, logs, scripts, /command";
 
 // text → { js, steps, errors, long, needsCode }
 function translate(text, ctx = {}) {

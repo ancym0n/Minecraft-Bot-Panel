@@ -1,3 +1,18 @@
+// Many servers reject emojis and fancy symbols ("Plain text messages only").
+function plainChat(text) {
+  return String(text || "")
+    .replace(
+      /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{200D}]/gu,
+      "",
+    )
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2013\u2014]/g, "-")
+    .replace(/\u2026/g, "...")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 // Sends AI chat output in paced chunks so servers' anti-spam filters
 // don't kick the bot: typing delay, randomized gaps, duplicate guard.
 class ChatQueue {
@@ -23,10 +38,20 @@ class ChatQueue {
     return this.running || this.queue.length > 0;
   }
 
+  // Resends the last message once, e.g. after "move before using chat".
+  resendLast() {
+    const last = this.lastMessage;
+    if (!last || Date.now() - last.at > 20000 || last.resent) return false;
+    last.resent = true;
+    this.recent = this.recent.filter((r) => r.norm !== last.norm);
+    this.send([last.text]);
+    return true;
+  }
+
   // Resolves once every part has been sent (or dropped).
   send(parts) {
     const list = (Array.isArray(parts) ? parts : [parts])
-      .map((p) => String(p || "").trim())
+      .map((p) => plainChat(p))
       .filter(Boolean);
     if (!list.length) return Promise.resolve(false);
     return new Promise((resolve) => {
@@ -76,10 +101,16 @@ class ChatQueue {
           bot.chat(text.slice(0, 250));
           sentAny = true;
           this.lastSentAt = Date.now();
-          this.recent.push({
+          const norm = text.toLowerCase().replace(/[^a-z0-9]+/g, "");
+          this.recent.push({ at: this.lastSentAt, norm });
+          this.lastMessage = {
+            text,
+            norm,
             at: this.lastSentAt,
-            norm: text.toLowerCase().replace(/[^a-z0-9]+/g, ""),
-          });
+            resent: Boolean(
+              this.lastMessage?.resent && this.lastMessage.norm === norm,
+            ),
+          };
         } catch (err) {
           this.log(`ChatAI: Failed to send chat: ${err.message || err}`);
           break;

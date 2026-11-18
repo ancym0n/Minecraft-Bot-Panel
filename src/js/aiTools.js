@@ -510,7 +510,12 @@ function createAiTools(ctx) {
 
   // Sets a module option through the panel UI so it shows and persists.
   async function setOption(scriptName, key, value) {
-    const opts = (await scripts.options?.(scriptName)) || [];
+    // "AI Fixes Errors" is the user's switch, not the AI's.
+    const opts = ((await scripts.options?.(scriptName)) || []).filter(
+      (o) => o.id !== "aifix",
+    );
+    if (/^ai\s*fix/i.test(String(key || "")))
+      throw new Error("That setting can only be changed by the owner");
     if (!opts.length) throw new Error(`${scriptName} has no options`);
     const k = String(key || "")
       .toLowerCase()
@@ -837,11 +842,16 @@ function createAiTools(ctx) {
       bot.pathfinder.setGoal(new goals.GoalFollow(victim, 1.5), true);
       let hits = 0;
       const started = Date.now();
+      const deniedNow = () =>
+        bot._mcbpDenied && bot._mcbpDenied.at >= started
+          ? bot._mcbpDenied.text
+          : "";
       while (
         getBot() === bot &&
         bot._mcbpAiTask === task &&
         bot.entities[victim.id] &&
-        Date.now() - started < 20000
+        Date.now() - started < 20000 &&
+        !deniedNow()
       ) {
         if (victim.position.distanceTo(bot.entity.position) <= 3.3) {
           await bot.lookAt(
@@ -860,6 +870,12 @@ function createAiTools(ctx) {
       }
       const label = victim.username || victim.name;
       if (cancelled) return `Stopped attacking ${label}`;
+      if (deniedNow()) {
+        clearPathfinderGoal(bot);
+        throw new Error(
+          `The server won't let me fight here ("${deniedNow()}")`,
+        );
+      }
       if (bot.entities[victim.id]) {
         throw new Error(
           hits
@@ -887,6 +903,7 @@ function createAiTools(ctx) {
       const key = (p) => `${p.x},${p.y},${p.z}`;
       let mined = 0;
       let fails = 0;
+      let denied = "";
       let lastError = "";
       try {
         while (mined < amount && fails < 4) {
@@ -911,7 +928,13 @@ function createAiTools(ctx) {
             );
             const target = bot.blockAt(pos);
             if (!target || target.type !== blockType.id) continue;
+            const digStart = Date.now();
             const ok = await smartDig(bot, target, { autoTool: true });
+            await sleep(250);
+            if (bot._mcbpDenied && bot._mcbpDenied.at >= digStart) {
+              denied = bot._mcbpDenied.text;
+              break;
+            }
             if (ok === false) throw new Error("dig was interrupted");
             mined += 1;
             // Step onto the spot to pick up the drop.
@@ -934,6 +957,11 @@ function createAiTools(ctx) {
       const cancelled = getBot() !== bot || bot._mcbpAiTask !== task;
       if (!cancelled) bot._mcbpAiTask = null;
       if (cancelled) return `Stopped mining (${mined} ${name} mined)`;
+      if (denied) {
+        throw new Error(
+          `The server won't let me break blocks here ("${denied}"). Mined ${mined}`,
+        );
+      }
       if (!mined) {
         throw new Error(
           `Could not mine any ${name}: ${lastError || "stopped"}`,
@@ -988,6 +1016,7 @@ function createAiTools(ctx) {
       const rows = await Promise.all(
         names.map(async (s) => {
           const opts = ((await scripts.options?.(s)) || [])
+            .filter((o) => o.id !== "aifix")
             .map((o) => `${o.id}=${o.value === "" ? "?" : o.value}`)
             .join(" ");
           return `${s} ${active.has(s) ? "ON" : "off"}${opts ? ` [${opts}]` : ""}`;
@@ -1610,6 +1639,8 @@ function createAiTools(ctx) {
     );
     if (esc) text = text.replace(new RegExp(`^@?${esc}[,:]?\\s*`, "i"), "");
     if (!text || text.length > 200) return null;
+    // Long sentences are conversation, not orders.
+    if (text.split(/\s+/).length > 10) return null;
     if (
       /\?\s*$/.test(text) ||
       /^(what|why|how|did|do|does|can|could|would|is|are|where|who|when|which|should|will|whats|what's)\b/i.test(

@@ -308,7 +308,7 @@ function isThinkingOutLoud(text) {
   const t = cleanModelText(text);
   if (!t) return false;
   return (
-    /\b(commands?|tools?|syntax|function|parameters?|arguments?|api|script names?|json)\b/i.test(
+    /\b(commands?|tools?|syntax|function|parameters?|arguments?|api|scripts?|modules?|json)\b/i.test(
       t,
     ) ||
     /\b(write|type|use|format) (the |your )?(commands?|it|them) like\b/i.test(
@@ -1460,7 +1460,9 @@ class OllamaManager {
       ? `\nKeep the whole reply under ${maxLen * maxParts} characters, written as up to ${maxParts} short sentences.`
       : `\nReply with exactly 1 short sentence under ${Math.min(maxLen * 2, 200)} characters.`;
     sysPrompt +=
-      "\nPlain text only, no emojis spam, no quotes around the reply, never prefix it with your name.";
+      "\nPlain text only, no emojis, no quotes around the reply, never prefix it with your name.";
+    sysPrompt +=
+      "\nYou are a regular player, not an assistant: never offer help, never say things like 'how can I help', 'feel free', 'let me know' or 'just a heads-up', don't give advice or warnings nobody asked for, and don't repeat the same phrase in every message. Ignore ads and server announcements.";
 
     if (agent) {
       sysPrompt +=
@@ -1527,11 +1529,44 @@ class OllamaManager {
       );
       reply = reply.replace(new RegExp(`^<?${escaped}>?:\\s*`, "i"), "").trim();
     }
+    // A chat reply must never run a server command.
+    if (/^[/!.]/.test(reply)) reply = "";
+    reply = this.dropStaleSentences(reply);
     const maxLen = Number(this.config.maxMessageLength) || 100;
     const parts = this.config.splitMessages
       ? splitIntoMessages(reply, maxLen, this.config.maxParts)
       : splitIntoMessages(reply, Math.min(240, maxLen * 2), 1);
     return { reply: parts.join(" "), parts };
+  }
+
+  // Real players don't sound like a help desk or repeat the same tagline in
+  // every message. Drops those sentences (keeps the rest of the reply).
+  dropStaleSentences(reply) {
+    const norm = (t) =>
+      t
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, " ")
+        .trim();
+    const recent = new Set((this.recentSentences || []).map((x) => x.n));
+    const ASSISTANT =
+      /\b(how (can|may) i (help|assist)|feel free to|let me know|i'?m here to help|happy to help|any (questions|assistance)|need (any )?(help|assistance|tips)|just a heads[- ]up|as an ai|i can help you|is there anything)\b/i;
+    const sentences = String(reply || "").match(/[^.!?]+[.!?]*/g) || [];
+    const kept = sentences.filter((sen) => {
+      const n = norm(sen);
+      if (!n) return false;
+      if (ASSISTANT.test(sen)) return false;
+      if (n.split(" ").length >= 3 && recent.has(n)) return false;
+      return true;
+    });
+    const out = kept
+      .join(" ")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+    this.recentSentences = [
+      ...(this.recentSentences || []),
+      ...(out.match(/[^.!?]+[.!?]*/g) || []).map((x) => ({ n: norm(x) })),
+    ].slice(-20);
+    return out;
   }
 
   rememberExchange(sender, message, reply) {
