@@ -319,6 +319,10 @@ function isThinkingOutLoud(text) {
       t,
     ) ||
     /\b(don'?t|do not) (understand|know) what you mean by\b/i.test(t) ||
+    /^\s*(think|thought|thinking|plan|reasoning)\b/i.test(t) ||
+    /\b(it seems|seems like there|there was an issue|there was a problem|let'?s try|let me try|i'?ll try (again|to)|i should check|i need to check|coordinates?|try again with)\b/i.test(
+      t,
+    ) ||
     /["'`][^"'`]{2,40}["'`]\s*(and|,)\s*["'`]/.test(t) ||
     /\|/.test(t)
   );
@@ -1606,6 +1610,85 @@ class OllamaManager {
     }
   }
 
+  // Second, private pass after acting: the model checks its own work and
+  // writes the one line that goes to chat. JSON output is enforced.
+  async reviewAgentWork({
+    model,
+    sender,
+    message,
+    actions = [],
+    draft = "",
+    botContext = null,
+    noRetry = false,
+  }) {
+    const did = actions
+      .filter((a) => a.name !== "think")
+      .map(
+        (a, i) =>
+          `${i + 1}. ${a.name}(${JSON.stringify(a.args || {})}) -> ${String(a.result).split("\n")[0].slice(0, 200)}`,
+      );
+    const system = [
+      this.buildSystemPrompt(botContext, { agent: false, model }),
+      "",
+      "Now check your own work privately, then write your chat reply.",
+      'Answer ONLY with JSON: {"thought": string, "ok": boolean, "retry": string, "reply": string}',
+      "- thought: private, never shown. Did the actions do what the player asked? What went wrong?",
+      "- ok: true if the request is handled (or was only chatting), false if it failed.",
+      noRetry
+        ? '- retry: always "".'
+        : '- retry: if ok is false and another try could work, ONE plain command line to try instead (like "follow ancymon", "walk 10 64 -5", "join kitpvp", "turn on autoeat"), else "".',
+      `- reply: what you type in chat to ${sender}. Short and casual like a real player. Never mention tools, commands, coordinates errors, JSON or that you are checking anything. Actions that "started" are still in progress: say you're on it, not that you finished.`,
+    ].join("\n");
+    const user = [
+      `${sender} said: ${message}`,
+      did.length
+        ? `What you did:\n${did.join("\n")}`
+        : "You did not use any actions.",
+      draft ? `Your draft reply: ${cleanModelText(draft).slice(0, 300)}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+    try {
+      const res = await httpJsonRequest(`${this.host}/api/chat`, {
+        method: "POST",
+        timeout: 60000,
+        body: this.chatBody(
+          model,
+          [
+            { role: "system", content: system },
+            { role: "user", content: user },
+          ],
+          {
+            format: "json",
+            options: { temperature: 0.2, num_predict: 220, num_ctx: 4096 },
+          },
+        ),
+      });
+      const raw = cleanModelText(res?.message?.content || "");
+      let obj = null;
+      try {
+        obj = JSON.parse(raw);
+      } catch (_) {
+        const m = raw.match(/\{[\s\S]*\}/);
+        if (m) {
+          try {
+            obj = JSON.parse(m[0]);
+          } catch (_) {}
+        }
+      }
+      if (!obj || typeof obj !== "object") return null;
+      const str = (v) => (typeof v === "string" ? v.trim() : "");
+      return {
+        thought: str(obj.thought).slice(0, 400),
+        ok: obj.ok === false || obj.ok === "false" ? false : true,
+        retry: noRetry ? "" : str(obj.retry).slice(0, 200),
+        reply: str(obj.reply || obj.message || obj.chat),
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
   // Chat reply where the model may call bot functions (tools) first.
   async runAgent({
     sender = "Player",
@@ -1737,18 +1820,92 @@ class OllamaManager {
           if (calls.length) content = "";
         }
         if (!calls.length) {
+          const text = cleanModelText(content);
+          // "think I should check..." written as text instead of a call.
+          const thinking = text.match(
+            /^\s*(?:\*\*)?(?:think(?:ing)?|thoughts?|plan|reasoning|note to self)(?:\*\*)?\s*[:\-]?\s+([\s\S]+)$/i,
+          );
+          if (thinking && round < maxRounds - 1) {
+            thoughts.push(thinking[1].trim().slice(0, 400));
+            messages.push({ role: "assistant", content });
+            messages.push({
+              role: "user",
+              content:
+                "[private] Noted. Now act with a tool, or answer if nothing needs doing.",
+            });
+            continue;
+          }
           finalText = content;
           break;
         }
 
         messages.push({ role: "assistant", content, tool_calls: calls });
-        const needsFollowUp = await runCalls(calls);
-        // Plain actions with a ready reply: skip another model round.
+        // Words next to tool calls are the model thinking, never chat.
         const spoken = cleanModelText(content);
-        if (!needsFollowUp && spoken && !looksLikeCode(spoken)) {
-          finalText = spoken;
-          break;
+        if (spoken) thoughts.push(spoken.slice(0, 400));
+        const needsFollowUp = await runCalls(calls);
+        if (!needsFollowUp) break;
+      }
+
+      // Private self-check: did that do what the player wanted? Retry once
+      // with a corrected command if not, then write the chat reply.
+      let review = await this.reviewAgentWork({
+        model,
+        sender,
+        message,
+        actions,
+        draft: finalText,
+        botContext,
+      });
+      if (review?.thought) thoughts.push(`check: ${review.thought}`);
+      if (review && review.ok === false && review.retry) {
+        // The retry may come back as a plain command or in tool syntax
+        // ("follow_player(ancymon)", "stop_script aiagent"); run either.
+        const asCalls = parseTextToolCalls(
+          review.retry,
+          toolNames,
+          resolveTool,
+        ).slice(0, 2);
+        const retryCalls = asCalls.length
+          ? asCalls.map((c) => ({
+              name: c.function.name,
+              args: c.function.arguments || {},
+            }))
+          : [{ name: "run_commands", args: { commands: review.retry } }];
+        for (const call of retryCalls) {
+          let result;
+          try {
+            result = String(
+              await executeTool(call.name, call.args, { sender }),
+            );
+          } catch (err) {
+            result = `Error: ${err.message || err}`;
+          }
+          actions.push({
+            name: call.name,
+            args: call.args,
+            result,
+            failed: /^error/i.test(result),
+          });
         }
+        const second = await this.reviewAgentWork({
+          model,
+          sender,
+          message,
+          actions,
+          draft: "",
+          botContext,
+          noRetry: true,
+        });
+        if (second?.thought) thoughts.push(`check: ${second.thought}`);
+        if (second) review = second;
+      }
+      if (review && typeof review.reply === "string") {
+        finalText = review.reply;
+      } else if (actions.length) {
+        // No usable review: never fall back to the model's raw text after
+        // it used tools, that's where the thinking out loud lives.
+        finalText = "";
       }
 
       // Small models start replies with "<player>: ".

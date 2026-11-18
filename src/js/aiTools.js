@@ -186,13 +186,53 @@ function createAiTools(ctx) {
     return bot;
   };
 
-  const findPlayer = (bot, name) => {
+  // Edit distance, for typos like "ancynamon" → "ancymon".
+  const distance = (a, b) => {
+    const dp = Array.from({ length: b.length + 1 }, (_, i) => i);
+    for (let i = 1; i <= a.length; i++) {
+      let prev = dp[0];
+      dp[0] = i;
+      for (let j = 1; j <= b.length; j++) {
+        const tmp = dp[j];
+        dp[j] = Math.min(
+          dp[j] + 1,
+          dp[j - 1] + 1,
+          prev + (a[i - 1] === b[j - 1] ? 0 : 1),
+        );
+        prev = tmp;
+      }
+    }
+    return dp[b.length];
+  };
+
+  // Exact name, else a unique close match (prefix or a couple of typos).
+  const matchPlayerName = (bot, name) => {
     const wanted = String(name || "")
       .replace(/^@/, "")
       .toLowerCase();
-    const key = Object.keys(bot.players || {}).find(
-      (u) => u.toLowerCase() === wanted,
+    const names = Object.keys(bot.players || {}).filter(
+      (u) => u !== bot.username,
     );
+    const exact = names.find((u) => u.toLowerCase() === wanted);
+    if (exact || wanted.length < 3) return exact || null;
+    const scored = names
+      .map((u) => {
+        const l = u.toLowerCase();
+        const d =
+          l.startsWith(wanted) || wanted.startsWith(l)
+            ? 0.5
+            : distance(l, wanted);
+        return { u, d };
+      })
+      .filter((x) => x.d <= Math.max(2, Math.floor(wanted.length / 3)))
+      .sort((a, b) => a.d - b.d);
+    if (!scored.length) return null;
+    if (scored[1] && scored[1].d === scored[0].d) return null;
+    return scored[0].u;
+  };
+
+  const findPlayer = (bot, name) => {
+    const key = matchPlayerName(bot, name);
     const entity = key ? bot.players[key]?.entity : null;
     if (!entity) {
       throw new Error(
@@ -701,9 +741,7 @@ function createAiTools(ctx) {
     async come_to_player({ player }, { sender }) {
       const bot = requireBot();
       const wanted = String(player || sender || "").replace(/^@/, "");
-      const isOnline = Object.keys(bot.players || {}).some(
-        (u) => u.toLowerCase() === wanted.toLowerCase(),
-      );
+      const isOnline = Boolean(matchPlayerName(bot, wanted));
       // "go to kitpvp": not a player, so it's probably a game in a menu.
       if (
         !isOnline &&
@@ -715,15 +753,16 @@ function createAiTools(ctx) {
         } catch (_) {}
       }
       const target = findPlayer(bot, player || sender);
+      const who = target.username || player || sender;
       const { goals } = loadLibraries();
       const p = target.position;
       const dist = Math.round(p.distanceTo(bot.entity.position));
-      if (dist <= 2) return `Already next to ${player || sender}`;
+      if (dist <= 2) return `Already next to ${who}`;
       await startMove(bot, new goals.GoalNear(p.x, p.y, p.z, 2), {
-        label: player || sender,
+        label: who,
         sender,
       });
-      return `Walking to ${player || sender} (${dist}m away)`;
+      return `Walking to ${who} (${dist}m away)`;
     },
 
     async follow_player({ player }, { sender }) {
@@ -743,7 +782,7 @@ function createAiTools(ctx) {
           target.position.distanceTo(bot.entity.position) > 4,
       });
       bot._mcbpFollowState = { entityId: target.id, range: 2 };
-      return `Following ${name}`;
+      return `Following ${target.username || name}`;
     },
 
     stop() {
@@ -1471,6 +1510,24 @@ function createAiTools(ctx) {
       name = "run_commands";
       safeArgs = { commands: safeArgs.code ?? safeArgs.commands ?? "" };
     }
+    // go_to("Steve") / go_to({value:"Steve"}): a name, not coordinates.
+    if (name === "go_to") {
+      const nums = ["x", "z"].every(
+        (k) =>
+          safeArgs[k] !== undefined && Number.isFinite(Number(safeArgs[k])),
+      );
+      const who =
+        safeArgs.player ?? safeArgs.value ?? safeArgs.name ?? safeArgs.target;
+      if (
+        !nums &&
+        typeof who === "string" &&
+        who.trim() &&
+        !Number.isFinite(Number(who))
+      ) {
+        name = "come_to_player";
+        safeArgs = { player: who.trim() };
+      }
+    }
     safeArgs = fixArgs(name, safeArgs);
     const handler = handlers[name];
     const argText = JSON.stringify(safeArgs);
@@ -1576,7 +1633,8 @@ function createAiTools(ctx) {
       const m = String(st.js || "").match(
         /^api\.(?:follow_player|look_at_player)\(\{ player: "([^"]*)" \}\)/,
       );
-      if (m && !online.has(m[1].toLowerCase())) return null;
+      if (m && !online.has(m[1].toLowerCase()) && !matchPlayerName(bot, m[1]))
+        return null;
     }
     // Info commands need the model to word the answer.
     if (
