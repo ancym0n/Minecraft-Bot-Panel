@@ -400,13 +400,26 @@ class AiBrain {
   }
 
   getSnapshot(bot = null) {
+    const recentActions = this.actionLog.slice(-6).reverse().map((a) => ({
+      ...a,
+      tool: a.name,
+      result: a.summary,
+    }));
+    const recentProblems = this.problemLog.slice(-4).reverse().map((p) => ({
+      ...p,
+      tool: p.action,
+      error: p.problem,
+    }));
     return {
       currentGoal: this.currentGoal || "Idle",
+      activeGoal: this.currentGoal || "Idle",
       goalOwner: this.goalOwner || "",
       currentStep: this.currentStep || "",
+      activeStep: this.currentStep || "",
       planSteps: this.planSteps.slice(0, 12),
-      recentActions: this.actionLog.slice(-6).reverse(),
-      recentProblems: this.problemLog.slice(-4).reverse(),
+      recentActions,
+      recentProblems,
+      problemHistory: recentProblems,
       recentThoughts: this.thoughts.slice(-5).reverse(),
       landmarks: Array.from(this.landmarks.values()).slice(-8),
       position: bot?.entity?.position

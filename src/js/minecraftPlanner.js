@@ -3,6 +3,8 @@
 // "diamond gear", "get food") and inspects the bot's live inventory to generate
 // and execute an ordered, dependency-resolved plan step by step.
 
+const { aiBrain } = require("./aiBrain");
+
 const PICKAXE_TIERS = [
   "wooden_pickaxe",
   "golden_pickaxe",
@@ -120,6 +122,41 @@ const COMPOSITE_SETS = {
     "leather_leggings",
     "leather_helmet",
     "leather_boots",
+  ],
+  leather_gear: [
+    "wooden_pickaxe",
+    "wooden_sword",
+    "wooden_axe",
+    "leather_chestplate",
+    "leather_leggings",
+    "leather_helmet",
+    "leather_boots",
+  ],
+  leather_set: [
+    "wooden_pickaxe",
+    "wooden_sword",
+    "leather_chestplate",
+    "leather_leggings",
+    "leather_helmet",
+    "leather_boots",
+  ],
+  golden_gear: [
+    "golden_pickaxe",
+    "golden_sword",
+    "golden_axe",
+    "golden_chestplate",
+    "golden_leggings",
+    "golden_helmet",
+    "golden_boots",
+  ],
+  gold_gear: [
+    "golden_pickaxe",
+    "golden_sword",
+    "golden_axe",
+    "golden_chestplate",
+    "golden_leggings",
+    "golden_helmet",
+    "golden_boots",
   ],
   stone_tools: ["stone_pickaxe", "stone_sword", "stone_axe", "stone_shovel"],
   stone_gear: ["stone_pickaxe", "stone_sword", "stone_axe", "stone_shovel"],
@@ -267,7 +304,11 @@ const ITEM_REQUIREMENTS = {
   diamond_leggings: { diamond: 7, table: true, minPick: "iron_pickaxe" },
   diamond_boots: { diamond: 4, table: true, minPick: "iron_pickaxe" },
 
-  // Utility
+  // Utility & Leather Armor
+  leather_helmet: { leather: 5, table: true },
+  leather_chestplate: { leather: 8, table: true },
+  leather_leggings: { leather: 7, table: true },
+  leather_boots: { leather: 4, table: true },
   torch: { coal: 1, sticks: 1, table: false },
   campfire: { logs: 3, coal: 1, sticks: 3, table: true },
 };
@@ -306,6 +347,7 @@ function getInventorySnapshot(bot) {
     (counts.deepslate_gold_ore || 0);
   const goldIngot = counts.gold_ingot || 0;
   const diamond = counts.diamond || 0;
+  const leather = counts.leather || 0;
   const coal = (counts.coal || 0) + (counts.charcoal || 0);
 
   const hasPickAtLeast = (minPick) => {
@@ -314,23 +356,36 @@ function getInventorySnapshot(bot) {
     return PICKAXE_TIERS.slice(idx).some((p) => (counts[p] || 0) > 0);
   };
 
-  let nearbyTable = false;
-  let nearbyFurnace = false;
+  let nearbyTable = Boolean(aiBrain?.landmarks?.has("crafting_table"));
+  let nearbyFurnace = Boolean(aiBrain?.landmarks?.has("furnace"));
   try {
     if (typeof bot?.findBlock === "function" && bot.registry?.blocksByName) {
       const tId = bot.registry.blocksByName.crafting_table?.id;
       const fId = bot.registry.blocksByName.furnace?.id;
       const bfId = bot.registry.blocksByName.blast_furnace?.id;
       if (typeof tId === "number") {
-        nearbyTable = Boolean(
-          bot.findBlock({ matching: tId, maxDistance: 24 }),
-        );
+        const tb = bot.findBlock({ matching: tId, maxDistance: 36 });
+        if (tb) {
+          nearbyTable = true;
+          if (tb.position) {
+            aiBrain?.recordLandmark?.(
+              "crafting_table",
+              tb.position,
+              "Crafting Table",
+              bot,
+            );
+          }
+        }
       }
       const fIds = [fId, bfId].filter((id) => typeof id === "number");
       if (fIds.length) {
-        nearbyFurnace = Boolean(
-          bot.findBlock({ matching: fIds, maxDistance: 24 }),
-        );
+        const fb = bot.findBlock({ matching: fIds, maxDistance: 36 });
+        if (fb) {
+          nearbyFurnace = true;
+          if (fb.position) {
+            aiBrain?.recordLandmark?.("furnace", fb.position, "Furnace", bot);
+          }
+        }
       }
     }
   } catch (_) {}
@@ -346,6 +401,7 @@ function getInventorySnapshot(bot) {
     rawGold,
     goldIngot,
     diamond,
+    leather,
     coal,
     hasTable: (counts.crafting_table || 0) > 0 || nearbyTable,
     hasFurnace:
@@ -454,6 +510,7 @@ function buildCraftingPlan(bot, targetItemsInput, count = 1) {
   let neededIron = 0;
   let neededGold = 0;
   let neededDiamond = 0;
+  let neededLeather = 0;
   let needsTable = false;
   let highestPickNeeded = null;
 
@@ -482,6 +539,7 @@ function buildCraftingPlan(bot, targetItemsInput, count = 1) {
     neededIron += (req.iron_ingot || 0) * n;
     neededGold += (req.gold_ingot || 0) * n;
     neededDiamond += (req.diamond || 0) * n;
+    neededLeather += (req.leather || 0) * n;
     if (req.table) needsTable = true;
     if (req.minPick) bumpPick(req.minPick);
   }
@@ -491,6 +549,7 @@ function buildCraftingPlan(bot, targetItemsInput, count = 1) {
   const needGoldSmelt = Math.max(0, neededGold - snap.goldIngot);
   const needGoldMine = Math.max(0, needGoldSmelt - snap.rawGold);
   const needDiamondMine = Math.max(0, neededDiamond - snap.diamond);
+  const needLeatherHunt = Math.max(0, neededLeather - snap.leather);
 
   if (needDiamondMine > 0 || needGoldMine > 0) bumpPick("iron_pickaxe");
   if (needIronMine > 0) bumpPick("stone_pickaxe");
@@ -645,6 +704,15 @@ function buildCraftingPlan(bot, targetItemsInput, count = 1) {
       label: `Mine ${needDiamondMine} diamond_ore`,
       tool: "mine_block",
       args: { block: "diamond_ore", count: needDiamondMine },
+    });
+  }
+
+  // 9b. Hunt animals for leather if needed
+  if (needLeatherHunt > 0) {
+    steps.push({
+      label: `Hunt cows/horses for ${needLeatherHunt} leather`,
+      tool: "hunt_food",
+      args: { count: Math.max(2, Math.ceil(needLeatherHunt / 1.5)) },
     });
   }
 

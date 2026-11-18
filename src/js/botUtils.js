@@ -1794,7 +1794,11 @@ function attachSmartMovement(bot, manualControls = {}) {
       const p = bot.entity.position;
       if (p && typeof bot.blockAt === "function") {
         const below = bot.blockAt(p.offset(0, -0.08, 0).floored());
-        if (below && !isBlockPassable(below)) {
+        const deepBelow = bot.blockAt(p.offset(0, -0.58, 0).floored());
+        if (
+          (below && !isBlockPassable(below)) ||
+          (deepBelow && !isBlockPassable(deepBelow))
+        ) {
           bot.entity.onGround = true;
         }
       }
@@ -2530,17 +2534,27 @@ async function performVerifiedJumpOrUnwedge(
       clearPathfinderGoal(bot);
     }
 
-    // If ceiling or a 2-high dirt/stone/leaves wall is trapping the bot in a hole and we're not in spawn protection, dig a staircase out!
+    // If ceiling, a 2-high wall, or multi-layer snow/snow_block on a slope is trapping the bot and we're not in spawn protection, dig a path out!
     const dugBlocks = [];
     if (!diag.inProtectedZone && !isBotDigging(bot)) {
-      for (const blk of [
+      const snowBlocked =
+        diag.feet === "snow" ||
+        diag.frontFoot === "snow" ||
+        diag.frontFoot === "snow_block" ||
+        diag.frontFoot === "powder_snow";
+      const candidates = [
         diag.overheadBlock,
         diag.frontAboveBlock,
         diag.frontHeadBlock,
-      ]) {
+        ...(snowBlocked || diag.serverRubberband ? [diag.frontFootBlock] : []),
+      ];
+      for (const blk of candidates) {
         if (
           blk &&
-          blk.boundingBox === "block" &&
+          (blk.boundingBox === "block" ||
+            blk.name === "snow" ||
+            blk.name === "snow_block" ||
+            blk.name === "powder_snow") &&
           blk.diggable &&
           blk.name !== "bedrock" &&
           blk.name !== "obsidian"
@@ -2594,11 +2608,17 @@ async function performVerifiedJumpOrUnwedge(
   };
 
   // Case 1: Jump is physically impossible right now (ceiling overhead, 2-block wall, or not onGround)
-  if (
-    diag.ceilingBlocked ||
-    diag.frontWall2High ||
-    (!bot.entity.onGround && !bot.entity.isInWater)
-  ) {
+  const hasSolidFloorSupport =
+    Boolean(bot.entity.onGround) ||
+    Boolean(bot.entity.isInWater) ||
+    (diag.floor &&
+      diag.floor !== "air" &&
+      diag.floor !== "cave_air" &&
+      diag.floor !== "void_air");
+  if (hasSolidFloorSupport && !bot.entity.onGround && !bot.entity.isInWater) {
+    bot.entity.onGround = true;
+  }
+  if (diag.ceilingBlocked || diag.frontWall2High || !hasSolidFloorSupport) {
     const cause = diag.ceilingBlocked
       ? `ceiling blocked by ${diag.overhead}/${diag.frontAbove}`
       : diag.frontWall2High

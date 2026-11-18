@@ -712,7 +712,9 @@ function translateLine(raw, ctx) {
       return `api.eat({})`;
     case "gear": {
       const tierWord = lower.find((w) =>
-        /^(wood|wooden|stone|iron|diamond)$/.test(w),
+        /^(leather|wood|wooden|stone|gold|golden|iron|diamond|netherite)$/.test(
+          w,
+        ),
       );
       const wantsGearUp =
         verb === "gearup" ||
@@ -722,7 +724,12 @@ function translateLine(raw, ctx) {
           /^(find|mine|craft|make|full|progression|get)$/.test(w),
         );
       if (wantsGearUp) {
-        const tier = tierWord === "wooden" ? "wood" : tierWord;
+        const tier =
+          tierWord === "wooden"
+            ? "wood"
+            : tierWord === "golden"
+              ? "gold"
+              : tierWord;
         return tier
           ? `api.start_script({ name: "GearUp", options: { tier: ${q(tier)} } })`
           : `api.start_script({ name: "GearUp" })`;

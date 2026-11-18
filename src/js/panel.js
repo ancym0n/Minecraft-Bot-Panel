@@ -1384,6 +1384,7 @@ const DEFAULT_SCRIPT_OPTIONS = {
   "armor-GearUp": "on",
   "shield-GearUp": "on",
   "tier-GearUp": "diamond",
+  "aifix-GearUp": "on",
   "autoweapon-Hunt": "on",
   "sprintjump-Hunt": "on",
   "crits-Hunt": "on",

@@ -30,6 +30,7 @@ const {
   placeBlockNearby,
   smeltInFurnace,
   smeltIronInFurnace,
+  collectNearbyDropsAround,
 } = require("./scripts/gearup");
 const {
   translate,
@@ -782,12 +783,37 @@ function createAiTools(ctx) {
         : "off";
     } else if (opt.type === "select") {
       const want = String(v).toLowerCase().trim();
+      const tierAliases = {
+        wooden: "wood",
+        wood_tools: "wood",
+        wooden_tools: "wood",
+        leather_armor: "leather",
+        leather_wood: "leather",
+        stone_tools: "stone",
+        golden: "gold",
+        golden_gear: "gold",
+        gold_gear: "gold",
+        full_iron: "iron",
+        iron_armor: "iron",
+        iron_gear: "iron",
+        full_diamond: "diamond",
+        diamond_armor: "diamond",
+        diamond_gear: "diamond",
+        best: "netherite",
+      };
+      const aliased = tierAliases[want] || want;
       const choice = (opt.choices || []).find((c) => {
         const cv = String(typeof c === "object" ? c.value : c).toLowerCase();
         const cl = String(
           typeof c === "object" ? c.label || c.value : c,
         ).toLowerCase();
-        return cv === want || cl === want;
+        return (
+          cv === want ||
+          cl === want ||
+          cv === aliased ||
+          cl.includes(want) ||
+          cl.includes(aliased)
+        );
       });
       if (!choice) {
         throw new Error(
@@ -1639,30 +1665,56 @@ function createAiTools(ctx) {
             break;
           }
           try {
+            // Walk to 1 block distance from the block before mining so drops in caves don't get stuck behind walls
             await withTimeout(
-              bot.pathfinder.goto(
-                new goals.GoalLookAtBlock(pos, bot.world, { reach: 4 }),
-              ),
-              25000,
+              bot.pathfinder.goto(new goals.GoalNear(pos.x, pos.y, pos.z, 1)),
+              18000,
               () => bot.pathfinder.setGoal(null),
-            );
+            ).catch(async () => {
+              await withTimeout(
+                bot.pathfinder.goto(
+                  new goals.GoalLookAtBlock(pos, bot.world, { reach: 3 }),
+                ),
+                12000,
+                () => bot.pathfinder.setGoal(null),
+              );
+            });
             const target = bot.blockAt(pos);
             if (!target || !matchSet.has(target.type)) continue;
             const digStart = Date.now();
-            const ok = await smartDig(bot, target, { autoTool: true });
-            await sleep(250);
-            if (bot._mcbpDenied && bot._mcbpDenied.at >= digStart) {
-              denied = bot._mcbpDenied.text;
-              break;
+            let ok = false;
+            for (let pass = 0; pass < 3; pass++) {
+              const liveBlk = bot.blockAt(pos);
+              if (!liveBlk || !matchSet.has(liveBlk.type)) {
+                ok = true;
+                break;
+              }
+              ok = await smartDig(bot, liveBlk, { autoTool: true });
+              await sleep(180);
+              if (bot._mcbpDenied && bot._mcbpDenied.at >= digStart) {
+                denied = bot._mcbpDenied.text;
+                break;
+              }
+              if (ok === false) break;
+              const afterBlk = bot.blockAt(pos);
+              if (!afterBlk || !matchSet.has(afterBlk.type)) {
+                ok = true;
+                break;
+              }
+              // Dug an intervening blocker in front of the ore — step within 1 block
+              await withTimeout(
+                bot.pathfinder.goto(new goals.GoalNear(pos.x, pos.y, pos.z, 1)),
+                3500,
+                () => bot.pathfinder.setGoal(null),
+              ).catch(() => {});
             }
+            if (denied) break;
             if (ok === false) throw new Error("dig was interrupted");
             mined += 1;
-            // Step onto the spot to pick up the drop.
-            await withTimeout(
-              bot.pathfinder.goto(new goals.GoalNear(pos.x, pos.y, pos.z, 1)),
-              4000,
-              () => bot.pathfinder.setGoal(null),
-            ).catch(() => {});
+            // Step onto the spot and sweep nearby dropped item entities within 5.5m
+            await collectNearbyDropsAround(bot, goals, pos, 1500).catch(
+              () => {},
+            );
           } catch (err) {
             failed.add(key(pos));
             failed.add(colKey(pos));
@@ -1806,10 +1858,40 @@ function createAiTools(ctx) {
       }
 
       if (mapped === "crafting_table") {
+        const existingTable = bot.findBlock({
+          matching: (b) => b && b.name === "crafting_table",
+          maxDistance: 36,
+        });
+        if (existingTable) {
+          aiBrain.recordLandmark(
+            "crafting_table",
+            existingTable.position,
+            "Crafting Table",
+            bot,
+          );
+          return `Found existing crafting_table nearby at (${existingTable.position.x}, ${existingTable.position.y}, ${existingTable.position.z})`;
+        }
         await ensureSticksAndPlanks(bot, 0, 4, stepLog);
         const ok = await craftItemByName(bot, "crafting_table", amount, null);
         if (!ok) throw new Error("Need 4 planks to craft a crafting_table");
         return `Crafted ${amount}x crafting_table`;
+      }
+
+      if (mapped === "furnace" && amount === 1) {
+        const existingFurnace = bot.findBlock({
+          matching: (b) =>
+            b && (b.name === "furnace" || b.name === "blast_furnace"),
+          maxDistance: 36,
+        });
+        if (existingFurnace) {
+          aiBrain.recordLandmark(
+            "furnace",
+            existingFurnace.position,
+            "Furnace",
+            bot,
+          );
+          return `Found existing ${existingFurnace.name} nearby at (${existingFurnace.position.x}, ${existingFurnace.position.y}, ${existingFurnace.position.z})`;
+        }
       }
 
       if (mapped.startsWith("stone_") || mapped === "furnace") {
@@ -2202,6 +2284,47 @@ function createAiTools(ctx) {
       const bot = requireBot();
       const raw = itemId(block);
       const name = resolveName(block, bot.registry?.itemsByName);
+      const { goals } = loadLibraries();
+      const stepLog = (m) => log(`AIAgent: ${m}`);
+      if (name === "crafting_table") {
+        const table = await ensureCraftingTablePlaced(bot, goals, stepLog);
+        if (!table) {
+          throw new Error(
+            "Could not find or place a crafting_table (need wood/planks)",
+          );
+        }
+        return `Crafting table ready at (${table.position.x}, ${table.position.y}, ${table.position.z})`;
+      }
+      if (name === "furnace" || name === "blast_furnace") {
+        const existingFurnace = bot.findBlock({
+          matching: (b) =>
+            b && (b.name === "furnace" || b.name === "blast_furnace"),
+          maxDistance: 32,
+        });
+        if (existingFurnace) {
+          aiBrain.recordLandmark(
+            "furnace",
+            existingFurnace.position,
+            "Furnace",
+            bot,
+          );
+          if (existingFurnace.position.distanceTo(bot.entity.position) > 2.6) {
+            await withTimeout(
+              bot.pathfinder.goto(
+                new goals.GoalNear(
+                  existingFurnace.position.x,
+                  existingFurnace.position.y,
+                  existingFurnace.position.z,
+                  1,
+                ),
+              ),
+              6000,
+              () => clearPathfinderGoal(bot),
+            ).catch(() => {});
+          }
+          return `Using existing ${existingFurnace.name} at (${existingFurnace.position.x}, ${existingFurnace.position.y}, ${existingFurnace.position.z})`;
+        }
+      }
       let invItem =
         bot.inventory.items().find((i) => i.name === name) ||
         bot.inventory.items().find((i) => i.name.includes(raw));
@@ -2213,9 +2336,7 @@ function createAiTools(ctx) {
         invItem = bot.inventory.items().find((i) => i.name === name);
       }
       if (!invItem) throw new Error(`No ${name} in inventory to place`);
-      const ok = await placeBlockNearby(bot, invItem, invItem.name, (m) =>
-        log(`AIAgent: ${m}`),
-      );
+      const ok = await placeBlockNearby(bot, invItem, invItem.name, stepLog);
       if (!ok)
         throw new Error(
           `Could not find a clear spot nearby to place ${invItem.name}`,

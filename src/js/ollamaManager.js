@@ -404,7 +404,10 @@ function isThinkingOutLoud(text) {
 
 // Strips AI assistant enthusiasm, robotic Polish/English openers ("Jasne! Już próbuję znaleźć diamenty..."),
 // and converts replies into natural, casual human Minecraft player style.
-function stripAssistantSlop(rawText, { isObey = false, sender = "" } = {}) {
+function stripAssistantSlop(
+  rawText,
+  { isObey = false, sender = "", botUsername = "" } = {},
+) {
   let s = String(rawText || "").trim();
   if (!s) return "";
 
@@ -456,6 +459,39 @@ function stripAssistantSlop(rawText, { isObey = false, sender = "" } = {}) {
     /\b(wooden|stone|iron|golden|diamond|netherite|oak|birch|spruce|jungle|acacia|dark_oak|cherry|mangrove|pale_oak|raw|cooked|baked|enchanted|golden|cobbled|deepslate|crafting|blast|water|lava|ender|totem|powder|sweet)_(pickaxe|axe|sword|shovel|hoe|helmet|chestplate|leggings|boots|log|planks|wood|table|furnace|bucket|iron|gold|copper|beef|porkchop|chicken|mutton|salmon|cod|potato|apple|carrot|pearl|eye|chest|snow|berry_bush|of_undying)\b/gi,
     (_, a, b) => `${a.replace(/_/g, " ")} ${b.replace(/_/g, " ")}`,
   );
+
+  // Never let the bot address the speaking player by the bot's own username or name prefix ("cool, Micheal. on it." -> "cool. on it.")
+  if (botUsername && String(botUsername).toLowerCase() !== String(sender || "").toLowerCase()) {
+    const cleanBot = String(botUsername).trim();
+    const camelStem = cleanBot.match(/^[A-Z][a-z]{2,}/)?.[0] || "";
+    const underStem = cleanBot.split(/[_0-9]+/)[0] || "";
+    const selfNames = [
+      ...new Set(
+        [cleanBot, camelStem, underStem].filter((n) => n && n.length >= 3),
+      ),
+    ];
+    for (const selfName of selfNames) {
+      const escSelf = selfName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      // Vocative after comma: "cool, Micheal. on it" or "hey, Micheal!"
+      s = s.replace(
+        new RegExp(`,\\s*@?${escSelf}(?=[.!?,;:\\s]|$)`, "gi"),
+        "",
+      );
+      // Vocative at start: "Micheal, on it"
+      s = s.replace(
+        new RegExp(`^\\s*@?${escSelf}\\s*[,:]\\s*`, "i"),
+        "",
+      );
+      // Vocative after greeting: "hey Micheal" / "yo Micheal"
+      s = s.replace(
+        new RegExp(
+          `\\b(hey|hi|yo|cool|ok|okay|thanks|thx|dobra|spoko|siema|hej)\\s+@?${escSelf}(?=[.!?,;:\\s]|$)`,
+          "gi",
+        ),
+        "$1",
+      );
+    }
+  }
 
   // Convert third-person references to the speaking player into second-person ("heading to ancynamon" -> "heading to you")
   if (sender && sender !== "Player" && sender !== "System") {
@@ -1950,6 +1986,7 @@ class OllamaManager {
     reply = stripAssistantSlop(reply, {
       isObey: this.isObeyedMaster(sender),
       sender,
+      botUsername: botContext?.username || "",
     });
     // A chat reply must never run a server command.
     if (/^[/!.]/.test(reply)) reply = "";

@@ -2356,6 +2356,10 @@ function setAiScriptFlag(scriptName, on) {
   const flag = AI_SCRIPT_FLAGS[scriptName];
   if (!flag || Boolean(ollamaManager.config[flag]) === on) return;
   ollamaManager.saveConfig({ [flag]: on });
+  if (on) {
+    // Automatically enable AI Fixes Errors on GearUp when AI is activated so AI monitors & resolves GearUp issues
+    setOptionValue("aifix", "GearUp", "on").catch(() => {});
+  }
   if (!ollamaManager.isActive()) aiChatQueue.clear();
   ollamaManager
     .getStatus()
@@ -2534,7 +2538,7 @@ function loadScriptsFromDir(fullDirectory, type) {
 
 const AI_SELF_SCRIPTS = new Set(["aiagent", "chatai"]);
 const MODULE_PROBLEM_RE =
-  /\b(error|stuck|fail(?:ed|ing)?|couldn'?t|could not|can'?t|cannot|no path|unable|not found|timed out|gave up|giving up|missing|no target|enter a|is required|are required|out of|no \w+ found|denied)\b/i;
+  /\b(error|stuck|fail(?:ed|ing)?|couldn'?t|could not|can'?t|cannot|no path|unable|not found|timed out|gave up|giving up|missing|no target|enter a|is required|are required|out of|no \w+ found|denied|skipping unreachable|searching for|scanning for|step warning)\b/i;
 const aiFixState = new Map();
 
 // "AI Fixes Errors": when a module logs a problem, the agent looks at the
@@ -2549,11 +2553,21 @@ async function maybeAiFixModule(scriptName, text) {
   const now = Date.now();
   st.tries = st.tries.filter((t) => now - t < 5 * 60 * 1000);
   if (st.busy || now - st.last < 30000 || st.tries.length >= 3) return;
-  if ((await getOption("aifix", scriptName)) !== "on") return;
+  const aifixOpt = await getOption("aifix", scriptName);
+  const autoAssistGearUp =
+    scriptName === "GearUp" &&
+    aifixOpt !== "off" &&
+    Boolean(
+      ollamaManager.config.agentEnabled ||
+        activeScripts.has("AIAgent") ||
+        activeScripts.has("ChatAI"),
+    );
+  if (aifixOpt !== "on" && !autoAssistGearUp) return;
   if (st.busy) return;
   st.busy = true;
   st.last = now;
   st.tries.push(now);
+  aiBrain.recordAction(scriptName, {}, text, true, currentBot);
   const allowed = String(ollamaManager.config.agentAllowedPlayers || "")
     .split(/[,\s]+/)
     .filter(Boolean);
@@ -4020,20 +4034,14 @@ function registerIpcHandlers() {
       } else if (cmd === "gear") {
         await handleInventoryAction({ action: "auto-gear" });
       } else if (cmd === "gearup") {
-        const tierArg = (args[0] || "diamond").toLowerCase();
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          await mainWindow.webContents
-            .executeJavaScript(
-              `(() => {
-                const inp = document.getElementById("tier-GearUp");
-                if (inp) {
-                  inp.value = ${JSON.stringify(tierArg)};
-                  inp.dispatchEvent(new Event("input", { bubbles: true }));
-                }
-              })()`,
-            )
-            .catch(() => {});
-        }
+        const rawTierArg = (args[0] || "diamond").toLowerCase();
+        const tierArg =
+          rawTierArg === "wooden"
+            ? "wood"
+            : rawTierArg === "golden"
+              ? "gold"
+              : rawTierArg;
+        await setOptionValue("tier", "GearUp", tierArg);
         if (!activeScripts.has("GearUp")) {
           const runner = scriptFunctions.get("GearUp");
           if (runner) {
