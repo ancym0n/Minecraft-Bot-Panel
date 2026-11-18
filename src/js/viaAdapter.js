@@ -124,23 +124,6 @@ function attachViaVersionAdapter(bot, { log = null } = {}) {
         }
       }
     });
-
-    // 2. Auto-acknowledge 1.20.5+ / 1.21.4+ / 26.1 configuration & chunk batch packets
-    client.on("packet", (data, meta) => {
-      if (!meta || !meta.name) return;
-      try {
-        if (meta.name === "chunk_batch_finished" && data?.batchSize >= 0) {
-          client.write("chunk_batch_received", { chunksPerTick: 25.0 });
-        } else if (
-          meta.name === "SelectKnownPacks" ||
-          meta.name === "select_known_packs"
-        ) {
-          client.write("select_known_packs", {
-            packs: Array.isArray(data?.packs) ? data.packs : [],
-          });
-        }
-      } catch (_) {}
-    });
   };
 
   if (bot._client) wireClient(bot._client);
