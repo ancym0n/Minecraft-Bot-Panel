@@ -111,10 +111,11 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   }
 
   const { goals } = loadLibraries();
+  const signal = scriptRepeater.signal;
   let busy = false;
 
   async function runChestCycle() {
-    if (!bot || !bot.entity || busy) return;
+    if (signal?.aborted || !bot || !bot.entity || busy) return;
     busy = true;
 
     try {
@@ -123,6 +124,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
         getOption("deposit", info.name),
         getOption("filter", info.name),
       ]);
+      if (signal?.aborted) return;
 
       const doSteal = stealOpt !== "off" || depositOpt === "off";
       const doDeposit = depositOpt === "on";
@@ -157,11 +159,12 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
         log(
           `ChestStealer: Walking to container at (${targetPos.x}, ${targetPos.y}, ${targetPos.z})`,
         );
-        await bot.pathfinder
-          .goto(new goals.GoalNear(targetPos.x, targetPos.y, targetPos.z, 2.5))
-          .catch(() => {});
+        await bot.pathfinder.goto(
+          new goals.GoalNear(targetPos.x, targetPos.y, targetPos.z, 2.5),
+        );
       }
 
+      if (signal?.aborted) return;
       const chestBlock = bot.blockAt(targetPos);
       if (!chestBlock) return;
 
@@ -174,52 +177,48 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
 
       let movedCount = 0;
       try {
+        if (signal?.aborted) return;
         if (doSteal) {
           const containerItems = container.containerItems();
           for (const item of containerItems) {
+            if (signal?.aborted) return;
             if (!bot || !item) continue;
             if (filterTerms.length > 0) {
               if (!matchesFilter(item.name)) continue;
             } else if (!isSupplyItem(item.name)) {
               continue;
             }
-            await container
-              .withdraw(item.type, null, item.count)
-              .then(() => {
-                movedCount += item.count;
-              })
-              .catch(() => {});
+            await container.withdraw(item.type, null, item.count);
+            movedCount += item.count;
           }
         }
 
-        if (doDeposit) {
-          await equipBestArmor(bot, { includeOffhand: true });
+        if (doDeposit && !signal?.aborted) {
+          await equipBestArmor(bot, { includeOffhand: true, signal });
+          if (signal?.aborted) return;
           const keptBest = new Set();
           const invItems = bot.inventory.items();
           for (const item of invItems) {
+            if (signal?.aborted) return;
             if (!bot || !item) continue;
             if (filterTerms.length > 0) {
               if (!matchesFilter(item.name)) continue;
             } else if (isEssentialKeepItem(bot, item, keptBest)) {
               continue;
             }
-            await container
-              .deposit(item.type, null, item.count)
-              .then(() => {
-                movedCount += item.count;
-              })
-              .catch(() => {});
+            await container.deposit(item.type, null, item.count);
+            movedCount += item.count;
           }
         }
       } finally {
-        try {
-          container.close();
-        } catch (_) {}
+        await container.close();
       }
 
+      if (signal?.aborted) return;
       if (doSteal) {
-        await equipBestArmor(bot, { includeOffhand: true });
-        await equipBestWeapon(bot, { saveLowDurability: true });
+        await equipBestArmor(bot, { includeOffhand: true, signal });
+        if (signal?.aborted) return;
+        await equipBestWeapon(bot, { saveLowDurability: true, signal });
       }
 
       clearLog("ChestStealer:");
@@ -227,7 +226,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
         `ChestStealer: Transferred ${movedCount} item(s) (${doSteal ? "withdraw" : ""}${doSteal && doDeposit ? " + " : ""}${doDeposit ? "deposit" : ""})`,
       );
     } catch (err) {
-      log(`ChestStealer: ${err.message || err}`);
+      if (!signal?.aborted) log(`ChestStealer: ${err.message || err}`);
     } finally {
       busy = false;
     }
@@ -235,12 +234,15 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
 
   try {
     await runChestCycle();
+    if (signal?.aborted) return;
     const repeatOpt = await getOption("repeat", info.name);
-    if (repeatOpt === "on") {
+    if (!signal?.aborted && repeatOpt === "on") {
       await scriptRepeater(runChestCycle, info.default.interval);
     }
   } finally {
-    clearPathfinderGoal(bot);
+    if (!scriptRepeater.isCurrent || scriptRepeater.isCurrent()) {
+      clearPathfinderGoal(bot);
+    }
   }
 }
 

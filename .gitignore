@@ -1,6 +1,7 @@
 dist
 out
 tmp
+test
 node_modules
 mineflayer-runtime
 Hidden

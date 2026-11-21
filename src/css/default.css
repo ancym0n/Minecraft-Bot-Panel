@@ -1,55 +1,50 @@
 :root {
-  --bg-dark: #16131f;
-  --panel-bg: #1e1a2b;
-  --card-bg: #252036;
-  --background-color: #9171f8;
-  --dark-main-color: #6b4ce6;
-  --border-color: #6b4ce6;
-  --main-color: #b197fc;
-  --text-color: #b197fc;
-  --light-main-color: #d3c2ff;
-  --highlight-color: #d3c2ff;
-  --title-color: #f2edff;
-  --font-main-color: #9171f8;
-  --font-user-color: #6b4ce6;
-  --button-background-color: rgba(145, 113, 248, 0.16);
-  --accent-dark-bg: #2b2342;
-  --accent-dark-hover: #362c54;
-  --accent-border: #a488ff;
-  --green-color: #7bffd0;
-  --dark-green-color: #4fb383;
-  --red-color: #ff8585;
-  --dark-red-color: #c95353;
-  --spring-ease: cubic-bezier(0.34, 1.22, 0.64, 1);
-}
-
-@keyframes mcbpLoadIn {
-  0% {
-    opacity: 0;
-    filter: blur(8px);
-    transform: translateY(14px) scale(0.97);
-  }
-  100% {
-    opacity: 1;
-    filter: blur(0px);
-    transform: translateY(0) scale(1);
-  }
+  --bg-dark: #15131d;
+  --panel-bg: #201c2b;
+  --card-bg: #292436;
+  --background-color: #7955d0;
+  --dark-main-color: #6142ac;
+  --border-color: #685684;
+  --main-color: #c4b5e3;
+  --text-color: #c4b5e3;
+  --light-main-color: #e0d8f1;
+  --highlight-color: #e0d8f1;
+  --title-color: #f4f1fa;
+  --font-main-color: #a58de3;
+  --font-user-color: #9276d5;
+  --button-background-color: rgba(145, 113, 248, 0.12);
+  --accent-dark-bg: #302943;
+  --accent-dark-hover: #3a3150;
+  --accent-border: #b9a2ed;
+  --green-color: #8de5bd;
+  --dark-green-color: #59ad83;
+  --red-color: #f5a0a4;
+  --dark-red-color: #bd646e;
+  --scrollbar-size: 6px;
+  --spring-ease: cubic-bezier(0.2, 0, 0.2, 1);
 }
 
 * {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
-  font-family: "Nunito", "Poppins", sans-serif;
-  -webkit-user-select: none;
-  -moz-user-select: none;
-  user-select: none;
+  font-family: inherit;
   scroll-behavior: smooth;
 }
 
+button {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 2px;
+}
+
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
 }
 
 ::-webkit-scrollbar-track {
@@ -81,6 +76,10 @@ body {
   justify-content: space-between;
   align-items: center;
   gap: 0.75rem;
+  font-family: "Nunito", "Segoe UI", sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.45;
   padding: clamp(0.75rem, 2vh, 1.25rem) clamp(0.9rem, 2.8vw, 1.5rem)
     clamp(0.6rem, 1.6vh, 0.95rem);
 }
@@ -90,7 +89,7 @@ h2,
 h3,
 a,
 button {
-  font-weight: 800;
+  font-weight: 700;
   color: var(--title-color);
 }
 
@@ -98,7 +97,7 @@ p,
 label,
 span,
 input {
-  font-weight: 700;
+  font-weight: inherit;
   color: var(--title-color);
 }
 
@@ -111,37 +110,31 @@ input {
   min-width: 0;
   background-color: var(--bg-dark);
   color: var(--title-color);
-  border: 2px solid var(--dark-main-color);
-  border-radius: 12px;
-  box-shadow: 0 0.28rem 0 0 var(--dark-main-color);
+  border: 1px solid var(--border-color);
+  border-radius: 9px;
   padding: 0.52rem 0.8rem;
-  font-size: 0.92rem;
-  font-weight: 800;
+  font-size: max(14px, 0.92rem);
+  font-weight: 600;
   outline: none;
   caret-color: var(--accent-border);
   -webkit-user-select: text;
   -moz-user-select: text;
   user-select: text;
   transition:
-    border-color 0.25s ease,
-    background-color 0.25s ease,
-    box-shadow 0.25s var(--spring-ease),
-    color 0.25s ease;
+    border-color 0.16s ease,
+    background-color 0.16s ease,
+    color 0.16s ease;
 }
 
 input::placeholder {
-  color: rgba(177, 151, 252, 0.45);
-  font-weight: 700;
+  color: color-mix(in srgb, var(--main-color) 75%, var(--bg-dark));
+  opacity: 1;
+  font-weight: 500;
 }
 
 input:hover,
 input:focus {
-  background-color: var(--accent-dark-bg);
   border-color: var(--accent-border);
-  color: #ffffff;
-  box-shadow:
-    0 0.28rem 0 0 var(--dark-main-color),
-    0 0 12px 1px rgba(145, 113, 248, 0.42);
 }
 
 .mButton {
@@ -150,67 +143,53 @@ input:focus {
   align-items: center;
   justify-content: center;
   padding: 0.6rem 1.2rem;
-  font-size: 0.98rem;
-  font-weight: 800;
+  font-size: max(14px, 0.95rem);
+  font-weight: 700;
   letter-spacing: 0.01em;
   text-align: center;
-  color: var(--title-color);
+  color: #ffffff;
   background-color: var(--background-color);
-  border: 2px solid var(--dark-main-color);
-  border-radius: 14px;
-  box-shadow: 0 0.38rem 0 0 var(--dark-main-color);
+  border: 1px solid var(--background-color);
+  border-radius: 9px;
   transition:
-    transform 0.3s var(--spring-ease),
-    box-shadow 0.3s var(--spring-ease),
-    background-color 0.3s ease,
-    border-color 0.3s ease,
-    color 0.3s ease;
+    transform 0.16s var(--spring-ease),
+    background-color 0.16s ease,
+    border-color 0.16s ease,
+    color 0.16s ease;
 }
 
 .mButton:hover {
-  background-color: #a084ff;
+  background-color: var(--dark-main-color);
+  border-color: var(--dark-main-color);
   color: #ffffff;
-  transform: translateY(-2px);
-  box-shadow: 0 calc(0.38rem + 2px) 0 0 var(--dark-main-color);
+  transform: translateY(-1px);
 }
 
 .mButton:active,
 .mButton.transform-scale {
-  transform: translateY(2px) !important;
-  box-shadow: 0 0.16rem 0 0 var(--dark-main-color) !important;
+  transform: translateY(0) !important;
 }
 
 .mButton.secondary {
   background-color: var(--accent-dark-bg);
-  border-color: var(--accent-border);
-  box-shadow:
-    0 0.38rem 0 0 var(--dark-main-color),
-    0 0 10px 1px rgba(145, 113, 248, 0.3);
+  border-color: var(--border-color);
+  color: var(--title-color);
 }
 
 .mButton.secondary:hover {
   background-color: var(--accent-dark-hover);
-  box-shadow:
-    0 calc(0.38rem + 2px) 0 0 var(--dark-main-color),
-    0 0 14px 2px rgba(145, 113, 248, 0.48);
+  border-color: var(--accent-border);
 }
 
 .mButton.danger {
   background-color: var(--red-color);
   border-color: var(--dark-red-color);
-  box-shadow: 0 0.38rem 0 0 var(--dark-red-color);
   color: #4a1515;
 }
 
 .mButton.danger:hover {
   background-color: #ff9999;
   color: #360d0d;
-  box-shadow: 0 calc(0.38rem + 2px) 0 0 var(--dark-red-color);
-}
-
-.mButton.danger:active,
-.mButton.danger.transform-scale {
-  box-shadow: 0 0.16rem 0 0 var(--dark-red-color) !important;
 }
 
 #credit {
@@ -220,16 +199,13 @@ input:focus {
   justify-content: center;
   gap: 0.42rem;
   font-size: 0.8rem;
-  font-weight: 800;
+  font-weight: 600;
   color: var(--dark-main-color);
-  opacity: 0;
-  animation: mcbpLoadIn 0.45s var(--spring-ease) 0.18s forwards;
 }
 
 #credit span {
   color: var(--main-color);
-  font-weight: 800;
-  opacity: 0.85;
+  font-weight: 600;
 }
 
 #credit a {
@@ -239,7 +215,7 @@ input:focus {
   text-decoration: none;
   color: var(--light-main-color);
   font-size: inherit;
-  font-weight: 800;
+  font-weight: 700;
   transition:
     color 0.25s ease,
     opacity 0.25s ease;
@@ -258,7 +234,6 @@ input:focus {
 
 #credit a.report-link {
   color: var(--main-color);
-  opacity: 0.85;
 }
 
 #credit a:hover,
@@ -282,14 +257,13 @@ input:focus {
   gap: 0.6rem;
   max-width: calc(100vw - 2rem);
   padding: 0.55rem 0.7rem 0.55rem 1rem;
-  border: 2px solid var(--accent-border);
-  border-radius: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
   background: var(--accent-dark-bg);
-  box-shadow: 0 0.3rem 0 0 var(--dark-main-color);
-  font-size: 0.85rem;
-  font-weight: 800;
+  box-shadow: 0 12px 28px -16px rgba(0, 0, 0, 0.8);
+  font-size: max(14px, 0.85rem);
+  font-weight: 700;
   color: var(--title-color);
-  animation: mcbpLoadIn 0.45s var(--spring-ease) both;
 }
 
 #update-toast[hidden] {
@@ -299,16 +273,15 @@ input:focus {
 #update-toast button {
   padding: 0.32rem 0.8rem;
   border: 0;
-  border-radius: 10px;
+  border-radius: 7px;
   background: var(--background-color);
-  box-shadow: 0 0.22rem 0 0 var(--dark-main-color);
-  color: var(--title-color);
-  font-size: 0.8rem;
-  font-weight: 800;
+  color: #ffffff;
+  font-size: max(14px, 0.8rem);
+  font-weight: 700;
   cursor: pointer;
   transition:
     transform 0.2s var(--spring-ease),
-    box-shadow 0.2s var(--spring-ease);
+    background-color 0.2s ease;
 }
 
 #update-toast button.ghost {
@@ -322,8 +295,7 @@ input:focus {
 }
 
 #update-toast button:active:not(:disabled) {
-  transform: translateY(2px);
-  box-shadow: 0 0.08rem 0 0 var(--dark-main-color);
+  transform: translateY(0);
 }
 
 #update-toast button:disabled {

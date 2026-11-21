@@ -289,9 +289,15 @@ function getWeaponScore(item, preferAxe = false) {
 
 async function equipBestWeapon(
   bot,
-  { preferAxe = false, saveLowDurability = true } = {},
+  { preferAxe = false, saveLowDurability = true, signal } = {},
 ) {
-  if (!bot || !bot.inventory || isBotEating(bot) || isBotDigging(bot)) {
+  if (
+    signal?.aborted ||
+    !bot ||
+    !bot.inventory ||
+    isBotEating(bot) ||
+    isBotDigging(bot)
+  ) {
     return null;
   }
   const items = bot.inventory.items();
@@ -427,6 +433,13 @@ async function equipBestToolForBlock(
     return !(saveLowDurability && isLowDurability(it, 4));
   });
 
+  const isRealHarvestTool = (it) =>
+    Boolean(
+      it &&
+      it.name &&
+      /_(pickaxe|axe|shovel|hoe|sword)$|^shears$/.test(it.name),
+    );
+
   if (bot.pathfinder && typeof bot.pathfinder.bestHarvestTool === "function") {
     try {
       const nativeBest = bot.pathfinder.bestHarvestTool(block);
@@ -434,10 +447,22 @@ async function equipBestToolForBlock(
         nativeBest &&
         !(saveLowDurability && isLowDurability(nativeBest, 4))
       ) {
-        if (!bot.heldItem || bot.heldItem.slot !== nativeBest.slot) {
-          await bot.equip(nativeBest, "hand");
+        if (isRealHarvestTool(nativeBest)) {
+          if (!bot.heldItem || bot.heldItem.slot !== nativeBest.slot) {
+            await bot.equip(nativeBest, "hand");
+          }
+          return nativeBest;
         }
-        return nativeBest;
+        // Only swap to a non-tool item if we are currently holding a durability-bearing tool
+        // so we don't waste tool durability on dirt/grass, and return null so AutoTool doesn't log "Equipped cobblestone for dirt".
+        if (
+          bot.heldItem &&
+          bot.heldItem.maxDurability > 0 &&
+          bot.heldItem.slot !== nativeBest.slot
+        ) {
+          await bot.equip(nativeBest, "hand").catch(() => {});
+        }
+        return null;
       }
     } catch (_) {}
   }
@@ -469,12 +494,13 @@ async function equipBestToolForBlock(
   return bestTool;
 }
 
-async function equipBestArmor(bot, { includeOffhand = true } = {}) {
-  if (!bot || !bot.inventory) return [];
+async function equipBestArmor(bot, { includeOffhand = true, signal } = {}) {
+  if (signal?.aborted || !bot || !bot.inventory) return [];
   const equippedNames = [];
   const items = bot.inventory.items();
 
   for (const piece of ARMOR_SLOTS) {
+    if (signal?.aborted) return equippedNames;
     const current = bot.inventory.slots[piece.slotIndex];
     const currentRank = current ? piece.ranks.indexOf(current.name) : 999;
     const effectiveCurrent = currentRank === -1 ? 999 : currentRank;
@@ -499,7 +525,7 @@ async function equipBestArmor(bot, { includeOffhand = true } = {}) {
     }
   }
 
-  if (includeOffhand) {
+  if (includeOffhand && !signal?.aborted) {
     const offhandSlot = bot.inventory.slots[45];
     if (
       !offhandSlot ||
@@ -573,8 +599,9 @@ function findBestFood(bot, { emergencyHeal = false } = {}) {
  * not swap weapons mid-eat. Also works around Mineflayer's heldItemChanged
  * premature resolve bug by waiting for entityStatus 9 or actual consumption.
  */
-async function consumeFoodSafely(bot, foodItem) {
-  if (!bot || !bot.entity || !bot.inventory || !foodItem) return false;
+async function consumeFoodSafely(bot, foodItem, { signal } = {}) {
+  if (signal?.aborted || !bot || !bot.entity || !bot.inventory || !foodItem)
+    return false;
   if (isBotEating(bot) && bot._mcbpEatPromise) {
     return bot._mcbpEatPromise;
   }
@@ -592,7 +619,7 @@ async function consumeFoodSafely(bot, foodItem) {
         await new Promise((r) => setTimeout(r, 60));
       }
 
-      if (!bot || !bot.entity) return false;
+      if (signal?.aborted || !bot || !bot.entity) return false;
       const held = bot.heldItem || foodItem;
       const startCount = held.count || 1;
       const startFood = bot.food ?? 20;
@@ -607,6 +634,7 @@ async function consumeFoodSafely(bot, foodItem) {
           finished = true;
           if (timer) clearTimeout(timer);
           if (pollTimer) clearInterval(pollTimer);
+          signal?.removeEventListener("abort", done);
           if (
             bot?._client &&
             typeof bot._client.removeListener === "function"
@@ -629,6 +657,11 @@ async function consumeFoodSafely(bot, foodItem) {
         if (bot._client && typeof bot._client.on === "function") {
           bot._client.on("entity_status", onStatus);
         }
+        signal?.addEventListener("abort", done, { once: true });
+        if (signal?.aborted) {
+          done();
+          return;
+        }
 
         try {
           if (typeof bot.activateItem === "function") {
@@ -644,6 +677,7 @@ async function consumeFoodSafely(bot, foodItem) {
           return;
         }
 
+        if (finished) return;
         pollTimer = setInterval(() => {
           if (!bot || !bot.entity) {
             done();
@@ -671,7 +705,7 @@ async function consumeFoodSafely(bot, foodItem) {
           bot.deactivateItem();
         }
       } catch (_) {}
-      return true;
+      return !signal?.aborted;
     } catch (_) {
       return false;
     } finally {
@@ -693,9 +727,9 @@ async function consumeFoodSafely(bot, foodItem) {
  */
 async function tryCombatEat(
   bot,
-  { minHp = 13, minFood = 16, onLog = null } = {},
+  { minHp = 13, minFood = 16, onLog = null, signal } = {},
 ) {
-  if (!bot || !bot.entity || !bot.inventory) return false;
+  if (signal?.aborted || !bot || !bot.entity || !bot.inventory) return false;
   if (isBotEating(bot)) {
     if (bot._mcbpEatPromise) await bot._mcbpEatPromise;
     return true;
@@ -718,7 +752,7 @@ async function tryCombatEat(
   if (typeof onLog === "function") {
     onLog(bestFood, hp, food);
   }
-  await consumeFoodSafely(bot, bestFood);
+  await consumeFoodSafely(bot, bestFood, { signal });
   return true;
 }
 
@@ -733,14 +767,43 @@ async function tryCombatEat(
 async function performPvpAttack(
   bot,
   target,
-  { useCrits = true, maxRange = 4.3 } = {},
+  { useCrits = true, maxRange = 4.3, allowNpc = false, signal } = {},
 ) {
-  if (!bot || !bot.entity || !target || !target.position || isBotEating(bot)) {
+  if (
+    signal?.aborted ||
+    !bot ||
+    !bot.entity ||
+    !target ||
+    !target.position ||
+    isBotEating(bot)
+  ) {
+    return false;
+  }
+
+  // Never attack Anti-Cheat FakePlayers or Lobby NPCs during PvP/combat
+  if (
+    !allowNpc &&
+    target.type === "player" &&
+    isLikelyNpcOrFakePlayer(bot, target)
+  ) {
     return false;
   }
 
   const dist = bot.entity.position.distanceTo(target.position);
   if (dist > maxRange) return false;
+
+  // Respect server no-PvP zone notifications so we never spam illegal PvP packets
+  const isPlayerTarget =
+    target.type === "player" || Boolean(target.username && !isHostile(target));
+  if (
+    isPlayerTarget &&
+    bot._mcbpNoPvpUntil &&
+    Date.now() < bot._mcbpNoPvpUntil &&
+    (!bot._mcbpNoPvpPos ||
+      bot.entity.position.distanceTo(bot._mcbpNoPvpPos) <= 14)
+  ) {
+    return false;
+  }
 
   const cooldownMs = getWeaponCooldownMs(bot, bot.heldItem);
   const lastAttack = bot._mcbpLastAttackTime || 0;
@@ -773,7 +836,13 @@ async function performPvpAttack(
     const startWait = Date.now();
     while (Date.now() - startWait < 310) {
       await new Promise((r) => setTimeout(r, 35));
-      if (!bot || !bot.entity || isBotEating(bot) || !target.position) {
+      if (
+        signal?.aborted ||
+        !bot ||
+        !bot.entity ||
+        isBotEating(bot) ||
+        !target.position
+      ) {
         if (bot) bot._mcbpCritJumping = false;
         return false;
       }
@@ -791,13 +860,21 @@ async function performPvpAttack(
       const startWait = Date.now();
       while (Date.now() - startWait < 170) {
         await new Promise((r) => setTimeout(r, 35));
-        if (!bot || !bot.entity || isBotEating(bot)) return false;
+        if (signal?.aborted || !bot || !bot.entity || isBotEating(bot))
+          return false;
         if ((bot.entity.velocity?.y ?? 0) < -0.015) break;
       }
     }
   }
 
-  if (!bot || !bot.entity || !target || !target.position || isBotEating(bot)) {
+  if (
+    signal?.aborted ||
+    !bot ||
+    !bot.entity ||
+    !target ||
+    !target.position ||
+    isBotEating(bot)
+  ) {
     return false;
   }
   if (Date.now() - (bot._mcbpLastAttackTime || 0) < cooldownMs) {
@@ -811,6 +888,7 @@ async function performPvpAttack(
   const savedPitch = bot.entity.pitch;
   const aimPos = target.position.offset(0, (target.height || 1.62) * 0.82, 0);
   await humanLookAt(bot, aimPos, true);
+  if (signal?.aborted) return false;
 
   const isFalling =
     !bot.entity.onGround && (bot.entity.velocity?.y ?? 0) < -0.01;
@@ -832,7 +910,7 @@ async function performPvpAttack(
 
   if (useCrits && isFalling && wasSprinting) {
     setTimeout(() => {
-      if (bot && bot.entity && !isBotEating(bot)) {
+      if (!signal?.aborted && bot && bot.entity && !isBotEating(bot)) {
         bot.setControlState("sprint", true);
       }
     }, 55);
@@ -870,9 +948,16 @@ function getVisibleDigFace(bot, block) {
 async function smartDig(
   bot,
   block,
-  { autoTool = true, saveLowDurability = true } = {},
+  { autoTool = true, saveLowDurability = true, signal, canDigTarget } = {},
 ) {
-  if (!bot || !bot.entity || !block || !block.position || isBotEating(bot)) {
+  if (
+    signal?.aborted ||
+    !bot ||
+    !bot.entity ||
+    !block ||
+    !block.position ||
+    isBotEating(bot)
+  ) {
     return false;
   }
 
@@ -883,6 +968,21 @@ async function smartDig(
     targetToDig.name === "cave_air" ||
     targetToDig.name === "void_air" ||
     targetToDig.diggable === false
+  ) {
+    return false;
+  }
+
+  // Respect server block-break protection so we never spam illegal dig packets
+  if (!bot._mcbpProtectedBlocks) bot._mcbpProtectedBlocks = new Set();
+  const blockKey = `${targetToDig.position.x},${targetToDig.position.y},${targetToDig.position.z}`;
+  if (bot._mcbpProtectedBlocks.has(blockKey)) {
+    return false;
+  }
+  if (
+    bot._mcbpProtectedZoneUntil &&
+    Date.now() < bot._mcbpProtectedZoneUntil &&
+    bot._mcbpProtectedZonePos &&
+    targetToDig.position.distanceTo(bot._mcbpProtectedZonePos) <= 14
   ) {
     return false;
   }
@@ -910,8 +1010,17 @@ async function smartDig(
               hit.position.z !== targetToDig.position.z)
           ) {
             const blocker = bot.blockAt(hit.position);
+            const botFloorX = Math.floor(bot.entity.position.x);
+            const botFloorY = Math.floor(bot.entity.position.y);
+            const botFloorZ = Math.floor(bot.entity.position.z);
+            const isUnderOwnFeet =
+              blocker &&
+              blocker.position.x === botFloorX &&
+              blocker.position.z === botFloorZ &&
+              blocker.position.y < botFloorY;
             if (
               blocker &&
+              !isUnderOwnFeet &&
               blocker.diggable !== false &&
               blocker.name !== "air" &&
               blocker.name !== "bedrock"
@@ -924,6 +1033,7 @@ async function smartDig(
     } catch (_) {}
   }
 
+  if (canDigTarget && !canDigTarget(targetToDig)) return false;
   if (autoTool) {
     const prevSlot = bot.heldItem?.slot;
     await equipBestToolForBlock(bot, targetToDig, { saveLowDurability });
@@ -932,9 +1042,44 @@ async function smartDig(
     }
   }
 
-  if (!bot || !bot.entity) return false;
+  if (signal?.aborted || !bot || !bot.entity) return false;
+  const digStartedAt = Date.now();
   const digFace = getVisibleDigFace(bot, targetToDig);
-  await bot.dig(targetToDig, true, digFace);
+  if (signal) {
+    await bot.lookAt(
+      targetToDig.position.offset(
+        0.5 + digFace.x * 0.5,
+        0.5 + digFace.y * 0.5,
+        0.5 + digFace.z * 0.5,
+      ),
+      true,
+    );
+    if (signal.aborted) return false;
+    const current = bot.blockAt(targetToDig.position);
+    if (!current || current.type !== targetToDig.type) return false;
+    if (canDigTarget && !canDigTarget(current)) return false;
+  }
+  const stopOwnDig = () => {
+    if (bot.targetDigBlock === targetToDig) {
+      bot.stopDigging?.();
+    }
+  };
+  signal?.addEventListener("abort", stopOwnDig, { once: true });
+  try {
+    await bot.dig(targetToDig, signal ? "ignore" : true, digFace);
+  } catch (err) {
+    if (signal?.aborted) return false;
+    throw err;
+  } finally {
+    signal?.removeEventListener("abort", stopOwnDig);
+  }
+  if (signal?.aborted) return false;
+  if (bot._mcbpDenied && bot._mcbpDenied.at >= digStartedAt - 100) {
+    bot._mcbpProtectedBlocks.add(blockKey);
+    bot._mcbpProtectedZoneUntil = Date.now() + 30000;
+    bot._mcbpProtectedZonePos = targetToDig.position.clone();
+    return false;
+  }
   return true;
 }
 
@@ -1014,20 +1159,59 @@ function clearPathfinderGoal(bot) {
 }
 
 /**
- * Configures Mineflayer pathfinder Movements with Baritone-like options.
+ * Configures Baritone / Mineflayer pathfinder Movements with full safety & tick-cost rules.
  */
 function configureSmartMovements(bot, mcData, Movements, options = {}) {
-  if (!bot || !bot.pathfinder || !Movements) return null;
+  if (!bot || !bot.pathfinder) return null;
   try {
+    const { BaritoneMovements } = require("./baritone");
+    const MovementCtor = BaritoneMovements || Movements;
+    if (!MovementCtor) return null;
     const dataForVer =
       typeof mcData === "function" ? mcData(bot.version) : null;
-    const movement = new Movements(bot, dataForVer);
+    const movement = new MovementCtor(bot, dataForVer);
     movement.allowSprinting = options.allowSprinting !== false;
     movement.allowParkour = options.allowParkour !== false;
+    movement.allowParkourAscend = options.allowParkourAscend !== false;
     movement.canDig = Boolean(options.canDig);
     movement.allow1by1towers = Boolean(options.allowPillaring);
+    movement.canOpenDoors = options.canOpenDoors !== false;
+    movement.avoidAdjacentHazards = options.avoidAdjacentHazards !== false;
+    movement.protectValuableBlocks = options.protectValuableBlocks !== false;
     movement.maxDropDown =
       typeof options.maxDropDown === "number" ? options.maxDropDown : 4;
+
+    if (bot.pathfinder.backtrackMemory && movement.context) {
+      movement.context.backtrackMemory = bot.pathfinder.backtrackMemory;
+    }
+
+    const blocksByName =
+      dataForVer?.blocksByName || bot.registry?.blocksByName || {};
+    if (
+      movement.blocksToAvoid &&
+      typeof movement.blocksToAvoid.add === "function"
+    ) {
+      for (const haz of [
+        "powder_snow",
+        "magma_block",
+        "soul_fire",
+        "wither_rose",
+        "campfire",
+        "soul_campfire",
+        "cobweb",
+        "sweet_berry_bush",
+        "cactus",
+        "lava",
+        "fire",
+        "pointed_dripstone",
+        "big_dripleaf",
+      ]) {
+        const b = blocksByName[haz];
+        if (b && typeof b.id === "number") {
+          movement.blocksToAvoid.add(b.id);
+        }
+      }
+    }
 
     if (options.allowBridging || options.allowPillaring) {
       const scaffoldNames = [
@@ -1037,6 +1221,12 @@ function configureSmartMovements(bot, mcData, Movements, options = {}) {
         "oak_planks",
         "spruce_planks",
         "birch_planks",
+        "jungle_planks",
+        "acacia_planks",
+        "dark_oak_planks",
+        "cherry_planks",
+        "mangrove_planks",
+        "pale_oak_planks",
         "stone",
         "netherrack",
         "andesite",
@@ -1053,6 +1243,8 @@ function configureSmartMovements(bot, mcData, Movements, options = {}) {
       if (scaffoldIds.length > 0) {
         movement.scafoldingBlocks = scaffoldIds;
       }
+    } else {
+      movement.scafoldingBlocks = [];
     }
 
     bot.pathfinder.setMovements(movement);
@@ -1375,11 +1567,298 @@ function scanNearbySigns(bot, { maxDistance = 24, maxCount = 16 } = {}) {
  * 5. Sprint-jumps along clear, flat straightaways and steps over 1-block ledges,
  *    plus un-sticks the bot if it freezes ~0.1 blocks above ground.
  */
+function attachCraftingFix(bot) {
+  if (!bot || !bot._client || bot._mcbpCraftingFixAttached) return;
+  if (typeof bot._client.write !== "function") return;
+  bot._mcbpCraftingFixAttached = true;
+
+  // 1. Fix missing `entityActionUsesStringMapper` feature in minecraft-data 1.21.6+ / 26.1
+  //    Without this, mineflayer sends actionId=3 ("start_riding_jump") instead of "start_sprinting" (1),
+  //    causing the server to think the bot is walking while client physics sprints -> 20x/sec server rubberbands!
+  if (
+    typeof bot.supportFeature === "function" &&
+    !bot._mcbpSupportFeaturePatched
+  ) {
+    bot._mcbpSupportFeaturePatched = true;
+    const origSupportFeature = bot.supportFeature.bind(bot);
+    bot.supportFeature = (feature) => {
+      if (feature === "entityActionUsesStringMapper") {
+        return !origSupportFeature("sneakUsesEntityAction");
+      }
+      return origSupportFeature(feature);
+    };
+  }
+
+  // 2. Add safe 120ms (2.5 tick) buffer to bot.digTime so finishDigging never fires
+  //    before the server finishes breaking the block (which created client-side ghost air!).
+  if (typeof bot.digTime === "function" && !bot._mcbpDigTimePatched) {
+    bot._mcbpDigTimePatched = true;
+    const origDigTime = bot.digTime.bind(bot);
+    bot.digTime = (block) => {
+      const base = origDigTime(block);
+      if (!Number.isFinite(base) || base <= 0) return base;
+      return base + 120;
+    };
+  }
+
+  const LEGACY_ACTION_MAP = {
+    2: "stop_sleeping",
+    3: "start_sprinting",
+    4: "stop_sprinting",
+    8: "start_fall_flying",
+  };
+
+  const origWrite = bot._client.write.bind(bot._client);
+  bot._client.write = function patchedWrite(name, params) {
+    // Translate legacy numeric entity_action IDs to 1.21.6+/26.1 string mapper names
+    if (
+      name === "entity_action" &&
+      params &&
+      typeof params.actionId === "number" &&
+      bot.supportFeature?.("entityActionUsesStringMapper")
+    ) {
+      const mapped = LEGACY_ACTION_MAP[params.actionId];
+      if (mapped) {
+        params = { ...params, actionId: mapped };
+      } else if (params.actionId === 0 || params.actionId === 1) {
+        return origWrite("player_input", {
+          inputs: {
+            forward: Boolean(bot.controlState?.forward),
+            backward: Boolean(bot.controlState?.back),
+            left: Boolean(bot.controlState?.left),
+            right: Boolean(bot.controlState?.right),
+            jump: Boolean(bot.controlState?.jump),
+            shift: params.actionId === 0,
+            sprint: Boolean(bot.controlState?.sprint),
+          },
+        });
+      }
+    }
+    // Preserve full movement bitmask when mineflayer sends player_input for sneak
+    if (
+      name === "player_input" &&
+      params &&
+      params.inputs &&
+      bot.controlState
+    ) {
+      params = {
+        ...params,
+        inputs: {
+          forward: Boolean(bot.controlState.forward),
+          backward: Boolean(bot.controlState.back),
+          left: Boolean(bot.controlState.left),
+          right: Boolean(bot.controlState.right),
+          jump: Boolean(bot.controlState.jump),
+          shift: Boolean(bot.controlState.sneak),
+          sprint: Boolean(bot.controlState.sprint),
+          ...params.inputs,
+        },
+      };
+    }
+
+    const res = origWrite(name, params);
+    if (name === "window_click" && params && typeof params === "object") {
+      const win =
+        params.windowId === 0
+          ? bot.inventory
+          : bot.currentWindow && bot.currentWindow.id === params.windowId
+            ? bot.currentWindow
+            : null;
+      const slot = params.slot;
+      const isCraftSlot =
+        win &&
+        ((win.type === "minecraft:inventory" && slot >= 0 && slot <= 4) ||
+          (win.type === "minecraft:crafting" && slot >= 0 && slot <= 9));
+
+      if (isCraftSlot && typeof win.rawListeners === "function") {
+        setImmediate(() => {
+          const list = win.rawListeners("updateSlot:0");
+          const waiter = list[list.length - 1];
+          if (!waiter) return;
+          const timer = setTimeout(() => {
+            try {
+              if (win.rawListeners("updateSlot:0").includes(waiter)) {
+                win.emit("updateSlot:0", win.slots[0], win.slots[0]);
+              }
+            } catch (_) {}
+          }, 120);
+          if (typeof timer.unref === "function") timer.unref();
+        });
+      } else if (
+        slot === -999 &&
+        params.mode === 5 &&
+        params.stateId === -1 &&
+        typeof bot.rawListeners === "function"
+      ) {
+        const evt = `setWindowItems:${params.windowId}`;
+        const list = bot.rawListeners(evt);
+        const waiter = list[list.length - 1];
+        if (waiter) {
+          const timer = setTimeout(() => {
+            try {
+              if (bot.rawListeners(evt).includes(waiter)) {
+                bot.emit(evt);
+              }
+            } catch (_) {}
+          }, 250);
+          if (typeof timer.unref === "function") timer.unref();
+        }
+      }
+    }
+    return res;
+  };
+}
+
+async function cleanCraftingGrid(bot) {
+  if (!bot || !bot.inventory) return;
+  attachCraftingFix(bot);
+  const inv = bot.inventory;
+  try {
+    if (inv.selectedItem) {
+      await bot
+        .putSelectedItemRange(inv.inventoryStart, inv.inventoryEnd, inv, null)
+        .catch(() => {});
+      if (inv.selectedItem) {
+        await bot.clickWindow(-999, 0, 0).catch(() => {});
+      }
+    }
+    for (let s = 1; s <= 4; s++) {
+      if (inv.slots[s]) {
+        await bot.putAway(s).catch(() => {});
+      }
+    }
+  } catch (_) {}
+}
+
+/**
+ * Sends a fresh `chat_session_update` (and `player_loaded` on 1.21.4+/26.1) to the current
+ * backend server and clears stale seen-message signatures from any previous BungeeCord/Velocity server.
+ */
+function refreshChatSession(bot, { log } = {}) {
+  if (!bot || !bot._client) return false;
+  try {
+    const client = bot._client;
+    if (client._lastSeenMessages) {
+      client._lastSeenMessages.pending = 0;
+      if (typeof client._lastSeenMessages.offset === "number") {
+        client._lastSeenMessages.offset = 0;
+      }
+      for (let i = 0; i < client._lastSeenMessages.length; i++) {
+        client._lastSeenMessages[i] = null;
+      }
+    }
+    if (bot.supportFeature?.("sendsPlayerLoadedPacket")) {
+      try {
+        client.write("player_loaded", {});
+      } catch (_) {}
+    }
+    if (bot.supportFeature?.("useChatSessions") && client.profileKeys) {
+      const crypto = require("crypto");
+      client._session = {
+        index: 0,
+        uuid: crypto.randomUUID(),
+      };
+      client.write("chat_session_update", {
+        sessionUUID: client._session.uuid,
+        expireTime: BigInt(client.profileKeys.expiresOn.getTime()),
+        publicKey: client.profileKeys.public.export({
+          type: "spki",
+          format: "der",
+        }),
+        signature: client.profileKeys.signatureV2,
+      });
+      if (log) {
+        log("Sub-server switch: Refreshed secure chat session key");
+      }
+      return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
+/**
+ * Fixes BungeeCord / Velocity sub-server transfers (e.g. Hub -> Survival on 1.19.3+ / 26.1)
+ * where `minecraft-protocol` only registered `client.once('login')` and therefore fails to
+ * send `chat_session_update` to the new backend server ("Chat disabled due to missing profile public key").
+ */
+function attachSubServerChatFix(bot, { log } = {}) {
+  if (!bot || !bot._client || bot._mcbpSubServerChatFixAttached) return;
+  if (typeof bot._client.on !== "function") return;
+  bot._mcbpSubServerChatFixAttached = true;
+
+  // If attached after initial login already happened (e.g. inside once("spawn")),
+  // then the very next `login` packet IS a sub-server transfer!
+  let seenInitialLogin = Boolean(bot.entity || bot._client._session);
+  bot._client.on("login", (packet) => {
+    if (!seenInitialLogin) {
+      seenInitialLogin = true;
+      return;
+    }
+    try {
+      const client = bot._client;
+      if (packet && packet.enforcesSecureChat !== undefined) {
+        if (!client.serverFeatures) client.serverFeatures = {};
+        client.serverFeatures.enforcesSecureChat = packet.enforcesSecureChat;
+      }
+      refreshChatSession(bot, { log });
+      // Also send a delayed refresh 250ms later in case the backend server initializes chat session after spawn
+      setTimeout(() => {
+        if (bot && bot._client === client) {
+          refreshChatSession(bot);
+        }
+      }, 250);
+    } catch (_) {}
+  });
+}
+
+/**
+ * Locks bot control states across multiple physics ticks, running AFTER
+ * `mineflayer-pathfinder`'s `monitorMovement()` on every `physicTick` so
+ * pathfinder cannot cancel `jump`, `forward`, `back`, `left`, or `right` after 1 tick.
+ */
+function setBotControlOverride(
+  bot,
+  {
+    durationMs = 550,
+    controls = {},
+    yaw = null,
+    pitch = null,
+    clearFirst = true,
+  } = {},
+) {
+  if (!bot) return;
+  bot._mcbpControlOverride = {
+    until: Date.now() + durationMs,
+    controls: { ...controls },
+    yaw: typeof yaw === "number" ? yaw : null,
+    pitch: typeof pitch === "number" ? pitch : null,
+    clearFirst: clearFirst !== false,
+  };
+  if (bot.entity && typeof bot.setControlState === "function") {
+    if (clearFirst !== false && typeof bot.clearControlStates === "function") {
+      bot.clearControlStates();
+    }
+    for (const [k, v] of Object.entries(controls)) {
+      bot.setControlState(k, Boolean(v));
+    }
+    if (controls.jump) {
+      bot.jumpTicks = 0;
+      bot.jumpQueued = true;
+    }
+    if (typeof yaw === "number") bot.entity.yaw = yaw;
+    if (typeof pitch === "number") bot.entity.pitch = pitch;
+  }
+}
+
 function attachSmartMovement(bot, manualControls = {}) {
   if (!bot || typeof bot.on !== "function" || bot._mcbpSmartMovementAttached) {
     return;
   }
   bot._mcbpSmartMovementAttached = true;
+  attachCraftingFix(bot);
+  attachSubServerChatFix(bot);
+  if (!bot._mcbpLastSeenPlayers) bot._mcbpLastSeenPlayers = new Map();
+  if (!bot._mcbpForcedMoveTimes) bot._mcbpForcedMoveTimes = [];
 
   let wasInLiquid = false;
   let autoJumpTicks = 0;
@@ -1389,6 +1868,66 @@ function attachSmartMovement(bot, manualControls = {}) {
   let unstuckDir = "left";
   let lastPos = null;
   let jumpCooldown = 0;
+
+  // Track server position setbacks / rubberbands (anti-cheat or ghost blocks)
+  bot.on("forcedMove", () => {
+    if (!bot || !bot.entity) return;
+    const now = Date.now();
+    bot._mcbpLastForcedMoveAt = now;
+    bot._mcbpLastForcedMovePos = bot.entity.position?.clone() || null;
+    // Mineflayer's physics.js unconditionally sets `bot.entity.onGround = false` on every
+    // clientbound `position` packet even when standing on solid ground. Restore `onGround = true`
+    // if there is a solid block directly beneath our feet so jumping and digging aren't paralyzed!
+    try {
+      const p = bot.entity.position;
+      if (p && typeof bot.blockAt === "function") {
+        const below = bot.blockAt(p.offset(0, -0.08, 0).floored());
+        const deepBelow = bot.blockAt(p.offset(0, -0.58, 0).floored());
+        if (
+          (below && !isBlockPassable(below)) ||
+          (deepBelow && !isBlockPassable(deepBelow))
+        ) {
+          bot.entity.onGround = true;
+        }
+      }
+    } catch (_) {}
+    bot._mcbpForcedMoveTimes = (bot._mcbpForcedMoveTimes || []).filter(
+      (t) => now - t < 4000,
+    );
+    bot._mcbpForcedMoveTimes.push(now);
+    if (bot._mcbpForcedMoveTimes.length >= 4) {
+      bot._mcbpAntiCheatSlowUntil = now + 4000;
+      try {
+        bot.setControlState("sprint", false);
+        if (bot.pathfinder?.movements) {
+          bot.pathfinder.movements.allowSprinting = false;
+        }
+      } catch (_) {}
+    }
+    // Re-sync pathfinder from the actual server setback position (throttled) and penalize
+    // the setback node in Baritone BacktrackMemory so A* routes around anti-cheat/ghost-block traps.
+    if (
+      bot.pathfinder?.goal &&
+      !bot._mcbpControlOverride &&
+      now - (bot._mcbpLastSetbackRepathAt || 0) > 1100
+    ) {
+      bot._mcbpLastSetbackRepathAt = now;
+      try {
+        if (
+          typeof bot.pathfinder.penalizeNode === "function" &&
+          bot.entity?.position
+        ) {
+          bot.pathfinder.penalizeNode(bot.entity.position, 40);
+        }
+        if (typeof bot.pathfinder.repath === "function") {
+          bot.pathfinder.repath();
+        } else {
+          const g = bot.pathfinder.goal;
+          bot.pathfinder.setGoal(g, Boolean(g && g.entity));
+        }
+      } catch (_) {}
+    }
+  });
 
   // 0. Knockback preservation listener (fixes lpVec3 / 8000 bug & pathfinder fullStop zeroing)
   if (bot._client && typeof bot._client.on === "function") {
@@ -1435,7 +1974,18 @@ function attachSmartMovement(bot, manualControls = {}) {
   }
 
   // Prevent mineflayer-pathfinder's fullStop() from wiping out active knockback velocity
-  const restoreKnockbackIfZeroed = () => {
+  // or snapping X/Z to block center (Math.floor(x) + 0.5), which causes 20x/sec server setbacks!
+  const restoreKnockbackAndPosition = () => {
+    const pre = bot?._mcbpTruePhysicsPos;
+    if (pre && bot?.entity?.position) {
+      if (
+        Math.abs(bot.entity.position.x - pre.x) > 1e-4 ||
+        Math.abs(bot.entity.position.z - pre.z) > 1e-4
+      ) {
+        bot.entity.position.x = pre.x;
+        bot.entity.position.z = pre.z;
+      }
+    }
     const kb = bot?._mcbpKnockback;
     if (!kb || !bot?.entity?.velocity) return;
     if (Date.now() - kb.time < 320 && kb.ticksLeft > 0) {
@@ -1445,22 +1995,106 @@ function attachSmartMovement(bot, manualControls = {}) {
       }
     }
   };
-  bot.on("path_stop", restoreKnockbackIfZeroed);
-  bot.on("goal_reached", restoreKnockbackIfZeroed);
+  bot.on("path_stop", restoreKnockbackAndPosition);
+  bot.on("goal_reached", restoreKnockbackAndPosition);
 
-  function pulseAutoJump(ticks = 2) {
+  // Record true physics-simulated position right before `physicTick` listeners (like pathfinder) run
+  bot.on("physicsTick", () => {
+    if (bot?.entity?.position) {
+      bot._mcbpTruePhysicsPos = bot.entity.position.clone();
+    }
+  });
+
+  function pulseAutoJump(ticks = 9) {
     if (!bot || !bot.entity) return;
+    bot.jumpTicks = 0;
     bot.setControlState("jump", true);
     bot.jumpQueued = true;
     autoJumpTicks = Math.max(autoJumpTicks, ticks);
-    jumpCooldown = 7;
+    jumpCooldown = Math.max(jumpCooldown, ticks + 3);
   }
 
   bot.on("physicTick", () => {
     if (!bot || !bot.entity || !bot.entity.position) return;
 
+    // Undo any illegal horizontal X/Z position snap performed by mineflayer-pathfinder's fullStop()
+    restoreKnockbackAndPosition();
+
+    // Send 1.21.3+ / 26.1 client_tick_end right after Mineflayer's updatePosition() runs
+    if (
+      bot._client &&
+      bot.registry?.protocol?.play?.toServer?.types?.packet_tick_end
+    ) {
+      queueMicrotask(() => {
+        try {
+          if (bot?._client && bot.entity) {
+            bot._client.write("tick_end", {});
+          }
+        } catch (_) {}
+      });
+    }
+
+    if (bot.players && bot._mcbpLastSeenPlayers) {
+      const now = Date.now();
+      for (const p of Object.values(bot.players)) {
+        if (p?.username && p.username !== bot.username && p.entity?.position) {
+          bot._mcbpLastSeenPlayers.set(p.username.toLowerCase(), {
+            username: p.username,
+            position: p.entity.position.clone(),
+            at: now,
+          });
+        }
+      }
+    }
+
     const pos = bot.entity.position;
-    const inLiquid = Boolean(bot.entity.isInWater || bot.entity.isInLava);
+
+    // 0b. Active Unstuck Control Override (runs AFTER mineflayer-pathfinder's monitorMovement
+    // so pathfinder cannot wipe `jump`, `forward`, `back`, `left`, `right`, or `yaw`!)
+    if (bot._mcbpControlOverride) {
+      const ov = bot._mcbpControlOverride;
+      if (Date.now() < ov.until) {
+        if (ov.clearFirst && typeof bot.clearControlStates === "function") {
+          bot.clearControlStates();
+        }
+        for (const [k, v] of Object.entries(ov.controls || {})) {
+          bot.setControlState(k, Boolean(v));
+        }
+        if (ov.controls?.jump) {
+          bot.jumpTicks = 0;
+          bot.jumpQueued = true;
+        }
+        if (typeof ov.yaw === "number") bot.entity.yaw = ov.yaw;
+        if (typeof ov.pitch === "number") bot.entity.pitch = ov.pitch;
+        lastPos = pos.clone();
+        return;
+      }
+      for (const k of Object.keys(ov.controls || {})) {
+        if (!manualControls[k]) {
+          bot.setControlState(k, false);
+        }
+      }
+      bot._mcbpControlOverride = null;
+    }
+
+    let inSinkHazard = false;
+    try {
+      const fBlock = bot.blockAt?.(pos.floored());
+      const hBlock = bot.blockAt?.(pos.offset(0, 0.85, 0).floored());
+      const fn = fBlock?.name || "";
+      const hn = hBlock?.name || "";
+      inSinkHazard =
+        fn === "powder_snow" ||
+        hn === "powder_snow" ||
+        fn === "cobweb" ||
+        fn === "sweet_berry_bush";
+    } catch (_) {}
+    const inLiquid = Boolean(
+      bot.entity.isInWater ||
+      bot.entity.isInLava ||
+      bot.entity.isInPowderSnow ||
+      inSinkHazard,
+    );
 
     // Handle active knockback window
     const kb = bot._mcbpKnockback;
@@ -1478,7 +2112,7 @@ function attachSmartMovement(bot, manualControls = {}) {
       }
     }
 
-    // 1. Liquid float handling — only release jump on transition out of liquid
+    // 1. Liquid float handling - only release jump on transition out of liquid
     if (inLiquid) {
       bot.setControlState("jump", true);
       wasInLiquid = true;
@@ -1494,14 +2128,19 @@ function attachSmartMovement(bot, manualControls = {}) {
 
     if (jumpCooldown > 0) jumpCooldown--;
 
-    // Release temporary auto-jump pulses without touching manual Jump toggle or crit jump
+    const isPathing = Boolean(bot.pathfinder && bot.pathfinder.isMoving());
+
+    // Keep temporary auto-jump active across ticks even if monitorMovement() cleared it!
     if (autoJumpTicks > 0) {
       autoJumpTicks--;
-      if (
-        autoJumpTicks === 0 &&
-        !manualControls.jump &&
-        !bot._mcbpCritJumping
-      ) {
+      if (autoJumpTicks > 0) {
+        bot.jumpTicks = 0;
+        bot.setControlState("jump", true);
+        bot.jumpQueued = true;
+        if (isPathing && !bot.controlState?.back) {
+          bot.setControlState("forward", true);
+        }
+      } else if (!manualControls.jump && !bot._mcbpCritJumping) {
         bot.setControlState("jump", false);
       }
     }
@@ -1516,7 +2155,6 @@ function attachSmartMovement(bot, manualControls = {}) {
       }
     }
 
-    const isPathing = Boolean(bot.pathfinder && bot.pathfinder.isMoving());
     const manualForward = Boolean(manualControls.forward);
     const wantsForward = Boolean(
       bot.controlState?.forward || manualForward || isPathing,
@@ -1586,12 +2224,14 @@ function attachSmartMovement(bot, manualControls = {}) {
     }
 
     // 3. Movement & Jump assistance:
-    //    - When `isPathing` IS true, let mineflayer-pathfinder control `sprint` and `jump`
-    //      on normal ticks, EXCEPT when pathfinder's 20-tick lookahead simulation hits its
-    //      fallback `else` branch (`forward === false`) and freezes the bot in front of a jump
-    //      or in mid-air!
+    const antiCheatSlow = Boolean(
+      bot._mcbpAntiCheatSlowUntil && Date.now() < bot._mcbpAntiCheatSlowUntil,
+    );
     const canSprint =
-      (bot.food ?? 20) > 6 && !bot.controlState?.sneak && !isBotEating(bot);
+      !antiCheatSlow &&
+      (bot.food ?? 20) > 6 &&
+      !bot.controlState?.sneak &&
+      !isBotEating(bot);
     const isMiningOrBuilding = Boolean(
       bot.pathfinder &&
       ((typeof bot.pathfinder.isMining === "function" &&
@@ -1600,34 +2240,44 @@ function attachSmartMovement(bot, manualControls = {}) {
           bot.pathfinder.isBuilding())),
     );
 
+    if (antiCheatSlow && bot.controlState?.sprint) {
+      bot.setControlState("sprint", false);
+    } else if (
+      !antiCheatSlow &&
+      bot._mcbpAntiCheatSlowUntil &&
+      bot.pathfinder?.movements
+    ) {
+      bot._mcbpAntiCheatSlowUntil = 0;
+      bot.pathfinder.movements.allowSprinting = true;
+    }
+
     if (isPathing && !isMiningOrBuilding) {
       if (bot.entity.onGround && !bot.controlState?.jump) {
         bot.jumpTicks = 0;
       }
 
-      // If pathfinder hit its `else { setControlState('forward', false) }` branch,
-      // un-block the bot immediately so it keeps moving and steps over the obstacle!
-      // Only intervene when grounded AND physically pressed against a wall in the
-      // direction we are facing. Forcing `forward` in mid-air or while the bot is
-      // still turning toward the next node makes it run in circles.
+      // If pathfinder hit its `else { setControlState('forward', false) }` branch
+      // OR the bot is horizontally collided / stationary against a 1-block step:
+      // Note that when monitorMovement() sets `forward = false`, `isCollidedHorizontally`
+      // drops to `false` on the next tick! So also trigger when `!forward && stuckTicks >= 4`.
       if (
-        !bot.controlState?.forward &&
         !bot.controlState?.back &&
         bot.entity.onGround &&
-        bot.entity.isCollidedHorizontally
+        (bot.entity.isCollidedHorizontally ||
+          (!bot.controlState?.forward && stuckTicks >= 4))
       ) {
         bot.jumpTicks = 0;
 
         if (typeof bot.blockAt === "function") {
           try {
             const aheadFoot = bot.blockAt(
-              pos.offset(dirX * 0.75, 0, dirZ * 0.75).floored(),
+              pos.offset(dirX * 0.8, 0, dirZ * 0.8).floored(),
             );
             const aheadHead = bot.blockAt(
-              pos.offset(dirX * 0.75, 1, dirZ * 0.75).floored(),
+              pos.offset(dirX * 0.8, 1, dirZ * 0.8).floored(),
             );
             const aheadAbove = bot.blockAt(
-              pos.offset(dirX * 0.75, 2, dirZ * 0.75).floored(),
+              pos.offset(dirX * 0.8, 2, dirZ * 0.8).floored(),
             );
             const overhead = bot.blockAt(pos.offset(0, 2.1, 0).floored());
             const stepBlocked =
@@ -1642,7 +2292,7 @@ function attachSmartMovement(bot, manualControls = {}) {
               jumpCooldown === 0
             ) {
               bot.setControlState("forward", true);
-              pulseAutoJump(3);
+              pulseAutoJump(9);
             }
           } catch (_) {}
         }
@@ -1679,7 +2329,7 @@ function attachSmartMovement(bot, manualControls = {}) {
             isBlockPassable(ahead1AboveHead) &&
             isBlockPassable(overhead)
           ) {
-            pulseAutoJump(2);
+            pulseAutoJump(8);
           }
         } catch (_) {}
       }
@@ -1699,16 +2349,22 @@ function attachSmartMovement(bot, manualControls = {}) {
       }
 
       if (stuckTicks === 14 && bot.entity.onGround && jumpCooldown === 0) {
-        bot.jumpTicks = 0;
-        pulseAutoJump(2);
+        const overhead = bot.blockAt?.(pos.offset(0, 2.1, 0).floored());
+        if (isBlockPassable(overhead)) {
+          bot.jumpTicks = 0;
+          pulseAutoJump(9);
+        }
       } else if (stuckTicks >= 26) {
         stuckTicks = 0;
-        if (bot.entity.onGround && jumpCooldown === 0) {
+        const overhead = bot.blockAt?.(pos.offset(0, 2.1, 0).floored());
+        if (
+          bot.entity.onGround &&
+          jumpCooldown === 0 &&
+          isBlockPassable(overhead)
+        ) {
           bot.jumpTicks = 0;
-          pulseAutoJump(2);
+          pulseAutoJump(9);
         }
-        // Never strafe while the pathfinder owns movement: sideways nudges
-        // combined with jumps make the bot orbit its target node.
         if (!isPathing) {
           unstuckDir = unstuckDir === "left" ? "right" : "left";
           bot.setControlState(unstuckDir, true);
@@ -1720,6 +2376,722 @@ function attachSmartMovement(bot, manualControls = {}) {
     lastPos = pos.clone();
   });
 }
+
+/**
+ * Extracts block coordinates `{ x, y, z }` from natural chat messages like:
+ * - "im at 120 64 -300" / "my coords are -50, 70, 200"
+ * - "x: 120 y: 64 z: -300" / "x=120 z=-300"
+ * - "120 64 -300" / "120, -300"
+ */
+function extractCoordsFromText(text) {
+  const s = String(text || "").trim();
+  if (!s || s.length > 220) return null;
+  // Don't extract numbers from simple item counts like "mine 10 oak_log" or "give 5 iron"
+  if (
+    /^\s*(?:mine|dig|craft|make|smelt|cook|drop|toss|give|wait|jump|hotbar|slot|attack|kill|logs)\s+\d+/i.test(
+      s,
+    )
+  ) {
+    return null;
+  }
+
+  // 1. Explicit x/y/z labels: "x: 100, y: 64, z: -200" or "x 100 z -200"
+  const labeledX = s.match(/\bx\s*[:=]?\s*(-?\d{1,7}(?:\.\d+)?)\b/i);
+  const labeledY = s.match(/\by\s*[:=]?\s*(-?\d{1,4}(?:\.\d+)?)\b/i);
+  const labeledZ = s.match(/\bz\s*[:=]?\s*(-?\d{1,7}(?:\.\d+)?)\b/i);
+  if (labeledX && labeledZ) {
+    const x = Math.round(Number(labeledX[1]));
+    const y = labeledY ? Math.round(Number(labeledY[1])) : null;
+    const z = Math.round(Number(labeledZ[1]));
+    if (
+      Number.isFinite(x) &&
+      Number.isFinite(z) &&
+      (y === null || (y >= -64 && y <= 320))
+    ) {
+      return { x, y, z };
+    }
+  }
+
+  // 2. Three numbers: "120 64 -300", "120, 64, -300", "120 / 64 / -300"
+  const threeMatch = s.match(
+    /(?:^|[\s,:(])(-?\d{1,7})(?:\.\d+)?(?:\s*[,/\s]\s*|\s+)(-?\d{1,4})(?:\.\d+)?(?:\s*[,/\s]\s*|\s+)(-?\d{1,7})(?:\.\d+)?(?:$|[\s,).!?])/,
+  );
+  if (threeMatch) {
+    const x = Number(threeMatch[1]);
+    const y = Number(threeMatch[2]);
+    const z = Number(threeMatch[3]);
+    if (
+      Number.isFinite(x) &&
+      Number.isFinite(y) &&
+      Number.isFinite(z) &&
+      y >= -64 &&
+      y <= 320
+    ) {
+      return { x, y, z };
+    }
+  }
+
+  // 3. Two numbers when clearly a coordinate reply or location message:
+  //    e.g. "120 -300", "im at 120 -300", "coords 120, -300"
+  if (
+    /^\s*-?\d{1,7}(?:\s*,\s*|\s+)-?\d{1,7}\s*$/.test(s) ||
+    /\b(?:coords?|at|pos|position|location|come|walk|go|tp)\b/i.test(s)
+  ) {
+    const twoMatch = s.match(
+      /(?:^|[\s,:(])(-?\d{1,7})(?:\.\d+)?(?:\s*,\s*|\s+)(-?\d{1,7})(?:\.\d+)?(?:$|[\s,).!?])/,
+    );
+    if (twoMatch) {
+      const x = Number(twoMatch[1]);
+      const z = Number(twoMatch[2]);
+      if (Number.isFinite(x) && Number.isFinite(z)) {
+        return { x, y: null, z };
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Inspects surrounding blocks, server setback state, and vertical clearance around the bot
+ * to explain why walking or jumping is blocked and find the clearest horizontal escape angle.
+ */
+function diagnoseWalkingObstruction(bot) {
+  if (!bot || !bot.entity || !bot.entity.position) {
+    return {
+      summary: "no entity",
+      ceilingBlocked: false,
+      frontWall2High: false,
+      frontStep1High: false,
+      serverRubberband: false,
+      inProtectedZone: false,
+      openYaw: 0,
+      frontFoot: "air",
+      frontHead: "air",
+      frontAbove: "air",
+      overhead: "air",
+      feet: "air",
+      floor: "air",
+    };
+  }
+  const pos = bot.entity.position;
+  const yaw = bot.entity.yaw || 0;
+  const dirX = -Math.sin(yaw);
+  const dirZ = -Math.cos(yaw);
+
+  const safeBlock = (p) => {
+    try {
+      return typeof bot.blockAt === "function" ? bot.blockAt(p) : null;
+    } catch (_) {
+      return null;
+    }
+  };
+
+  const feetBlock = safeBlock(pos.floored());
+  const floorBlock = safeBlock(pos.offset(0, -0.5, 0).floored());
+  const headBlock = safeBlock(pos.offset(0, 1, 0).floored());
+  const overheadBlock = safeBlock(pos.offset(0, 2, 0).floored());
+  const frontFoot = safeBlock(
+    pos.offset(dirX * 0.85, 0, dirZ * 0.85).floored(),
+  );
+  const frontHead = safeBlock(
+    pos.offset(dirX * 0.85, 1, dirZ * 0.85).floored(),
+  );
+  const frontAbove = safeBlock(
+    pos.offset(dirX * 0.85, 2, dirZ * 0.85).floored(),
+  );
+
+  const ceilingBlocked =
+    !isBlockPassable(overheadBlock) || !isBlockPassable(frontAbove);
+  const frontWall2High = !isBlockPassable(frontHead);
+  const frontStep1High =
+    !isBlockPassable(frontFoot) &&
+    isBlockPassable(frontHead) &&
+    !ceilingBlocked;
+  const serverRubberband = Boolean(
+    bot._mcbpLastForcedMoveAt && Date.now() - bot._mcbpLastForcedMoveAt < 3200,
+  );
+  const inProtectedZone = Boolean(
+    bot._mcbpProtectedZoneUntil && Date.now() < bot._mcbpProtectedZoneUntil,
+  );
+
+  // Scan 8 candidate directions to find the clearest open escape angle
+  const angleOffsets = [
+    Math.PI / 2,
+    -Math.PI / 2,
+    Math.PI * 0.75,
+    -Math.PI * 0.75,
+    Math.PI,
+    Math.PI / 4,
+    -Math.PI / 4,
+    0,
+  ];
+  let openYaw = yaw + Math.PI / 2;
+  let bestScore = -999;
+  for (const delta of angleOffsets) {
+    const candYaw = yaw + delta;
+    const cx = -Math.sin(candYaw);
+    const cz = -Math.cos(candYaw);
+    let score = 0;
+    for (const dist of [1.0, 2.0]) {
+      const f0 = safeBlock(pos.offset(cx * dist, 0, cz * dist).floored());
+      const f1 = safeBlock(pos.offset(cx * dist, 1, cz * dist).floored());
+      const f2 = safeBlock(pos.offset(cx * dist, 2, cz * dist).floored());
+      const fl = safeBlock(pos.offset(cx * dist, -1, cz * dist).floored());
+      if (isBlockPassable(f0) && isBlockPassable(f1)) {
+        score += 4;
+      } else if (
+        !isBlockPassable(f0) &&
+        isBlockPassable(f1) &&
+        isBlockPassable(f2) &&
+        isBlockPassable(overheadBlock)
+      ) {
+        score += 1;
+      } else {
+        score -= 5;
+      }
+      if (isBlockHazard(f0) || isBlockHazard(fl)) score -= 20;
+      else if (fl && !isBlockPassable(fl)) score += 1;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      openYaw = candYaw;
+    }
+  }
+
+  const parts = [
+    `pos=(${Math.floor(pos.x)}, ${Math.floor(pos.y)}, ${Math.floor(pos.z)})`,
+    `front=${frontFoot?.name || "air"}/${frontHead?.name || "air"}`,
+  ];
+  if (!isBlockPassable(overheadBlock) || !isBlockPassable(frontAbove)) {
+    parts.push(
+      `overhead=${overheadBlock?.name || "air"}/${frontAbove?.name || "air"}`,
+    );
+  }
+  if (feetBlock && feetBlock.name !== "air") {
+    parts.push(`feet=${feetBlock.name}`);
+  }
+  parts.push(`onGround=${Boolean(bot.entity.onGround)}`);
+  if (serverRubberband) parts.push("server-setback");
+  if (inProtectedZone) parts.push("spawn-protected");
+
+  return {
+    summary: parts.join(", "),
+    ceilingBlocked,
+    frontWall2High,
+    frontStep1High,
+    serverRubberband,
+    inProtectedZone,
+    openYaw,
+    frontFoot: frontFoot?.name || "air",
+    frontHead: frontHead?.name || "air",
+    frontAbove: frontAbove?.name || "air",
+    overhead: overheadBlock?.name || "air",
+    feet: feetBlock?.name || "air",
+    floor: floorBlock?.name || "air",
+    frontFootBlock: frontFoot,
+    frontHeadBlock: frontHead,
+    frontAboveBlock: frontAbove,
+    overheadBlock,
+  };
+}
+
+/**
+ * Executes a physics-locked jump (holding jump + forward across 11 physics ticks so
+ * pathfinder's `monitorMovement()` cannot cancel it after 1 tick) and verifies whether
+ * the bot's Y coordinate actually rose on the server (`ΔY >= 0.25m`).
+ * If the jump could not or did not happen on the server, logs the diagnostic cause and
+ * immediately executes a horizontal un-wedge maneuver so the bot never gets stuck jumping in place.
+ */
+async function performVerifiedJumpOrUnwedge(
+  bot,
+  { log, onLogMovement, reason = "Stuck" } = {},
+) {
+  if (!bot || !bot.entity || !bot.entity.position) {
+    return { jumped: false, moved: false, action: "no-bot" };
+  }
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const startPos = bot.entity.position.clone();
+  const startY = startPos.y;
+  const diag = diagnoseWalkingObstruction(bot);
+
+  const recordMoveProblem = (title, details) => {
+    if (log) log(`${title}: ${details}`);
+    if (typeof onLogMovement === "function") {
+      try {
+        onLogMovement(title, details);
+      } catch (_) {}
+    }
+  };
+
+  // Helper to pause pathfinder during an un-wedge maneuver and restore it afterward
+  const runHorizontalUnwedge = async (whyText) => {
+    const savedGoal = bot.pathfinder?.goal || null;
+    const savedDyn = Boolean(savedGoal && savedGoal.entity);
+    if (savedGoal) {
+      clearPathfinderGoal(bot);
+    }
+
+    // If ceiling, a 2-high wall, or multi-layer snow/snow_block on a slope is trapping the bot and we're not in spawn protection, dig a path out!
+    const dugBlocks = [];
+    if (!diag.inProtectedZone && !isBotDigging(bot)) {
+      const snowBlocked =
+        diag.feet === "snow" ||
+        diag.frontFoot === "snow" ||
+        diag.frontFoot === "snow_block" ||
+        diag.frontFoot === "powder_snow";
+      const candidates = [
+        diag.overheadBlock,
+        diag.frontAboveBlock,
+        diag.frontHeadBlock,
+        ...(snowBlocked || diag.serverRubberband ? [diag.frontFootBlock] : []),
+      ];
+      for (const blk of candidates) {
+        if (
+          blk &&
+          (blk.boundingBox === "block" ||
+            blk.name === "snow" ||
+            blk.name === "snow_block" ||
+            blk.name === "powder_snow") &&
+          blk.diggable &&
+          blk.name !== "bedrock" &&
+          blk.name !== "obsidian"
+        ) {
+          const ok = await smartDig(bot, blk, { autoTool: true }).catch(
+            () => false,
+          );
+          if (ok) dugBlocks.push(blk.name);
+        }
+      }
+    }
+
+    // Back off 250ms to un-wedge from slab/stair/fence/wall lip, then walk/jump along openYaw
+    setBotControlOverride(bot, {
+      durationMs: 240,
+      controls: { back: true, forward: false, jump: false, sprint: false },
+      yaw: bot.entity.yaw,
+    });
+    await sleep(250);
+    if (!bot || !bot.entity) {
+      return { jumped: false, moved: false, action: whyText };
+    }
+
+    const freshDiag = diagnoseWalkingObstruction(bot);
+    const useYaw = dugBlocks.length > 0 ? bot.entity.yaw : freshDiag.openYaw;
+    setBotControlOverride(bot, {
+      durationMs: 650,
+      controls: {
+        forward: true,
+        back: false,
+        jump: !freshDiag.ceilingBlocked,
+        sprint: false,
+      },
+      yaw: useYaw,
+    });
+    await sleep(670);
+
+    if (savedGoal && bot?.pathfinder && !bot.pathfinder.goal) {
+      try {
+        bot.pathfinder.setGoal(savedGoal, savedDyn);
+      } catch (_) {}
+    }
+    const endPos = bot?.entity?.position || startPos;
+    const movedDist = endPos.distanceTo(startPos);
+    const dugNote = dugBlocks.length ? `dug ${dugBlocks.join("+")} + ` : "";
+    return {
+      jumped: endPos.y - startY >= 0.25,
+      moved: movedDist >= 0.35 || dugBlocks.length > 0,
+      action: `${whyText} -> ${dugNote}un-wedge (${movedDist.toFixed(2)}m)`,
+    };
+  };
+
+  // Case 1: Jump is physically impossible right now (ceiling overhead, 2-block wall, or not onGround)
+  const hasSolidFloorSupport =
+    Boolean(bot.entity.onGround) ||
+    Boolean(bot.entity.isInWater) ||
+    (diag.floor &&
+      diag.floor !== "air" &&
+      diag.floor !== "cave_air" &&
+      diag.floor !== "void_air");
+  if (hasSolidFloorSupport && !bot.entity.onGround && !bot.entity.isInWater) {
+    bot.entity.onGround = true;
+  }
+  if (diag.ceilingBlocked || diag.frontWall2High || !hasSolidFloorSupport) {
+    const cause = diag.ceilingBlocked
+      ? `ceiling blocked by ${diag.overhead}/${diag.frontAbove}`
+      : diag.frontWall2High
+        ? `2-block wall ahead (${diag.frontFoot}/${diag.frontHead})`
+        : `not onGround (${diag.feet})`;
+    recordMoveProblem(
+      `${reason}: Jump blocked (${cause})`,
+      `${diag.summary} - un-wedging horizontally`,
+    );
+    return runHorizontalUnwedge(`jump blocked (${cause})`);
+  }
+
+  // Case 2: Attempt a physics-locked 550ms jump (11 physics ticks) so pathfinder cannot cancel it
+  setBotControlOverride(bot, {
+    durationMs: 550,
+    controls: { forward: true, jump: true, sprint: false },
+    yaw: bot.entity.yaw,
+  });
+
+  let maxY = startY;
+  for (let i = 0; i < 11; i++) {
+    await sleep(50);
+    if (!bot || !bot.entity || !bot.entity.position) break;
+    if (bot.entity.position.y > maxY) {
+      maxY = bot.entity.position.y;
+    }
+  }
+
+  if (!bot || !bot.entity || !bot.entity.position) {
+    return { jumped: false, moved: false, action: "disconnected" };
+  }
+
+  const endPos = bot.entity.position;
+  const dy = maxY - startY;
+  const dHoriz = Math.hypot(endPos.x - startPos.x, endPos.z - startPos.z);
+
+  // Did the server actually let us jump?
+  if (dy < 0.25) {
+    recordMoveProblem(
+      `${reason}: Jump did not register on server`,
+      `ΔY=${dy.toFixed(2)}m, ΔXZ=${dHoriz.toFixed(2)}m | ${diag.summary} - switching to horizontal un-wedge`,
+    );
+    return runHorizontalUnwedge(`server jump failed (ΔY=${dy.toFixed(2)}m)`);
+  }
+
+  // We jumped up (dy >= 0.25), but were still blocked horizontally from advancing
+  if (dHoriz < 0.25) {
+    recordMoveProblem(
+      `${reason}: Jumped but blocked horizontally`,
+      `ΔY=${dy.toFixed(2)}m, ΔXZ=${dHoriz.toFixed(2)}m | ${diag.summary} - stepping around obstacle`,
+    );
+    return runHorizontalUnwedge(
+      `jump blocked horizontally (ΔXZ=${dHoriz.toFixed(2)}m)`,
+    );
+  }
+
+  return {
+    jumped: true,
+    moved: true,
+    action: `jumped forward (ΔY=${dy.toFixed(2)}m, ΔXZ=${dHoriz.toFixed(2)}m)`,
+  };
+}
+
+/**
+ * Escapes immediate physical hazards (`powder_snow`, `cobweb`, `sweet_berry_bush`,
+ * `lava`, `fire`, drowning, or suffocating/blocking blocks at feet/head).
+ * Returns a short summary of recovery actions taken, or `""` if none needed.
+ */
+async function escapeHazardsAndObstructions(bot, { log, onLogMovement } = {}) {
+  if (!bot || !bot.entity || !bot.entity.position) return "";
+  const actions = [];
+  const pos = bot.entity.position;
+  const feetPos = pos.floored();
+  const headPos = pos.offset(0, 1, 0).floored();
+  const abovePos = pos.offset(0, 2, 0).floored();
+
+  try {
+    await cleanCraftingGrid(bot);
+  } catch (_) {}
+
+  try {
+    const feetBlock = bot.blockAt(feetPos);
+    const headBlock = bot.blockAt(headPos);
+    const aboveBlock = bot.blockAt(abovePos);
+
+    // 1. Dig out of powder_snow, cobweb, or sweet_berry_bush
+    for (const blk of [headBlock, feetBlock]) {
+      if (!blk) continue;
+      if (
+        blk.name === "powder_snow" ||
+        blk.name === "cobweb" ||
+        blk.name === "sweet_berry_bush"
+      ) {
+        if (log)
+          log(
+            `Recovery: Breaking ${blk.name} at (${blk.position.x}, ${blk.position.y}, ${blk.position.z})`,
+          );
+        setBotControlOverride(bot, {
+          durationMs: 500,
+          controls: { jump: true, forward: true },
+        });
+        await smartDig(bot, blk, { autoTool: true }).catch(async () => {
+          await bot.dig(blk, true).catch(() => {});
+        });
+        actions.push(`dug ${blk.name}`);
+      }
+    }
+
+    // 2. Suffocation or solid head block trap
+    if (
+      headBlock &&
+      headBlock.boundingBox === "block" &&
+      headBlock.diggable &&
+      headBlock.name !== "bedrock"
+    ) {
+      if (log) log(`Recovery: Digging suffocating ${headBlock.name} at head`);
+      await smartDig(bot, headBlock, { autoTool: true }).catch(() => {});
+      actions.push(`dug head obstruction ${headBlock.name}`);
+    }
+
+    // 3. Underwater & losing oxygen with overhead block
+    if (
+      bot.entity.isInWater &&
+      typeof bot.oxygenLevel === "number" &&
+      bot.oxygenLevel < 12
+    ) {
+      setBotControlOverride(bot, {
+        durationMs: 650,
+        controls: { jump: true, forward: true },
+      });
+      if (
+        aboveBlock &&
+        aboveBlock.boundingBox === "block" &&
+        aboveBlock.diggable
+      ) {
+        await smartDig(bot, aboveBlock, { autoTool: true }).catch(() => {});
+        actions.push(`dug overhead ${aboveBlock.name} for air`);
+      } else {
+        actions.push("swimming up for air");
+      }
+    }
+
+    // 4. Standing in lava/fire/magma/cactus/powder_snow: step onto nearest safe neighbor
+    const floorBlock = bot.blockAt(feetPos.offset(0, -1, 0));
+    if (
+      isBlockHazard(feetBlock) ||
+      isBlockHazard(headBlock) ||
+      isBlockHazard(floorBlock)
+    ) {
+      const diag = diagnoseWalkingObstruction(bot);
+      setBotControlOverride(bot, {
+        durationMs: 650,
+        controls: { jump: !diag.ceilingBlocked, forward: true },
+        yaw: diag.openYaw,
+      });
+      actions.push("stepped out of hazard");
+    }
+
+    // 5. If horizontally collided against leaves/snow/dirt, clear the block in front
+    if (bot.entity.isCollidedHorizontally && !isBotDigging(bot)) {
+      const yaw = bot.entity.yaw;
+      const dirX = -Math.sin(yaw);
+      const dirZ = -Math.cos(yaw);
+      const aheadHead = bot.blockAt(
+        pos.offset(dirX * 0.85, 1, dirZ * 0.85).floored(),
+      );
+      const aheadFoot = bot.blockAt(
+        pos.offset(dirX * 0.85, 0, dirZ * 0.85).floored(),
+      );
+      for (const blk of [aheadHead, aheadFoot]) {
+        if (
+          blk &&
+          blk.boundingBox === "block" &&
+          blk.diggable &&
+          (blk.name.endsWith("_leaves") ||
+            blk.name === "snow_block" ||
+            blk.name === "snow" ||
+            blk.name === "dirt" ||
+            blk.name === "grass_block")
+        ) {
+          const dug = await smartDig(bot, blk, { autoTool: true }).catch(
+            () => false,
+          );
+          if (dug) actions.push(`cleared ${blk.name}`);
+          break;
+        }
+      }
+    }
+
+    // 6. Verified jump or horizontal un-wedge if still obstructed
+    if (!actions.length) {
+      const jumpRes = await performVerifiedJumpOrUnwedge(bot, {
+        log,
+        onLogMovement,
+        reason: "Unstuck",
+      });
+      if (jumpRes?.action) actions.push(jumpRes.action);
+    }
+  } catch (_) {}
+
+  return actions.join(", ");
+}
+
+/**
+ * Attaches a lightweight real-time self-preservation loop to `bot`:
+ * - Escapes `powder_snow`, `cobweb`, `sweet_berry_bush`, `lava`, `fire`, and drowning.
+ * - Automatically eats food when starving (`food <= 6`) or critically low HP (`health <= 9`).
+ * - Defends against immediate attackers or fusing creepers when no combat module is active.
+ * - Records `bot._mcbpLastDeath` when the bot dies.
+ */
+function attachRealTimeSelfPreservation(bot, { log, onEvent } = {}) {
+  if (!bot || bot._mcbpSelfPreservationAttached) return () => {};
+  bot._mcbpSelfPreservationAttached = true;
+
+  let busy = false;
+  let lastHurtAt = 0;
+  let lastAttackerId = null;
+
+  const onHurt = (entity) => {
+    if (!bot || !bot.entity || entity !== bot.entity) return;
+    lastHurtAt = Date.now();
+    let closest = null;
+    let bestD = 5.5;
+    for (const e of Object.values(bot.entities || {})) {
+      if (!e || e === bot.entity || !e.position) continue;
+      if (e.type === "object" || e.type === "orb") continue;
+      const d = e.position.distanceTo(bot.entity.position);
+      if (d < bestD) {
+        bestD = d;
+        closest = e;
+      }
+    }
+    if (closest) {
+      lastAttackerId = closest.id;
+      if (onEvent) {
+        onEvent(
+          `Took damage near ${closest.username || closest.name || "entity"} (HP ${Math.round(bot.health ?? 20)}/20)`,
+        );
+      }
+    }
+  };
+
+  const onDeath = () => {
+    if (!bot || !bot.entity) return;
+    const p = bot.entity.position;
+    if (p) {
+      bot._mcbpLastDeath = {
+        position: p.clone(),
+        dimension: String(bot.game?.dimension || "overworld").replace(
+          /^minecraft:/,
+          "",
+        ),
+        at: Date.now(),
+      };
+    }
+  };
+
+  bot.on("entityHurt", onHurt);
+  bot.on("death", onDeath);
+
+  const timer = setInterval(async () => {
+    if (!bot || !bot.entity || !bot.entity.position || busy) return;
+    busy = true;
+    try {
+      const pos = bot.entity.position;
+      const feet = bot.blockAt?.(pos.floored());
+      const head = bot.blockAt?.(pos.offset(0, 1, 0).floored());
+      const inTrap =
+        feet?.name === "powder_snow" ||
+        head?.name === "powder_snow" ||
+        feet?.name === "cobweb" ||
+        feet?.name === "sweet_berry_bush" ||
+        (head && head.boundingBox === "block" && head.diggable) ||
+        (bot.entity.isInWater &&
+          typeof bot.oxygenLevel === "number" &&
+          bot.oxygenLevel < 10);
+
+      if (inTrap && !isBotDigging(bot)) {
+        const res = await escapeHazardsAndObstructions(bot, { log });
+        if (res && onEvent) onEvent(`Escaped hazard (${res})`);
+        return;
+      }
+
+      // Emergency starvation / low-HP eating
+      if (!isBotEating(bot) && !isBotDigging(bot)) {
+        const hp = bot.health ?? 20;
+        const food = bot.food ?? 20;
+        if (food <= 6 || (hp <= 9 && food < 20)) {
+          await tryCombatEat(bot, {
+            minHp: 9,
+            minFood: 6,
+            onLog: (bestFood) => {
+              if (log)
+                log(
+                  `Self-Preservation: Eating ${bestFood.name} (HP ${Math.round(hp)}, Food ${food})`,
+                );
+            },
+          });
+        }
+      }
+
+      // Emergency creeper shield / retaliation when hurt
+      const now = Date.now();
+      let creeper = null;
+      for (const e of Object.values(bot.entities || {})) {
+        if (
+          e &&
+          e !== bot.entity &&
+          e.position &&
+          String(e.name || "").toLowerCase() === "creeper" &&
+          e.position.distanceTo(pos) <= 3.8
+        ) {
+          creeper = e;
+          break;
+        }
+      }
+      if (creeper && !isBotDigging(bot)) {
+        const offhand = bot.inventory?.slots?.[45];
+        if (offhand && offhand.name === "shield") {
+          await humanLookAt(bot, creeper.position.offset(0, 1.2, 0), true);
+          bot.activateItem(true);
+          setTimeout(() => {
+            try {
+              bot.deactivateItem();
+            } catch (_) {}
+          }, 400);
+          return;
+        }
+      }
+
+      if (
+        lastAttackerId &&
+        now - lastHurtAt < 3500 &&
+        !isBotEating(bot) &&
+        !isBotDigging(bot)
+      ) {
+        const attacker = bot.entities?.[lastAttackerId];
+        if (
+          attacker &&
+          attacker.position &&
+          isHostile(attacker) &&
+          attacker.position.distanceTo(pos) <= 4.0
+        ) {
+          await equipBestWeapon(bot, { saveLowDurability: true }).catch(
+            () => {},
+          );
+          await performPvpAttack(bot, attacker, {
+            useCrits: true,
+            maxRange: 4.0,
+          }).catch(() => {});
+        }
+      }
+    } catch (_) {
+    } finally {
+      busy = false;
+    }
+  }, 850);
+
+  const stop = () => {
+    clearInterval(timer);
+    bot.removeListener("entityHurt", onHurt);
+    bot.removeListener("death", onDeath);
+    bot._mcbpSelfPreservationAttached = false;
+  };
+  bot.once("end", stop);
+  return stop;
+}
+
+const {
+  isLikelyNpcOrFakePlayer,
+  isRealPlayerName,
+  attachViaVersionAdapter,
+  resolveSupportedVersion,
+  resolveVersionFromKickOrError,
+} = require("./viaAdapter");
 
 module.exports = {
   HOSTILE_NAMES,
@@ -1748,5 +3120,20 @@ module.exports = {
   configureSmartMovements,
   extractSignText,
   scanNearbySigns,
+  attachCraftingFix,
+  refreshChatSession,
+  attachSubServerChatFix,
+  cleanCraftingGrid,
+  setBotControlOverride,
   attachSmartMovement,
+  diagnoseWalkingObstruction,
+  performVerifiedJumpOrUnwedge,
+  extractCoordsFromText,
+  escapeHazardsAndObstructions,
+  attachRealTimeSelfPreservation,
+  isLikelyNpcOrFakePlayer,
+  isRealPlayerName,
+  attachViaVersionAdapter,
+  resolveSupportedVersion,
+  resolveVersionFromKickOrError,
 };

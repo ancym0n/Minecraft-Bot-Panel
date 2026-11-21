@@ -1,5 +1,7 @@
 const { loadLibraries } = require("../runtime");
 const { isBotEating, smartDig, clearPathfinderGoal } = require("../botUtils");
+const { canMineFromHere, approachForMining } = require("../miningReach");
+const planner = require("../wasmPlanner");
 
 const info = {
   name: "Excavator",
@@ -73,6 +75,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
     getOption("size", info.name),
     getOption("depth", info.name),
   ]);
+  if (scriptRepeater.signal?.aborted) return;
 
   const isTunnel = tunnelOpt !== "off";
   const useAutoTool = autoToolOpt !== "off";
@@ -87,33 +90,19 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
       ? parsedDepth
       : 12;
 
-  const queue = [];
+  let offsets;
   if (isTunnel) {
-    const halfW = Math.floor((size - 1) / 2);
-    for (let step = 1; step <= depth; step++) {
-      for (let h = 1; h >= 0; h--) {
-        for (let w = -halfW; w <= size - 1 - halfW; w++) {
-          const bx = origin.x + dir.fx * step + dir.rx * w;
-          const by = origin.y + h;
-          const bz = origin.z + dir.fz * step + dir.rz * w;
-          queue.push(new Vec3(bx, by, bz));
-        }
-      }
-    }
+    offsets = planner.tunnel(size, depth, dir);
     clearLog("Excavator:");
     log(`Excavator: Digging ${size}x2 tunnel for ${depth} blocks`);
   } else {
-    const half = Math.floor(size / 2);
-    for (let dy = 0; dy > -depth; dy--) {
-      for (let dx = -half; dx <= half; dx++) {
-        for (let dz = -half; dz <= half; dz++) {
-          queue.push(new Vec3(origin.x + dx, origin.y + dy, origin.z + dz));
-        }
-      }
-    }
+    offsets = planner.quarry(size, depth);
     clearLog("Excavator:");
     log(`Excavator: Clearing ${size}x${size}x${depth} quarry volume`);
   }
+  const queue = offsets.map(
+    ({ dx, dy, dz }) => new Vec3(origin.x + dx, origin.y + dy, origin.z + dz),
+  );
 
   let busy = false;
   let dugCount = 0;
@@ -124,6 +113,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
 
     try {
       while (queue.length > 0) {
+        if (scriptRepeater.signal?.aborted) return;
         const targetPos = queue[0];
         const block = bot.blockAt(targetPos);
         if (!block || !isExcavatable(block)) {
@@ -131,13 +121,14 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
           continue;
         }
 
-        const dist = bot.entity.position.distanceTo(targetPos);
-        if (dist > 4.3) {
-          await bot.pathfinder
-            .goto(
-              new goals.GoalNear(targetPos.x, targetPos.y, targetPos.z, 3.2),
-            )
-            .catch(() => {});
+        // Reach is measured from the eyes (~4.5m), so blocks above/below the
+        // bot can be dug without standing next to them.
+        if (!canMineFromHere(bot, targetPos)) {
+          await approachForMining(bot, goals, targetPos, {
+            timeoutMs: 15000,
+            isCancelled: () => Boolean(scriptRepeater.signal?.aborted),
+          });
+          if (scriptRepeater.signal?.aborted) return;
         }
 
         const fresh = bot.blockAt(targetPos);
@@ -146,10 +137,18 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
           continue;
         }
 
-        await smartDig(bot, fresh, {
+        const dug = await smartDig(bot, fresh, {
           autoTool: useAutoTool,
           saveLowDurability: true,
+          signal: scriptRepeater.signal,
+          canDigTarget: (target) =>
+            target.position.equals(targetPos) && isExcavatable(target),
         });
+        if (scriptRepeater.signal?.aborted) return;
+        if (!dug) {
+          log(`Excavator: Unable to dig ${fresh.name} at ${targetPos}`);
+          return;
+        }
         queue.shift();
         dugCount++;
 
@@ -162,7 +161,9 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
 
       clearLog("Excavator status:");
       log(`Excavator status: Finished! Cleared ${dugCount} block(s)`);
-    } catch (_) {
+    } catch (error) {
+      if (!scriptRepeater.signal?.aborted)
+        log(`Excavator: ${error.message || error}`);
     } finally {
       busy = false;
     }
@@ -170,9 +171,12 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
 
   try {
     await excavateTick();
-    await scriptRepeater(excavateTick, info.default.interval);
+    if (!scriptRepeater.signal?.aborted)
+      await scriptRepeater(excavateTick, info.default.interval);
   } finally {
-    clearPathfinderGoal(bot);
+    if (!scriptRepeater.isCurrent || scriptRepeater.isCurrent()) {
+      clearPathfinderGoal(bot);
+    }
   }
 }
 

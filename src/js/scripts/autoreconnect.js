@@ -20,6 +20,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
     getOption("resumescripts", info.name),
     getOption("delay", info.name),
   ]);
+  if (scriptRepeater.signal?.aborted) return;
 
   const parsedDelay = parseFloat(rawDelay);
   const delaySec =
@@ -38,6 +39,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
       getOption("resumescripts", info.name),
       getOption("delay", info.name),
     ]);
+    if (scriptRepeater.signal?.aborted) return;
     const d = parseFloat(liveDelay);
     bot._mcbpAutoReconnect = {
       enabled: true,

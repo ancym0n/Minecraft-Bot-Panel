@@ -34,6 +34,8 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
     getOption("lowhp", info.name),
     getOption("minfood", info.name),
   ]);
+  const signal = scriptRepeater.signal;
+  if (signal?.aborted) return;
 
   const parsedMin = parseInt(rawMinFood, 10);
   const minFood =
@@ -44,7 +46,8 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   let eating = false;
 
   async function tryEat() {
-    if (!bot || !bot.inventory || eating || isBotEating(bot)) return;
+    if (signal?.aborted || !bot || !bot.inventory || eating || isBotEating(bot))
+      return;
 
     const currentFood = bot.food ?? 20;
     const currentHealth = bot.health ?? 20;
@@ -63,7 +66,8 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
       log(
         `AutoEat: Consuming ${chosen.name} (HP: ${currentHealth.toFixed(0)}/20, Food: ${currentFood}/20)`,
       );
-      await consumeFoodSafely(bot, chosen);
+      await consumeFoodSafely(bot, chosen, { signal });
+      if (signal?.aborted) return;
       if (
         previousHeld &&
         previousHeld.slot !== chosen.slot &&
@@ -77,14 +81,15 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
           } catch (_) {}
         }
       }
-    } catch (_) {
+    } catch (error) {
+      if (!signal?.aborted) log(`AutoEat: ${error.message || error}`);
     } finally {
       eating = false;
     }
   }
 
   await tryEat();
-  if (repeat === "on") {
+  if (!signal?.aborted && repeat === "on") {
     await scriptRepeater(tryEat, info.default.interval);
   }
 }

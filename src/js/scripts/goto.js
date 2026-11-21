@@ -54,6 +54,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   }
 
   const { goals, mcData, Movements } = loadLibraries();
+  const signal = scriptRepeater.signal;
   const [inputX, inputY, inputZ, repeat, digOpt, bridgeOpt] = await Promise.all(
     [
       getOption("x", info.name),
@@ -64,6 +65,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
       getOption("bridge", info.name),
     ],
   );
+  if (signal?.aborted) return;
 
   const x = toNumber(inputX);
   const z = toNumber(inputZ);
@@ -87,24 +89,31 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
     allowBridging: bridgeOpt === "on",
   });
 
-  function goTo() {
-    if (!bot || !bot.entity || !bot.pathfinder) return;
+  async function goTo() {
+    if (signal?.aborted || !bot || !bot.entity || !bot.pathfinder) return;
     clearLog("Going to XYZ: ");
     log(`Going to XYZ: ${x}, ${y}, ${z}`);
-    bot.pathfinder.setGoal(new goals.GoalBlock(x, y, z));
+    if (signal?.aborted) return;
+    const goal = new goals.GoalBlock(x, y, z);
+    if (repeat === "on") bot.pathfinder.setGoal(goal);
+    else await bot.pathfinder.goto(goal);
   }
 
   try {
-    goTo();
-    if (repeat === "on") {
+    await goTo();
+    if (!signal?.aborted && repeat === "on") {
       await scriptRepeater(goTo, info.default.interval);
     }
   } finally {
-    if (bot && bot.pathfinder) {
-      if (repeat === "on") {
-        clearPathfinderGoal(bot);
-      }
-      configureSmartMovements(bot, mcData, Movements);
+    if (
+      bot &&
+      bot.pathfinder &&
+      (!scriptRepeater.isCurrent || scriptRepeater.isCurrent())
+    ) {
+      const owner = bot.pathfinder.getPathOwner?.();
+      clearPathfinderGoal(bot);
+      if (!owner || owner === info.name)
+        configureSmartMovements(bot, mcData, Movements);
     }
   }
 }

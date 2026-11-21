@@ -56,13 +56,15 @@
                 >Copied to clipboard</span
               >
             </div>
-            <div
+            <button
+              type="button"
               id="msa-code-value"
               class="msa-code-value"
               title="Click to copy code"
+              aria-label="Copy Microsoft device code"
             >
               --------
-            </div>
+            </button>
             <div class="msa-code-actions">
               <button
                 id="msa-open-popup"
@@ -81,22 +83,27 @@
             </div>
           </div>
 
-          <p id="msa-status-text" class="auth-hint">
+          <p id="msa-status-text" class="auth-hint" role="status">
             Click <b>Sign In with Microsoft</b> to authenticate in an app popup
             or browser (tokens are cached automatically so you stay signed in).
           </p>
         </div>
 
         <div class="auth-actions auth-actions-msa">
-          <div id="back-btn" class="back-button">← Back</div>
-          <p
+          <button type="button" id="back-btn" class="back-button">
+            ← Back
+          </button>
+          <button
+            type="button"
             id="quick-continue"
             class="mButton secondary"
             title="Enter panel immediately and authenticate when connecting to a server"
           >
             Auth on Connect
-          </p>
-          <p id="continue" class="mButton">Sign In with Microsoft</p>
+          </button>
+          <button type="button" id="continue" class="mButton">
+            Sign In with Microsoft
+          </button>
         </div>
       </section>
     </main>

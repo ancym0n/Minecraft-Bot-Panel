@@ -3,7 +3,7 @@ const { ollamaManager } = require("../ollamaManager");
 // Options here are two-way synced with the AI tab (same saved config),
 // so the panel writes changes straight to the AI settings.
 const info = {
-  name: "ChatAI",
+  name: "AIChat",
   default: { interval: 3000 },
   aiSync: true,
   options: [
@@ -22,7 +22,16 @@ const info = {
 // that is already running is shared, never started twice.
 async function prepareOllama(log, clearLog, tag, { model, isActive }) {
   const status = await ollamaManager.getStatus();
+  if (!isActive()) return { ok: false, cancelled: true };
   const targetModel = model();
+  if (ollamaManager.isRemote()) {
+    if (!status.serverRunning) {
+      const error = "DeepSeek API key is missing";
+      log(`${tag} error: ${error}`);
+      return { ok: false, error };
+    }
+    return { ok: true, model: targetModel };
+  }
   const hasModel = status.installedModels.some(
     (m) => m.name === targetModel || m.name === `${targetModel}:latest`,
   );
@@ -66,19 +75,21 @@ async function prepareOllama(log, clearLog, tag, { model, isActive }) {
 }
 
 async function script(bot, log, clearLog, getOption, scriptRepeater) {
-  clearLog("ChatAI:");
-  const res = await prepareOllama(log, clearLog, "ChatAI", {
+  clearLog("AIChat:");
+  const res = await prepareOllama(log, clearLog, "AIChat", {
     model: () => ollamaManager.resolveModel(),
-    isActive: () => Boolean(ollamaManager.config.enabled),
+    isActive: () =>
+      !scriptRepeater.signal?.aborted && Boolean(ollamaManager.config.enabled),
   });
   if (res.ok) {
     const cfg = ollamaManager.config;
     log(
-      `ChatAI: Ready (${res.model} · ${cfg.triggerMode === "all" ? "all chat" : "mentions"} · ${cfg.splitMessages ? `split, ${cfg.messageDelaySec}s gap` : "single message"})`,
+      `AIChat: Ready (${res.model} · ${cfg.triggerMode === "all" ? "all chat" : "mentions"} · ${cfg.splitMessages ? `split, ${cfg.messageDelaySec}s gap` : "single message"})`,
     );
   }
   // Stay alive while toggled on; the chat listener does the replying.
-  await scriptRepeater(() => {}, info.default.interval);
+  if (!scriptRepeater.signal?.aborted)
+    await scriptRepeater(() => {}, info.default.interval);
 }
 
 module.exports = { info, script, prepareOllama };

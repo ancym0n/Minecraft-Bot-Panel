@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { loadLibraries } = require("../runtime");
 const { isBotEating, clearPathfinderGoal } = require("../botUtils");
+const { template: generateTemplateOffsets } = require("../wasmPlanner");
 
 const info = {
   name: "AutoBuild",
@@ -39,52 +40,6 @@ const PLACEABLE_BLOCKS = [
   "glass",
   "obsidian",
 ];
-
-function generateTemplateOffsets(name, size) {
-  const t = String(name || "platform")
-    .trim()
-    .toLowerCase();
-  const s = Math.max(2, Math.min(15, size || 5));
-  const half = Math.floor(s / 2);
-  const blocks = [];
-
-  if (t === "wall") {
-    for (let y = 0; y < 3; y++) {
-      for (let x = -half; x <= half; x++) {
-        blocks.push({ dx: x, dy: y, dz: 2 });
-      }
-    }
-  } else if (t === "tower" || t === "pillar") {
-    for (let y = 0; y < s; y++) {
-      blocks.push({ dx: 1, dy: y, dz: 0 });
-    }
-  } else if (t === "bridge") {
-    for (let z = 1; z <= s; z++) {
-      blocks.push({ dx: 0, dy: -1, dz: z });
-    }
-  } else if (t === "bunker" || t === "hut") {
-    for (let y = 0; y < 3; y++) {
-      for (let x = -2; x <= 2; x++) {
-        for (let z = -2; z <= 2; z++) {
-          const isEdge = Math.abs(x) === 2 || Math.abs(z) === 2;
-          const isDoor = x === 0 && z === 2 && y < 2;
-          if ((isEdge && !isDoor) || y === 2) {
-            blocks.push({ dx: x, dy: y, dz: z });
-          }
-        }
-      }
-    }
-  } else {
-    // Default: platform
-    for (let x = -half; x <= half; x++) {
-      for (let z = -half; z <= half; z++) {
-        if (x === 0 && z === 0) continue;
-        blocks.push({ dx: x, dy: 0, dz: z });
-      }
-    }
-  }
-  return blocks;
-}
 
 function findReferenceFace(bot, targetPos, Vec3) {
   const dirs = [
@@ -124,6 +79,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
     getOption("template", info.name),
     getOption("size", info.name),
   ]);
+  if (scriptRepeater.signal?.aborted) return;
 
   const templateName = String(rawTemplate || "platform").trim() || "platform";
   const parsedSize = parseInt(rawSize, 10);
@@ -135,14 +91,36 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   const origin = bot.entity.position.floored();
   let offsets = [];
 
-  if (templateName.endsWith(".json") && fs.existsSync(templateName)) {
+  if (templateName.endsWith(".json")) {
     try {
       const parsed = JSON.parse(
         fs.readFileSync(path.resolve(templateName), "utf8"),
       );
       if (Array.isArray(parsed)) offsets = parsed;
       else if (Array.isArray(parsed.blocks)) offsets = parsed.blocks;
-    } catch (_) {}
+      if (!offsets.length) throw new Error("template contains no blocks");
+      for (const entry of offsets) {
+        if (!entry || typeof entry !== "object") {
+          throw new Error("template contains an invalid block");
+        }
+        for (const coordinate of [
+          entry.dx ?? entry.x,
+          entry.dy ?? entry.y,
+          entry.dz ?? entry.z,
+        ]) {
+          if (coordinate != null && !Number.isInteger(Number(coordinate))) {
+            throw new Error("template coordinates must be integers");
+          }
+        }
+        if (entry.block != null && typeof entry.block !== "string") {
+          throw new Error("template block names must be strings");
+        }
+      }
+    } catch (err) {
+      clearLog("AutoBuild:");
+      log(`AutoBuild: Cannot read template: ${err.message || err}`);
+      return;
+    }
   }
 
   if (offsets.length === 0) {
@@ -171,11 +149,14 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
     busy = true;
 
     try {
+      let deferred = 0;
       while (buildQueue.length > 0) {
+        if (scriptRepeater.signal?.aborted) return;
         const entry = buildQueue[0];
         const existing = bot.blockAt(entry.pos);
         if (existing && existing.boundingBox === "block") {
           buildQueue.shift();
+          deferred = 0;
           continue;
         }
 
@@ -194,21 +175,30 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
 
         const dist = bot.entity.position.distanceTo(entry.pos);
         if (dist > 4.2) {
-          await bot.pathfinder
-            .goto(
-              new goals.GoalNear(entry.pos.x, entry.pos.y, entry.pos.z, 3.0),
-            )
-            .catch(() => {});
+          await bot.pathfinder.goto(
+            new goals.GoalNear(entry.pos.x, entry.pos.y, entry.pos.z, 3.0),
+          );
+          if (scriptRepeater.signal?.aborted) return;
         }
 
         const ref = findReferenceFace(bot, entry.pos, Vec3);
         if (!ref) {
-          buildQueue.shift();
+          buildQueue.push(buildQueue.shift());
+          deferred++;
+          if (deferred >= buildQueue.length) {
+            clearLog("AutoBuild status:");
+            log(
+              `AutoBuild status: No reachable support for ${buildQueue.length} remaining block(s)`,
+            );
+            return;
+          }
           continue;
         }
 
-        await bot.equip(blockItem, "hand").catch(() => {});
-        await bot.placeBlock(ref.refBlock, ref.faceVec).catch(() => {});
+        await bot.equip(blockItem, "hand");
+        if (scriptRepeater.signal?.aborted) return;
+        await bot.placeBlock(ref.refBlock, ref.faceVec);
+        if (scriptRepeater.signal?.aborted) return;
         buildQueue.shift();
         placedCount++;
 
@@ -223,7 +213,11 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
       log(
         `AutoBuild status: Completed "${templateName}" (${placedCount} blocks)`,
       );
-    } catch (_) {
+    } catch (err) {
+      if (!scriptRepeater.signal?.aborted) {
+        clearLog("AutoBuild status:");
+        log(`AutoBuild status: Placement failed: ${err.message || err}`);
+      }
     } finally {
       busy = false;
     }
@@ -231,9 +225,12 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
 
   try {
     await buildTick();
-    await scriptRepeater(buildTick, info.default.interval);
+    if (!scriptRepeater.signal?.aborted)
+      await scriptRepeater(buildTick, info.default.interval);
   } finally {
-    clearPathfinderGoal(bot);
+    if (!scriptRepeater.isCurrent || scriptRepeater.isCurrent()) {
+      clearPathfinderGoal(bot);
+    }
   }
 }
 

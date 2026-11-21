@@ -49,9 +49,12 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   }
 
   const { goals } = loadLibraries();
+  const signal = scriptRepeater.signal;
   const anchorPos = bot.entity.position.clone();
   const hostilePlayers = new Map();
   let currentTargetName = "";
+  let defendPvp = false;
+  let warnedMissingAttacker = false;
   let busy = false;
 
   function resolveGuardedPlayer(targetName) {
@@ -79,20 +82,29 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
     return nearest;
   }
 
-  function onEntityHurt(entity) {
-    if (!bot || !bot.entity || !entity) return;
+  function onEntityHurt(entity, source) {
+    if (scriptRepeater.signal?.aborted || !bot || !bot.entity || !entity)
+      return;
     const guarded = resolveGuardedPlayer(currentTargetName);
     const isGuardedVictim =
       entity === bot.entity || (guarded && entity.id === guarded.id);
     if (!isGuardedVictim) return;
 
-    const attacker = Object.values(bot.entities).find((e) => {
-      if (!e || e === bot.entity || e.type !== "player") return false;
-      if (guarded && e.username === guarded.username) return false;
-      return e.position && e.position.distanceTo(entity.position) <= 6;
-    });
-    if (attacker && attacker.username) {
-      hostilePlayers.set(attacker.username, Date.now() + 25000);
+    if (!source && defendPvp && !warnedMissingAttacker) {
+      warnedMissingAttacker = true;
+      log(
+        "Guard: Cannot identify the attacker for this hit; no player was targeted",
+      );
+    }
+
+    if (
+      source &&
+      source !== bot.entity &&
+      source.type === "player" &&
+      source.username &&
+      (!guarded || source.id !== guarded.id)
+    ) {
+      hostilePlayers.set(source.username, Date.now() + 25000);
     }
   }
 
@@ -112,6 +124,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
       const ate = await tryCombatEat(bot, {
         minHp: 13,
         minFood: 16,
+        signal,
         onLog: (foodItem, hp, food) => {
           clearLog("Guard status:");
           log(
@@ -119,6 +132,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
           );
         },
       });
+      if (scriptRepeater.signal?.aborted) return;
       if (ate) return;
 
       const [hostilesOpt, pvpOpt, autoWeaponOpt, rawPlayerName, rawRadius] =
@@ -129,9 +143,10 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
           getOption("playername", info.name),
           getOption("radius", info.name),
         ]);
+      if (scriptRepeater.signal?.aborted) return;
 
       const attackHostiles = hostilesOpt !== "off" || pvpOpt === "off";
-      const defendPvp = pvpOpt === "on";
+      defendPvp = pvpOpt === "on";
       const useAutoWeapon = autoWeaponOpt !== "off";
       currentTargetName = String(rawPlayerName || "").trim();
       const parsedRadius = parseFloat(rawRadius);
@@ -162,7 +177,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
           isThreat = true;
         } else if (defendPvp && entity.type === "player" && entity.username) {
           const expire = hostilePlayers.get(entity.username) || 0;
-          if (expire > now || distToCenter <= 4.5) {
+          if (expire > now) {
             isThreat = true;
             priorityBonus = -2;
           }
@@ -179,7 +194,8 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
 
       if (threat) {
         if (useAutoWeapon && !isBotEating(bot)) {
-          await equipBestWeapon(bot, { saveLowDurability: true });
+          await equipBestWeapon(bot, { saveLowDurability: true, signal });
+          if (scriptRepeater.signal?.aborted) return;
         }
 
         const dist = bot.entity.position.distanceTo(threat.position);
@@ -198,6 +214,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
           await performPvpAttack(bot, threat, {
             useCrits: true,
             maxRange: 4.3,
+            signal,
           });
         }
         return;
@@ -235,9 +252,11 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
     await scriptRepeater(guardTick, info.default.interval);
   } finally {
     if (bot) {
-      bot._mcbpSprintJump = false;
       bot.removeListener("entityHurt", onEntityHurt);
-      clearPathfinderGoal(bot);
+      if (!scriptRepeater.isCurrent || scriptRepeater.isCurrent()) {
+        bot._mcbpSprintJump = false;
+        clearPathfinderGoal(bot);
+      }
     }
   }
 }

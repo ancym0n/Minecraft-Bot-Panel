@@ -494,8 +494,15 @@ function checkbox(id) {
 
 window.checkbox = checkbox;
 
+function setScriptActive(element, active) {
+  element.classList.toggle("script-name-active", active);
+  element.setAttribute("aria-pressed", String(active));
+}
+
 function updateActiveScriptsBadge() {
-  const activeCount = document.querySelectorAll(".script-name-active").length;
+  const activeCount = document.querySelectorAll(
+    ".div-actions .script-name-active",
+  ).length;
   const badge = document.getElementById("active-scripts-badge");
   if (!badge) return;
   if (activeCount > 0) {
@@ -514,12 +521,51 @@ function updateTitle() {
   }
 }
 
+function setTabSelected(tab, selected) {
+  tab.classList.toggle("active", selected);
+  tab.setAttribute("aria-selected", String(selected));
+  tab.tabIndex = selected ? 0 : -1;
+}
+
+function setupTabGroup(selector, dataAttribute, panePrefix) {
+  const tabs = [...document.querySelectorAll(selector)];
+  tabs.forEach((tab, index) => {
+    const pane = document.getElementById(
+      `${panePrefix}${tab.getAttribute(dataAttribute)}`,
+    );
+    if (!pane) return;
+    tab.id ||= `${pane.id}-selector`;
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-controls", pane.id);
+    pane.setAttribute("role", "tabpanel");
+    pane.setAttribute("aria-labelledby", tab.id);
+    setTabSelected(tab, tab.classList.contains("active"));
+    tab.addEventListener("keydown", (event) => {
+      let nextIndex;
+      if (event.key === "ArrowRight") nextIndex = (index + 1) % tabs.length;
+      else if (event.key === "ArrowLeft")
+        nextIndex = (index - 1 + tabs.length) % tabs.length;
+      else if (event.key === "Home") nextIndex = 0;
+      else if (event.key === "End") nextIndex = tabs.length - 1;
+      else return;
+      event.preventDefault();
+      event.stopPropagation();
+      tabs[nextIndex].focus();
+      tabs[nextIndex].click();
+    });
+  });
+}
+
+setupTabGroup(".workspace-tab", "data-tab", "tab-");
+setupTabGroup(".console-tab", "data-console-tab", "console-");
+setupTabGroup(".studio-view-tab", "data-studio-view", "studio-view-");
+
 // --- Workspace Tabs ---
 document.querySelectorAll(".workspace-tab").forEach((tabBtn) => {
   tabBtn.addEventListener("click", () => {
     const targetTab = tabBtn.getAttribute("data-tab");
     document.querySelectorAll(".workspace-tab").forEach((b) => {
-      b.classList.toggle("active", b === tabBtn);
+      setTabSelected(b, b === tabBtn);
     });
     document.querySelectorAll(".workspace-pane").forEach((pane) => {
       const isMatch = pane.id === `tab-${targetTab}`;
@@ -536,9 +582,117 @@ document.querySelectorAll(".workspace-tab").forEach((tabBtn) => {
       window.api.inventoryAction({ action: "refresh" });
     } else if (targetTab === "ai" && typeof refreshOllamaUi === "function") {
       refreshOllamaUi();
+      if (typeof refreshAiBrainUi === "function") refreshAiBrainUi();
+    } else if (
+      targetTab === "botting" &&
+      typeof refreshBottingAndProxyUi === "function"
+    ) {
+      refreshBottingAndProxyUi();
     }
   });
 });
+
+// --- Server History, Autocomplete & Per-Server Remembered Modules ---
+const SERVER_PROFILES_KEY = "mcbp-server-profiles-v1";
+const LAST_SERVER_KEY = "mcbp-last-server-v1";
+const ipInput = document.getElementById("ip");
+let activeConnectedServerKey = "";
+let mainProxyEnabled = false;
+
+function normalizeServerKey(rawIp) {
+  return String(rawIp || "")
+    .trim()
+    .toLowerCase();
+}
+
+function loadServerProfiles() {
+  try {
+    const raw = localStorage.getItem(SERVER_PROFILES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function saveServerProfiles(list) {
+  try {
+    localStorage.setItem(
+      SERVER_PROFILES_KEY,
+      JSON.stringify((list || []).slice(0, 25)),
+    );
+  } catch (_) {}
+}
+
+function getServerProfile(rawIp) {
+  const key = normalizeServerKey(rawIp);
+  if (!key) return null;
+  return (
+    loadServerProfiles().find((p) => normalizeServerKey(p.ip) === key) || null
+  );
+}
+
+function getActiveEnabledScriptNames() {
+  const names = [];
+  document
+    .querySelectorAll(".script-container .script-name-active")
+    .forEach((el) => {
+      const sName = el.getAttribute("data-script");
+      if (sName) names.push(sName);
+    });
+  return [...new Set(names)];
+}
+
+function upsertServerProfile(rawIp, { version, modules } = {}) {
+  const cleanIp = String(rawIp || "").trim();
+  const key = normalizeServerKey(cleanIp);
+  if (!key) return;
+  const list = loadServerProfiles();
+  const idx = list.findIndex((p) => normalizeServerKey(p.ip) === key);
+  const existing =
+    idx >= 0 ? list[idx] : { ip: cleanIp, version: "", modules: [] };
+  const updated = {
+    ip: cleanIp,
+    version:
+      version !== undefined
+        ? String(version || "").trim()
+        : existing.version || "",
+    modules: Array.isArray(modules)
+      ? [...new Set(modules)]
+      : Array.isArray(existing.modules)
+        ? existing.modules
+        : [],
+    lastUsed: Date.now(),
+  };
+  if (idx >= 0) list.splice(idx, 1);
+  list.unshift(updated);
+  saveServerProfiles(list);
+  refreshServerAutocomplete();
+}
+
+function removeServerProfile(rawIp) {
+  const key = normalizeServerKey(rawIp);
+  if (!key) return;
+  const next = loadServerProfiles().filter(
+    (p) => normalizeServerKey(p.ip) !== key,
+  );
+  saveServerProfiles(next);
+  if (normalizeServerKey(localStorage.getItem(LAST_SERVER_KEY)) === key) {
+    localStorage.removeItem(LAST_SERVER_KEY);
+  }
+  refreshServerAutocomplete();
+}
+
+function persistCurrentServerModules() {
+  const targetIp =
+    activeConnectedServerKey || (ipInput ? ipInput.value.trim() : "");
+  if (!targetIp) return;
+  if (document.body.dataset.conn !== "connected") return;
+  upsertServerProfile(targetIp, {
+    modules: getActiveEnabledScriptNames(),
+  });
+}
 
 // --- Version picker (themed combo instead of a native datalist) ---
 const versionInput = document.getElementById("version");
@@ -553,7 +707,69 @@ if (versionInput) {
     const v = versionInput.value.trim();
     if (/^auto$/i.test(v)) versionInput.value = "";
     localStorage.setItem(VERSION_STORAGE_KEY, versionInput.value.trim());
+    if (ipInput?.value.trim()) {
+      upsertServerProfile(ipInput.value.trim(), {
+        version: versionInput.value.trim(),
+      });
+    }
   });
+}
+
+const serverCombo = window.mcbpDropdown?.attachCombo(ipInput, {
+  items: [],
+  filter: true,
+  onSelect: ({ value: selectedIp }) => {
+    const prof = getServerProfile(selectedIp);
+    if (prof && versionInput) {
+      versionInput.value = prof.version || "";
+      localStorage.setItem(VERSION_STORAGE_KEY, versionInput.value);
+    }
+    localStorage.setItem(LAST_SERVER_KEY, selectedIp);
+  },
+  onDelete: ({ value: deletedIp }) => {
+    removeServerProfile(deletedIp);
+    if (
+      ipInput &&
+      normalizeServerKey(ipInput.value) === normalizeServerKey(deletedIp)
+    ) {
+      ipInput.value = "";
+    }
+  },
+});
+
+function refreshServerAutocomplete() {
+  if (!serverCombo) return;
+  const profiles = loadServerProfiles();
+  serverCombo.setItems(
+    profiles.map((p) => {
+      const modCount = Array.isArray(p.modules) ? p.modules.length : 0;
+      const hintParts = [];
+      if (p.version) hintParts.push(p.version);
+      if (modCount > 0) {
+        hintParts.push(`${modCount} mod${modCount > 1 ? "s" : ""}`);
+      }
+      return {
+        value: p.ip,
+        label: p.ip,
+        hint: hintParts.join(" · ") || "saved",
+        deletable: true,
+      };
+    }),
+  );
+}
+
+if (ipInput) {
+  const lastIp = localStorage.getItem(LAST_SERVER_KEY) || "";
+  const profiles = loadServerProfiles();
+  const initialIp = lastIp || profiles[0]?.ip || "";
+  if (initialIp && !ipInput.value) {
+    ipInput.value = initialIp;
+    const prof = getServerProfile(initialIp);
+    if (prof?.version && versionInput && !versionInput.value) {
+      versionInput.value = prof.version;
+    }
+  }
+  refreshServerAutocomplete();
 }
 
 // --- Account & Connection Status ---
@@ -618,7 +834,13 @@ if (window.api && typeof window.api.onMsaCode === "function") {
       return;
     }
     panelMsaBanner.hidden = false;
-    if (panelMsaCode) panelMsaCode.textContent = data.userCode;
+    if (panelMsaCode) {
+      panelMsaCode.textContent = data.userCode;
+      panelMsaCode.setAttribute(
+        "aria-label",
+        `Copy Microsoft device code ${data.userCode}`,
+      );
+    }
   });
 }
 
@@ -665,6 +887,8 @@ window.api.onConnectionState((stateInfo) => {
     : "disconnected";
 
   if (stateInfo.state === "connected") {
+    activeConnectedServerKey =
+      stateInfo.host || (ipInput ? ipInput.value.trim() : "");
     statusBadge.classList.add("status-connected");
     statusBadge.textContent = stateInfo.version
       ? `Connected · ${stateInfo.version}`
@@ -674,23 +898,30 @@ window.api.onConnectionState((stateInfo) => {
     statusBadge.classList.add("status-connecting");
     statusBadge.textContent = "Connecting…";
   } else {
+    activeConnectedServerKey = "";
     statusBadge.classList.add("status-disconnected");
     statusBadge.textContent = "Disconnected";
     if (panelMsaBanner) panelMsaBanner.hidden = true;
     document
       .querySelectorAll(".script-name-active")
-      .forEach((el) => el.classList.remove("script-name-active"));
+      .forEach((el) => setScriptActive(el, false));
     updateActiveScriptsBadge();
   }
 });
 
-// --- Logs & Chat (with full Minecraft color & style formatting) ---
+// --- Logs & Chat (windowed virtual viewport + real-time file history pagination) ---
 const preLogsEl = document.querySelector(".pre-logs");
 const preChatEl = document.querySelector(".pre-chat");
 const logFilterInput = document.getElementById("log-filter");
 const chatFilterInput = document.getElementById("chat-filter");
-const MAX_LOG_LINES = 320;
-const MAX_CHAT_LINES = 320;
+const logsJumpLiveBtn = document.getElementById("logs-jump-live");
+const chatJumpLiveBtn = document.getElementById("chat-jump-live");
+// Rows kept in the DOM: generous so the user never sees loading or trimming.
+const LIVE_KEEP_ROWS = 220;
+const WINDOW_MAX_ROWS = 420;
+const PAGE_ROWS = 80;
+const DISK_PAGE_ROWS = 160;
+const MAX_MEMORY_ENTRIES = 12000;
 const chatHistory = [];
 let chatHistoryIndex = -1;
 
@@ -887,14 +1118,54 @@ function renderMinecraftFormatted(payload) {
 
 function classifyLogMessage(rawText) {
   const text = String(rawText || "");
+  if (/^AIAgent\s*\(thinking\)\s*:/i.test(text)) {
+    return {
+      tag: "AI Thought",
+      body: text.replace(/^AIAgent\s*\(thinking\)\s*:\s*/i, ""),
+      tagClass: "tag-think",
+    };
+  }
+  if (/^AIAgent\s+Plan\b/i.test(text)) {
+    const body = text.replace(/^AIAgent\s+Plan\s*:?\s*/i, "");
+    return { tag: "AI Plan", body, tagClass: "tag-plan" };
+  }
+  if (/^AIAgent\s+Queue\b/i.test(text)) {
+    const body = text.replace(/^AIAgent\s+Queue\s*:?\s*/i, "");
+    return { tag: "AI Queue", body, tagClass: "tag-plan" };
+  }
+  if (/^AIAgent\s+[▸✓✗]/i.test(text)) {
+    const isErr = /^AIAgent\s+✗/.test(text);
+    return {
+      tag: "AIAgent",
+      body: text.replace(/^AIAgent\s+/, ""),
+      tagClass: isErr ? "tag-error" : "tag-ai",
+    };
+  }
   const colonIdx = text.indexOf(":");
-  if (colonIdx > 0 && colonIdx <= 20) {
+  if (colonIdx > 0 && colonIdx <= 22) {
     const prefix = text.slice(0, colonIdx).trim();
     const rest = text.slice(colonIdx + 1).trim();
     const low = prefix.toLowerCase();
     let tagClass = "tag-info";
-    if (low.includes("error") || low.includes("fail") || low.includes("kick")) {
+    if (
+      low.includes("error") ||
+      low.includes("fail") ||
+      low.includes("kick") ||
+      /✗|failed/i.test(rest)
+    ) {
       tagClass = "tag-error";
+    } else if (
+      low.includes("aiagent") ||
+      low.includes("aichat") ||
+      low.includes("chatai")
+    ) {
+      tagClass = "tag-ai";
+    } else if (low.includes("proxy")) {
+      tagClass = "tag-proxy";
+    } else if (low.includes("botting")) {
+      tagClass = "tag-botting";
+    } else if (low.includes("viaversion")) {
+      tagClass = "tag-auto";
     } else if (
       low.includes("guard") ||
       low.includes("hunt") ||
@@ -930,77 +1201,481 @@ function isNearBottom(el) {
   return el.scrollHeight - el.scrollTop - el.clientHeight <= 48;
 }
 
-function applyLogFilterToLine(lineEl) {
-  if (!logFilterInput || !lineEl) return;
-  const q = logFilterInput.value.trim().toLowerCase();
-  if (!q) {
-    lineEl.style.display = "";
-    return;
-  }
-  const raw = (lineEl.getAttribute("data-raw") || "").toLowerCase();
-  lineEl.style.display = raw.includes(q) ? "" : "none";
-}
-
-function applyChatFilterToLine(lineEl) {
-  if (!chatFilterInput || !lineEl) return;
-  const q = chatFilterInput.value.trim().toLowerCase();
-  if (!q) {
-    lineEl.style.display = "";
-    return;
-  }
-  const raw = (lineEl.getAttribute("data-raw") || "").toLowerCase();
-  lineEl.style.display = raw.includes(q) ? "" : "none";
-}
-
-if (logFilterInput) {
-  logFilterInput.addEventListener("input", () => {
-    if (!preLogsEl) return;
-    preLogsEl.querySelectorAll(".log-line").forEach(applyLogFilterToLine);
-  });
-}
-
-if (chatFilterInput) {
-  chatFilterInput.addEventListener("input", () => {
-    if (!preChatEl) return;
-    preChatEl.querySelectorAll(".chat-line").forEach(applyChatFilterToLine);
-  });
-}
-
-window.api.onLog((text) => {
-  if (!preLogsEl) return;
-  const raw = String(text || "");
-  const shouldScroll = isNearBottom(preLogsEl);
-  const { tag, body, tagClass } = classifyLogMessage(raw);
-
+function buildLogRowElement(entry) {
   const row = document.createElement("div");
   row.className = "log-line";
-  row.setAttribute("data-raw", raw);
-  const tagHtml = tag
-    ? `<span class="log-tag ${tagClass}">${escapeHtml(tag)}</span>`
-    : "";
-  row.innerHTML = `<time>${formatTime()}</time>${tagHtml}<span class="log-msg">${renderMinecraftFormatted(body)}</span>`;
-  applyLogFilterToLine(row);
-  preLogsEl.appendChild(row);
+  row.setAttribute("data-raw", entry.raw);
+  if (!entry.html) {
+    const { tag, body, tagClass } = classifyLogMessage(entry.raw);
+    const tagHtml = tag
+      ? `<span class="log-tag ${tagClass}">${escapeHtml(tag)}</span>`
+      : "";
+    entry.html = `<time>${escapeHtml(entry.time)}</time>${tagHtml}<span class="log-msg">${renderMinecraftFormatted(body)}</span>`;
+  }
+  row.innerHTML = entry.html;
+  return row;
+}
 
-  while (preLogsEl.children.length > MAX_LOG_LINES) {
-    preLogsEl.removeChild(preLogsEl.firstElementChild);
+function buildChatRowElement(entry) {
+  const row = document.createElement("div");
+  row.className = "chat-line";
+  row.setAttribute("data-raw", entry.raw);
+  if (!entry.html) {
+    entry.html = `<time>${escapeHtml(entry.time)}</time><span class="chat-msg">${renderMinecraftFormatted(entry.payload)}</span>`;
+  }
+  row.innerHTML = entry.html;
+  return row;
+}
+
+function createVirtualStream({
+  type,
+  container,
+  filterInput,
+  jumpBtn,
+  buildRow,
+}) {
+  // The DOM only holds a sliding slice [winStart, winEnd) of the filtered list.
+  // Rows are added/removed incrementally on the side the user is not looking at,
+  // so scrolling stays smooth and nothing visibly jumps.
+  const state = {
+    entries: [],
+    filterQuery: "",
+    winStart: 0,
+    winEnd: 0,
+    pinnedLive: true,
+    unseenCount: 0,
+    diskCursor: {
+      beforeIndex: null,
+      fileIndex: 0,
+      hasMore: true,
+      loading: false,
+      initialized: false,
+    },
+    pendingIncoming: [],
+    rafId: null,
+  };
+
+  const rowsEl = () => (container ? container.children : []);
+  const margin = () =>
+    container ? Math.max(360, container.clientHeight * 1.6) : 360;
+  const top = (el) =>
+    el.getBoundingClientRect().top -
+    container.getBoundingClientRect().top +
+    container.scrollTop;
+
+  function getFiltered() {
+    if (!state.filterQuery) return state.entries;
+    const q = state.filterQuery;
+    return state.entries.filter((e) => e.rawLower.includes(q));
   }
 
-  if (shouldScroll) {
-    preLogsEl.scrollTo(0, preLogsEl.scrollHeight);
+  function updateJumpButton() {
+    if (!jumpBtn) return;
+    if (state.pinnedLive) {
+      jumpBtn.hidden = true;
+      state.unseenCount = 0;
+    } else {
+      jumpBtn.hidden = false;
+      jumpBtn.textContent =
+        state.unseenCount > 0
+          ? `↓ Return to Live (${state.unseenCount} new)`
+          : "↓ Return to Live";
+    }
   }
+
+  function buildFrag(items) {
+    const frag = document.createDocumentFragment();
+    for (const item of items) frag.appendChild(buildRow(item));
+    return frag;
+  }
+
+  // Full rebuild; only used for filter changes, jump-to-live and clear.
+  function renderWindow({ scrollToBottom = true } = {}) {
+    if (!container) return;
+    const filtered = getFiltered();
+    state.winEnd = filtered.length;
+    state.winStart = Math.max(0, state.winEnd - LIVE_KEEP_ROWS);
+    container.replaceChildren(buildFrag(filtered.slice(state.winStart)));
+    if (scrollToBottom) {
+      state.pinnedLive = true;
+      container.scrollTop = container.scrollHeight;
+    }
+    updateJumpButton();
+  }
+
+  // Removing rows above the viewport shifts content; compensate in one step.
+  function trimTopCompensated() {
+    const rows = rowsEl();
+    if (rows.length <= WINDOW_MAX_ROWS) return;
+    const limit = container.scrollTop - margin() * 1.5;
+    const before = container.scrollHeight;
+    const prevTop = container.scrollTop;
+    let removed = 0;
+    while (rows.length > WINDOW_MAX_ROWS - PAGE_ROWS) {
+      const first = rows[0];
+      if (top(first) + first.offsetHeight > limit) break;
+      first.remove();
+      removed++;
+    }
+    if (removed) {
+      state.winStart += removed;
+      container.scrollTop = prevTop - (before - container.scrollHeight);
+    }
+  }
+
+  function trimBottom() {
+    const rows = rowsEl();
+    if (rows.length <= WINDOW_MAX_ROWS) return;
+    const limit = container.scrollTop + container.clientHeight + margin() * 1.5;
+    let removed = 0;
+    while (rows.length > WINDOW_MAX_ROWS - PAGE_ROWS) {
+      const last = rows[rows.length - 1];
+      if (top(last) < limit) break;
+      last.remove();
+      removed++;
+    }
+    state.winEnd -= removed;
+  }
+
+  function prependOlderFromMemory() {
+    if (state.winStart <= 0) return false;
+    const filtered = getFiltered();
+    const from = Math.max(0, state.winStart - PAGE_ROWS);
+    const items = filtered.slice(from, state.winStart);
+    if (!items.length) return false;
+    const prevH = container.scrollHeight;
+    const prevTop = container.scrollTop;
+    container.prepend(buildFrag(items));
+    container.scrollTop = prevTop + (container.scrollHeight - prevH);
+    state.winStart = from;
+    return true;
+  }
+
+  function appendNewerFromMemory() {
+    const filtered = getFiltered();
+    if (state.winEnd >= filtered.length) return false;
+    const to = Math.min(filtered.length, state.winEnd + PAGE_ROWS);
+    container.appendChild(buildFrag(filtered.slice(state.winEnd, to)));
+    state.winEnd = to;
+    return true;
+  }
+
+  async function loadOlderFromDisk() {
+    if (
+      state.diskCursor.loading ||
+      !state.diskCursor.hasMore ||
+      !window.api?.sessionLogReadHistory
+    ) {
+      return false;
+    }
+    state.diskCursor.loading = true;
+    try {
+      const startFileIdx = state.diskCursor.initialized
+        ? state.diskCursor.fileIndex
+        : 1;
+      const res = await window.api.sessionLogReadHistory({
+        type,
+        beforeIndex: state.diskCursor.initialized
+          ? state.diskCursor.beforeIndex
+          : null,
+        fileIndex: startFileIdx,
+        limit: DISK_PAGE_ROWS,
+        filter: "",
+      });
+      state.diskCursor.initialized = true;
+      state.diskCursor.beforeIndex = res?.nextBeforeIndex ?? null;
+      state.diskCursor.fileIndex = res?.nextFileIndex ?? startFileIdx + 1;
+      state.diskCursor.hasMore = Boolean(res?.hasMore);
+
+      const fetched = Array.isArray(res?.entries) ? res.entries : [];
+      if (!fetched.length) return false;
+      const mapped = fetched.map((e) => ({
+        time: e.time || formatTime(),
+        raw: String(e.raw || ""),
+        rawLower: String(e.raw || "").toLowerCase(),
+        payload: e.payload || e.raw || "",
+        sourceFile: e.sourceFile || res.sourceFile || "",
+        html: "",
+      }));
+      const q = state.filterQuery;
+      const added = q
+        ? mapped.filter((e) => e.rawLower.includes(q)).length
+        : mapped.length;
+      state.entries.unshift(...mapped);
+      state.winStart += added;
+      state.winEnd += added;
+      return added > 0;
+    } catch (err) {
+      state.diskCursor.hasMore = false;
+      console.error(`Could not load ${type} history:`, err);
+      if (filterInput) {
+        filterInput.setAttribute("aria-invalid", "true");
+        filterInput.title = `Could not load history: ${err.message || err}`;
+      }
+      return false;
+    } finally {
+      state.diskCursor.loading = false;
+    }
+  }
+
+  function flushIncoming() {
+    state.rafId = null;
+    if (!state.pendingIncoming.length || !container) return;
+    const batch = state.pendingIncoming.splice(0, state.pendingIncoming.length);
+    const q = state.filterQuery;
+    const prevTotal = getFiltered().length;
+    const touchesLive = state.winEnd >= prevTotal;
+
+    state.entries.push(...batch);
+    if (state.entries.length > MAX_MEMORY_ENTRIES) {
+      const overflow = state.entries.splice(
+        0,
+        state.entries.length - MAX_MEMORY_ENTRIES,
+      );
+      const gone = q
+        ? overflow.filter((e) => e.rawLower.includes(q)).length
+        : overflow.length;
+      state.winStart = Math.max(0, state.winStart - gone);
+      state.winEnd = Math.max(0, state.winEnd - gone);
+    }
+
+    const matching = q ? batch.filter((e) => e.rawLower.includes(q)) : batch;
+    if (!matching.length) return;
+
+    if (!touchesLive) {
+      state.unseenCount += matching.length;
+      updateJumpButton();
+      return;
+    }
+
+    // Window reaches the live edge: append in place, never rebuild.
+    if (matching.length >= WINDOW_MAX_ROWS) {
+      renderWindow({ scrollToBottom: state.pinnedLive });
+      return;
+    }
+    const liveFrag = buildFrag(matching);
+    if (state.pinnedLive && matching.length <= 6) {
+      for (const el of liveFrag.children) el.classList.add("line-enter");
+    }
+    container.appendChild(liveFrag);
+    state.winEnd = getFiltered().length;
+
+    if (state.pinnedLive) {
+      container.scrollTop = container.scrollHeight;
+      // Batch trimming: only once well past the cap, down to the live keep size.
+      if (rowsEl().length > WINDOW_MAX_ROWS) {
+        const extra = rowsEl().length - LIVE_KEEP_ROWS;
+        for (let i = 0; i < extra; i++) rowsEl()[0].remove();
+        state.winStart += extra;
+        container.scrollTop = container.scrollHeight;
+      }
+    } else {
+      state.unseenCount += matching.length;
+      trimTopCompensated();
+      updateJumpButton();
+    }
+  }
+
+  function push(entry) {
+    state.pendingIncoming.push({
+      time: entry.time || formatTime(),
+      raw: entry.raw,
+      rawLower: entry.raw.toLowerCase(),
+      payload: entry.payload ?? entry.raw,
+      sourceFile: "",
+      html: "",
+    });
+    if (!state.rafId) {
+      state.rafId = requestAnimationFrame(flushIncoming);
+    }
+  }
+
+  function removeMatching(needle) {
+    const clean = String(needle || "");
+    if (!clean) return;
+    state.pendingIncoming = state.pendingIncoming.filter(
+      (e) => !e.raw.includes(clean),
+    );
+    const beforeLen = state.entries.length;
+    state.entries = state.entries.filter((e) => !e.raw.includes(clean));
+    if (state.entries.length === beforeLen || !container) return;
+    const wasPinned = state.pinnedLive;
+    const prevTop = container.scrollTop;
+    renderWindow({ scrollToBottom: wasPinned });
+    if (!wasPinned) {
+      state.pinnedLive = false;
+      container.scrollTop = prevTop;
+      updateJumpButton();
+    }
+  }
+
+  function jumpToLive() {
+    state.unseenCount = 0;
+    renderWindow({ scrollToBottom: true });
+  }
+
+  function clear() {
+    state.entries = [];
+    state.pendingIncoming = [];
+    state.winStart = 0;
+    state.winEnd = 0;
+    state.pinnedLive = true;
+    state.unseenCount = 0;
+    if (container) container.innerHTML = "";
+    updateJumpButton();
+  }
+
+  if (container) {
+    let busy = false;
+    let queued = false;
+
+    async function onScroll() {
+      if (busy) {
+        queued = true;
+        return;
+      }
+      busy = true;
+      try {
+        do {
+          queued = false;
+          const m = margin();
+          const distBottom =
+            container.scrollHeight -
+            container.scrollTop -
+            container.clientHeight;
+          const atLiveEdge = state.winEnd >= getFiltered().length;
+          const wasPinned = state.pinnedLive;
+          state.pinnedLive = atLiveEdge && distBottom < 24;
+          if (state.pinnedLive !== wasPinned) updateJumpButton();
+
+          // Prefetch well before the user reaches the edge.
+          if (container.scrollTop < m) {
+            let grew = prependOlderFromMemory();
+            if (!grew && state.diskCursor.hasMore) {
+              const query = state.filterQuery;
+              do {
+                if (await loadOlderFromDisk()) {
+                  grew = prependOlderFromMemory();
+                  break;
+                }
+                if (state.diskCursor.loading) break;
+                if (query && state.diskCursor.hasMore) {
+                  await new Promise((resolve) => setTimeout(resolve, 0));
+                }
+              } while (
+                query &&
+                query === state.filterQuery &&
+                state.diskCursor.hasMore
+              );
+            }
+            if (grew) trimBottom();
+          }
+          if (distBottom < m && !atLiveEdge) {
+            if (appendNewerFromMemory()) trimTopCompensated();
+            const nowLive = state.winEnd >= getFiltered().length;
+            if (nowLive) state.unseenCount = 0;
+            updateJumpButton();
+          }
+        } while (queued);
+      } finally {
+        busy = false;
+      }
+    }
+
+    let scrollRaf = null;
+    container.addEventListener(
+      "scroll",
+      () => {
+        if (scrollRaf) return;
+        scrollRaf = requestAnimationFrame(() => {
+          scrollRaf = null;
+          onScroll();
+        });
+      },
+      { passive: true },
+    );
+  }
+
+  if (filterInput) {
+    let fillTask = null;
+    const fillFilteredHistory = () => {
+      if (fillTask || !state.filterQuery || !state.diskCursor.hasMore) return;
+      fillTask = (async () => {
+        let pages = 0;
+        while (
+          state.filterQuery &&
+          state.diskCursor.hasMore &&
+          container &&
+          container.scrollHeight <= container.clientHeight &&
+          pages < 5
+        ) {
+          if (state.diskCursor.loading) {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            continue;
+          }
+          const grew = await loadOlderFromDisk();
+          if (grew) prependOlderFromMemory();
+          pages++;
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      })().finally(() => {
+        fillTask = null;
+        if (
+          state.filterQuery &&
+          state.diskCursor.hasMore &&
+          container &&
+          container.scrollHeight <= container.clientHeight
+        ) {
+          setTimeout(fillFilteredHistory, 0);
+        }
+      });
+    };
+    filterInput.addEventListener("input", () => {
+      state.filterQuery = filterInput.value.trim().toLowerCase();
+      filterInput.removeAttribute("aria-invalid");
+      filterInput.removeAttribute("title");
+      renderWindow({ scrollToBottom: true });
+      fillFilteredHistory();
+    });
+  }
+
+  if (jumpBtn) {
+    jumpBtn.addEventListener("click", () => jumpToLive());
+  }
+
+  return {
+    push,
+    removeMatching,
+    jumpToLive,
+    clear,
+    isPinnedLive: () => state.pinnedLive,
+  };
+}
+
+const logsStream = createVirtualStream({
+  type: "logs",
+  container: preLogsEl,
+  filterInput: logFilterInput,
+  jumpBtn: logsJumpLiveBtn,
+  buildRow: buildLogRowElement,
+});
+
+const chatStream = createVirtualStream({
+  type: "chat",
+  container: preChatEl,
+  filterInput: chatFilterInput,
+  jumpBtn: chatJumpLiveBtn,
+  buildRow: buildChatRowElement,
+});
+
+window.api.onLog((text) => {
+  const raw = String(text || "");
+  if (!raw) return;
+  logsStream.push({ raw, time: formatTime() });
 });
 
 window.api.onClearLog((text) => {
-  if (!preLogsEl) return;
-  const needle = String(text || "");
-  if (!needle) return;
-  preLogsEl.querySelectorAll(".log-line").forEach((row) => {
-    const raw = row.getAttribute("data-raw") || "";
-    if (raw.includes(needle)) {
-      row.remove();
-    }
-  });
+  logsStream.removeMatching(text);
 });
 
 // --- Console tabs (logs / chat) ---
@@ -1010,10 +1685,7 @@ const chatUnreadDot = document.getElementById("chat-unread");
 function showConsoleTab(name) {
   activeConsoleTab = name;
   document.querySelectorAll(".console-tab").forEach((tab) => {
-    tab.classList.toggle(
-      "active",
-      tab.getAttribute("data-console-tab") === name,
-    );
+    setTabSelected(tab, tab.getAttribute("data-console-tab") === name);
   });
   document.querySelectorAll(".console-pane").forEach((pane) => {
     const match = pane.id === `console-${name}`;
@@ -1021,7 +1693,10 @@ function showConsoleTab(name) {
     pane.hidden = !match;
   });
   const scroller = name === "chat" ? preChatEl : preLogsEl;
-  if (scroller) scroller.scrollTo(0, scroller.scrollHeight);
+  const stream = name === "chat" ? chatStream : logsStream;
+  if (scroller && stream.isPinnedLive()) {
+    scroller.scrollTo(0, scroller.scrollHeight);
+  }
   if (name === "chat" && chatUnreadDot) chatUnreadDot.hidden = true;
 }
 
@@ -1032,28 +1707,16 @@ document.querySelectorAll(".console-tab").forEach((tab) => {
 });
 
 window.api.onChat((payload) => {
-  if (!preChatEl) return;
-  const shouldScroll = isNearBottom(preChatEl);
   const plainText =
     typeof payload === "string"
       ? payload
       : String(payload?.text || payload?.motd || "");
   if (!plainText.trim()) return;
-
-  const row = document.createElement("div");
-  row.className = "chat-line";
-  row.setAttribute("data-raw", plainText);
-  row.innerHTML = `<time>${formatTime()}</time><span class="chat-msg">${renderMinecraftFormatted(payload)}</span>`;
-  applyChatFilterToLine(row);
-  preChatEl.appendChild(row);
-
-  while (preChatEl.children.length > MAX_CHAT_LINES) {
-    preChatEl.removeChild(preChatEl.firstElementChild);
-  }
-
-  if (shouldScroll) {
-    preChatEl.scrollTo(0, preChatEl.scrollHeight);
-  }
+  chatStream.push({
+    raw: plainText,
+    payload,
+    time: formatTime(),
+  });
   if (activeConsoleTab !== "chat" && chatUnreadDot) {
     chatUnreadDot.hidden = false;
   }
@@ -1061,9 +1724,9 @@ window.api.onChat((payload) => {
 
 document.getElementById("clear-console-btn").addEventListener("click", () => {
   if (activeConsoleTab === "chat") {
-    if (preChatEl) preChatEl.innerHTML = "";
-  } else if (preLogsEl) {
-    preLogsEl.innerHTML = "";
+    chatStream.clear();
+  } else {
+    logsStream.clear();
   }
 });
 
@@ -1108,12 +1771,23 @@ document
 function connectToServer() {
   const ip = document.getElementById("ip").value.trim();
   const version = document.getElementById("version").value.trim();
+  if (!ip) return;
+  localStorage.setItem(LAST_SERVER_KEY, ip);
+  localStorage.setItem(VERSION_STORAGE_KEY, version);
+  const existingProfile = getServerProfile(ip);
+  const rememberedModules = Array.isArray(existingProfile?.modules)
+    ? existingProfile.modules
+    : getActiveEnabledScriptNames();
+  upsertServerProfile(ip, { version, modules: rememberedModules });
+
   if (onlineMode) {
     window.api.serverConnect({
       ip,
       version,
       username: accountEmail || accountMcName,
       auth: "microsoft",
+      rememberedModules,
+      useProxy: mainProxyEnabled,
     });
   } else {
     window.api.serverConnect({
@@ -1121,6 +1795,8 @@ function connectToServer() {
       version,
       username: accountUsername,
       auth: "offline",
+      rememberedModules,
+      useProxy: mainProxyEnabled,
     });
   }
 }
@@ -1150,9 +1826,11 @@ document.getElementById("open-custom-scripts").addEventListener("click", () => {
 
 // --- Scripts Grid, Search, Persistent Options & Stop All ---
 const actionsContainer = document.querySelector(".div-actions");
+const controlAiContainer = document.getElementById("control-ai-scripts");
 const scriptSearchInput = document.getElementById("script-search");
 const stopAllScriptsBtn = document.getElementById("stop-all-scripts");
 const SCRIPT_OPTS_STORAGE_KEY = "mcbp-script-options-v1";
+const AI_CONTROL_SCRIPTS = new Set(["aichat", "chatai", "aiagent"]);
 
 const DEFAULT_SCRIPT_OPTIONS = {
   "hostiles-Guard": "on",
@@ -1162,6 +1840,7 @@ const DEFAULT_SCRIPT_OPTIONS = {
   "armor-GearUp": "on",
   "shield-GearUp": "on",
   "tier-GearUp": "diamond",
+  "aifix-GearUp": "on",
   "autoweapon-Hunt": "on",
   "sprintjump-Hunt": "on",
   "crits-Hunt": "on",
@@ -1231,28 +1910,34 @@ function saveScriptOptionValue(fieldId, val) {
 if (scriptSearchInput) {
   scriptSearchInput.addEventListener("input", () => {
     const q = scriptSearchInput.value.trim().toLowerCase();
-    document.querySelectorAll(".script-container").forEach((card) => {
-      const name = (card.getAttribute("data-script") || "").toLowerCase();
-      card.style.display = !q || name.includes(q) ? "" : "none";
-    });
+    document
+      .querySelectorAll(".div-actions .script-container")
+      .forEach((card) => {
+        const name = (card.getAttribute("data-script") || "").toLowerCase();
+        card.style.display = !q || name.includes(q) ? "" : "none";
+      });
   });
 }
 
 if (stopAllScriptsBtn) {
   stopAllScriptsBtn.addEventListener("click", () => {
-    document.querySelectorAll(".script-name-active").forEach((el) => {
-      const scriptName = el.getAttribute("data-script");
-      if (scriptName) {
-        window.api.onScriptToggleOff(scriptName);
-      }
-      el.classList.remove("script-name-active");
-    });
+    document
+      .querySelectorAll(".div-actions .script-name-active")
+      .forEach((el) => {
+        const scriptName = el.getAttribute("data-script");
+        if (scriptName) {
+          window.api.onScriptToggleOff(scriptName);
+        }
+        setScriptActive(el, false);
+      });
     updateActiveScriptsBadge();
+    persistCurrentServerModules();
   });
 }
 
 window.api.onClearScripts(() => {
   if (actionsContainer) actionsContainer.innerHTML = "";
+  if (controlAiContainer) controlAiContainer.innerHTML = "";
   updateActiveScriptsBadge();
 });
 
@@ -1262,8 +1947,9 @@ if (window.api && typeof window.api.onScriptState === "function") {
       `.script-container[data-script="${CSS.escape(String(scriptId))}"] .script-name`,
     );
     if (card) {
-      card.classList.toggle("script-name-active", Boolean(active));
+      setScriptActive(card, Boolean(active));
       updateActiveScriptsBadge();
+      persistCurrentServerModules();
     }
   });
 }
@@ -1343,10 +2029,16 @@ window.api.onScript((html, scriptId, meta = {}) => {
     gear.type = "button";
     gear.className = "script-gear";
     gear.title = "Options";
+    gear.setAttribute("aria-label", `${scriptName} options`);
+    gear.setAttribute("aria-expanded", "false");
     gear.textContent = "▾";
     gear.addEventListener("click", (event) => {
       event.stopPropagation();
       card.classList.toggle("open");
+      gear.setAttribute(
+        "aria-expanded",
+        String(card.classList.contains("open")),
+      );
     });
     card.appendChild(gear);
   }
@@ -1355,26 +2047,38 @@ window.api.onScript((html, scriptId, meta = {}) => {
     toggleEl.addEventListener("click", () => {
       if (toggleEl.classList.contains("script-name-active")) {
         window.api.onScriptToggleOff(scriptName);
-        toggleEl.classList.remove("script-name-active");
+        setScriptActive(toggleEl, false);
       } else {
         window.api.onScriptToggleOn(scriptName);
-        toggleEl.classList.add("script-name-active");
+        setScriptActive(toggleEl, true);
       }
       updateActiveScriptsBadge();
+      persistCurrentServerModules();
     });
   }
 
+  // Place AI scripts (AIChat, AIAgent) in the Control tab only so they don't mix with normal modules
+  const isAiControlScript =
+    Boolean(meta?.aiSync) || AI_CONTROL_SCRIPTS.has(scriptName.toLowerCase());
+  const targetParent =
+    isAiControlScript && controlAiContainer
+      ? controlAiContainer
+      : actionsContainer;
+
   // Re-registered script (saved from Studio): swap the card in place.
-  const existing = actionsContainer.querySelector(
+  const existing = targetParent.querySelector(
     `.script-container[data-script="${CSS.escape(scriptName)}"]`,
   );
   if (existing) {
-    if (existing.classList.contains("open")) card.classList.add("open");
+    if (existing.classList.contains("open")) {
+      card.classList.add("open");
+      card.querySelector(".script-gear")?.setAttribute("aria-expanded", "true");
+    }
     existing.replaceWith(card);
     card.classList.add("script-flash");
     setTimeout(() => card.classList.remove("script-flash"), 1200);
   } else {
-    actionsContainer.appendChild(card);
+    targetParent.appendChild(card);
   }
   if (meta?.aiSync && latestOllamaStatus)
     syncAiScriptFields(latestOllamaStatus);
@@ -1576,11 +2280,11 @@ if (window.api && typeof window.api.onBotTelemetry === "function") {
   window.api.onBotTelemetry((data) => {
     latestTelemetry = data;
     if (!data || !data.connected) {
-      if (teleHpText) teleHpText.textContent = "— / 20";
+      if (teleHpText) teleHpText.textContent = "- / 20";
       if (teleHpFill) teleHpFill.style.width = "0%";
-      if (teleFoodText) teleFoodText.textContent = "— / 20";
+      if (teleFoodText) teleFoodText.textContent = "- / 20";
       if (teleFoodFill) teleFoodFill.style.width = "0%";
-      if (telePos) telePos.textContent = "—";
+      if (telePos) telePos.textContent = "-";
       if (teleHand) teleHand.textContent = "Empty hand";
       const strip = document.getElementById("telemetry-strip");
       if (strip) strip.title = "";
@@ -1924,7 +2628,7 @@ function updateInspector() {
     if (invSelectedMeta) {
       const loreStr =
         Array.isArray(cItem.lore) && cItem.lore.length > 0
-          ? ` — ${cItem.lore.map((l) => renderMinecraftFormatted(l)).join(" · ")}`
+          ? ` - ${cItem.lore.map((l) => renderMinecraftFormatted(l)).join(" · ")}`
           : "";
       invSelectedMeta.innerHTML = `<span>Slot #${selectedContainerSlot} (${escapeHtml(cItem.name)})</span>${loreStr}`;
     }
@@ -2079,8 +2783,8 @@ function renderInventory(inv) {
                 ? `\n${item.lore.map((l) => l.replace(/§#[0-9a-fA-F]{6}|§[0-9a-fk-or]/gi, "")).join("\n")}`
                 : "";
             const title = item
-              ? `${escapeHtml(item.displayName)} (x${item.count}) — Container Slot #${slot}${escapeHtml(lorePlain)}`
-              : `Container Slot #${slot} (Empty) — Click to interact`;
+              ? `${escapeHtml(item.displayName)} (x${item.count}) - Container Slot #${slot}${escapeHtml(lorePlain)}`
+              : `Container Slot #${slot} (Empty) - Click to interact`;
             return `<div class="inv-slot ${hasItem} ${selected}" data-container-slot="${slot}" title="${title}">${renderSlotInner(item, String(slot))}</div>`;
           })
           .join("");
@@ -2162,7 +2866,7 @@ function renderInventory(inv) {
         const selected = selectedInvSlot === slot ? "inv-slot-selected" : "";
         const hasItem = item ? "has-item" : "";
         const title = item
-          ? `${escapeHtml(item.displayName)} (x${item.count}) — Slot #${slot}`
+          ? `${escapeHtml(item.displayName)} (x${item.count}) - Slot #${slot}`
           : `Empty Slot #${slot}`;
         return `<div class="inv-slot ${hasItem} ${selected}" data-slot="${slot}" title="${title}">${renderSlotInner(item)}</div>`;
       })
@@ -2420,10 +3124,20 @@ const aiTestBtn = $id("ai-test-btn");
 const aiTestAgentCb = $id("ai-test-agent-cb");
 const aiTestOutput = $id("ai-test-output");
 
+const aiProviderSelect = $id("ai-provider-select");
+const aiDsKeyField = $id("ai-ds-key-field");
+const aiDsKeyInput = $id("ai-ds-key-input");
+const aiDsActions = $id("ai-ds-actions");
+const aiDsSaveBtn = $id("ai-ds-save-btn");
+const aiDsClearBtn = $id("ai-ds-clear-btn");
+const aiDsStatus = $id("ai-ds-status");
+const aiDsNote = $id("ai-ds-note");
+const aiDsUsage = $id("ai-ds-usage");
+
 let latestOllamaStatus = null;
 
-[aiModelSelect, aiTriggerSelect, aiAgentModelSelect].forEach((sel) =>
-  window.mcbpDropdown?.enhanceSelect(sel),
+[aiProviderSelect, aiModelSelect, aiTriggerSelect, aiAgentModelSelect].forEach(
+  (sel) => window.mcbpDropdown?.enhanceSelect(sel),
 );
 
 function syncDropdown(sel) {
@@ -2517,7 +3231,7 @@ function buildModelOptionsHtml(
   return html;
 }
 
-// Script-tab options that mirror the shared AI config (ChatAI / AIAgent).
+// Script-tab options that mirror the shared AI config (AIChat / AIAgent).
 const AI_SYNC_FIELDS = {
   replyall: {
     key: "triggerMode",
@@ -2626,8 +3340,49 @@ function renderOllamaStatus(st) {
   const cfg = st.config || {};
   const installed = Array.isArray(st.installedModels) ? st.installedModels : [];
   const installedSet = new Set(installed.map((m) => m.name));
+  // Module options like "AI Fixes Errors" only appear once the AI is set up.
+  document.body.classList.toggle(
+    "ai-ready",
+    Boolean(st.installed && installed.length > 0),
+  );
 
-  if (aiServiceBadge) {
+  const isCloud = cfg.provider === "deepseek";
+  const ds = st.deepseek || {};
+  if (aiProviderSelect) {
+    aiProviderSelect.value = isCloud ? "deepseek" : "ollama";
+    syncDropdown(aiProviderSelect);
+  }
+  [aiDsKeyField, aiDsActions, aiDsNote].forEach((el) => {
+    if (el) el.hidden = !isCloud;
+  });
+  [aiAutoSetupBtn, aiHwSummary, aiRecBadge].forEach((el) => {
+    if (el) el.hidden = isCloud;
+  });
+  if (aiDsKeyInput) {
+    aiDsKeyInput.placeholder = ds.hasKey ? `Saved (${ds.keyHint})` : "sk-...";
+  }
+  if (aiDsClearBtn) aiDsClearBtn.disabled = !ds.hasKey;
+  if (aiDsUsage) {
+    const u = ds.usage || {};
+    aiDsUsage.textContent =
+      isCloud && u.requests
+        ? `${u.requests} calls · ${u.inputTokens} in (${u.cacheHitPct}% cached) · ${u.outputTokens} out`
+        : "";
+  }
+
+  if (aiServiceBadge && isCloud) {
+    aiServiceBadge.classList.remove(
+      "status-connected",
+      "status-connecting",
+      "status-disconnected",
+    );
+    aiServiceBadge.classList.add(
+      ds.hasKey ? "status-connected" : "status-disconnected",
+    );
+    aiServiceBadge.textContent = ds.hasKey
+      ? "DeepSeek · Key set"
+      : "DeepSeek · No key";
+  } else if (aiServiceBadge) {
     aiServiceBadge.classList.remove(
       "status-connected",
       "status-connecting",
@@ -2725,13 +3480,24 @@ function renderOllamaStatus(st) {
     const catalog = Array.isArray(hw.catalog) ? hw.catalog : [];
     const merged = [];
     const seen = new Set();
+    const BADGE_META = {
+      logic: { icon: "🧠", label: "Logic", cls: "is-logic" },
+      accuracy: { icon: "🎯", label: "Accuracy", cls: "is-accuracy" },
+      think: { icon: "💭", label: "Thinking", cls: "is-think" },
+      code: { icon: "💻", label: "Coding", cls: "is-code" },
+      chat: { icon: "💬", label: "Chat", cls: "is-chat" },
+      fast: { icon: "⚡", label: "Fast", cls: "is-fast" },
+    };
+
     for (const c of catalog) {
       seen.add(c.name);
       merged.push({
         name: c.name,
+        label: c.label || c.name,
         desc: c.desc,
         sizeLabel: c.sizeLabel,
         tags: modelTags(c),
+        badges: Array.isArray(c.badges) ? c.badges.slice(0, 3) : [],
         isRecommended: Boolean(c.isRecommended),
         isInstalled:
           installedSet.has(c.name) || installedSet.has(`${c.name}:latest`),
@@ -2744,9 +3510,11 @@ function renderOllamaStatus(st) {
       ) {
         merged.push({
           name: inst.name,
+          label: inst.name,
           desc: "Installed local Ollama model",
           sizeLabel: inst.sizeLabel,
           tags: [],
+          badges: [],
           isRecommended: false,
           isInstalled: true,
         });
@@ -2765,16 +3533,19 @@ function renderOllamaStatus(st) {
         const isCurrent = isCode
           ? m.name === scriptModel
           : m.name === activeModel;
+        const capBadges = (m.badges || [])
+          .slice(0, 3)
+          .map((bKey) => {
+            const bm = BADGE_META[bKey];
+            if (!bm) return "";
+            return `<span class="ai-model-badge ${bm.cls}" title="${escapeHtml(bm.label)}">${bm.icon} ${escapeHtml(bm.label)}</span>`;
+          })
+          .join("");
         const pills = [
           m.isRecommended
-            ? `<span class="ai-model-badge is-rec">Recommended</span>`
+            ? `<span class="ai-model-badge is-rec" title="Recommended for your hardware">★ Pick</span>`
             : "",
-          m.tags.includes("tools")
-            ? `<span class="ai-model-badge is-tools" title="Supports AI Agent actions">Actions</span>`
-            : "",
-          m.tags.includes("code")
-            ? `<span class="ai-model-badge is-code" title="Good at writing scripts (Studio)">Code</span>`
-            : "",
+          capBadges,
           m.isInstalled
             ? `<span class="ai-model-badge is-installed">Installed</span>`
             : `<span class="ai-model-badge">${escapeHtml(m.sizeLabel)}</span>`,
@@ -2911,6 +3682,31 @@ if (aiAutoSetupBtn) {
 
 aiRefreshBtn?.addEventListener("click", () => refreshOllamaUi());
 
+aiProviderSelect?.addEventListener("change", () =>
+  saveAiConfig({ provider: aiProviderSelect.value }),
+);
+
+aiDsSaveBtn?.addEventListener("click", async () => {
+  const key = aiDsKeyInput?.value.trim() || "";
+  if (!key && !latestOllamaStatus?.deepseek?.hasKey) {
+    if (aiDsStatus) aiDsStatus.textContent = "Paste your API key first.";
+    return;
+  }
+  if (aiDsStatus) aiDsStatus.textContent = "Checking…";
+  const res = await window.api?.aiTestKey?.(key).catch(() => null);
+  if (aiDsStatus)
+    aiDsStatus.textContent = res?.ok
+      ? "Key works."
+      : res?.error || "Could not check key.";
+  if (res?.ok && aiDsKeyInput) aiDsKeyInput.value = "";
+  if (res?.status) renderOllamaStatus(res.status);
+});
+
+aiDsClearBtn?.addEventListener("click", async () => {
+  await saveAiConfig({ deepseekApiKey: "" });
+  if (aiDsStatus) aiDsStatus.textContent = "Key removed.";
+});
+
 if (aiPullCustomBtn && aiCustomModelInput) {
   const pullCustom = async () => {
     const tag = aiCustomModelInput.value.trim();
@@ -3016,6 +3812,421 @@ if (window.api?.onOllamaProgress) {
 
 refreshOllamaUi();
 
+// --- AI Brain Live Status UI ---
+const aiBrainGoalBadge = $id("ai-brain-goal-badge");
+const aiBrainStep = $id("ai-brain-step");
+const aiBrainPlanList = $id("ai-brain-plan-list");
+const aiBrainThoughtsList = $id("ai-brain-thoughts-list");
+
+function renderAiBrainStatus(snap) {
+  if (!snap) return;
+  if (aiBrainGoalBadge) {
+    const goalText = snap.activeGoal || "Idle";
+    aiBrainGoalBadge.textContent = `Goal: ${goalText}`;
+    aiBrainGoalBadge.classList.toggle("status-connected", goalText !== "Idle");
+  }
+  if (aiBrainStep) {
+    const lines = [];
+    if (snap.activeStep) lines.push(snap.activeStep);
+    if (snap.subObjective) {
+      lines.push(
+        `↳ ${snap.subObjective}${snap.subReason ? ` (${snap.subReason})` : ""}`,
+      );
+    }
+    if (snap.aiPlan) lines.push(`Plan: ${snap.aiPlan}`);
+    aiBrainStep.textContent = lines.length
+      ? lines.join("\n")
+      : "No active step";
+    aiBrainStep.style.whiteSpace = "pre-line";
+    aiBrainStep.title = Array.isArray(snap.reasoningHints)
+      ? snap.reasoningHints.join("\n")
+      : "";
+  }
+  if (aiBrainPlanList) {
+    const planItems = [];
+    if (Array.isArray(snap.planSteps) && snap.planSteps.length > 0) {
+      for (const st of snap.planSteps) {
+        const icon =
+          st.status === "done" ? "✓" : st.status === "active" ? "▸" : "·";
+        planItems.push(
+          `<div class="radar-item"><div class="radar-item-info"><span class="radar-entity-icon">${icon}</span><span class="radar-item-name">${escapeHtml(st.label)}</span></div></div>`,
+        );
+      }
+    }
+    if (Array.isArray(snap.scriptActivity)) {
+      for (const a of snap.scriptActivity) {
+        planItems.push(
+          `<div class="radar-item" title="${escapeHtml(a.objective || "")}"><div class="radar-item-info"><span class="radar-entity-icon">▶</span><span class="radar-item-name">${escapeHtml(a.script)}: ${escapeHtml(String(a.text || "").slice(0, 80))}</span></div></div>`,
+        );
+      }
+    }
+    if (
+      snap.pathfinder &&
+      snap.pathfinder.at &&
+      Date.now() - snap.pathfinder.at < 120000
+    ) {
+      planItems.push(
+        `<div class="radar-item"><div class="radar-item-info"><span class="radar-entity-icon">🧭</span><span class="radar-item-name">Pathfinder: ${escapeHtml(snap.pathfinder.engine === "stock" ? "mineflayer-pathfinder" : "Baritone")} (${escapeHtml(snap.pathfinder.lastReason || "")})</span></div></div>`,
+      );
+    }
+    if (Array.isArray(snap.recentActions) && snap.recentActions.length > 0) {
+      for (const act of snap.recentActions.slice(-6).reverse()) {
+        const icon = act.failed ? "✗" : "⚙";
+        planItems.push(
+          `<div class="radar-item" title="${escapeHtml(act.result)}"><div class="radar-item-info"><span class="radar-entity-icon">${icon}</span><span class="radar-item-name">${escapeHtml(act.tool)} → ${escapeHtml(act.result.slice(0, 70))}</span></div></div>`,
+        );
+      }
+    }
+    aiBrainPlanList.innerHTML = planItems.length
+      ? planItems.join("")
+      : `<p class="radar-empty">No active plan steps</p>`;
+  }
+  if (aiBrainThoughtsList) {
+    const rows = [];
+    if (Array.isArray(snap.problemHistory) && snap.problemHistory.length > 0) {
+      for (const p of snap.problemHistory.slice(-2).reverse()) {
+        const fixText = p.fix || p.diagnosis || p.error || "";
+        rows.push(
+          `<div class="radar-item" title="${escapeHtml(fixText)}"><div class="radar-item-info"><span class="radar-entity-icon">🛠</span><span class="radar-item-name">${escapeHtml(p.tool)}: ${escapeHtml(fixText.slice(0, 85))}</span></div></div>`,
+        );
+      }
+    }
+    if (Array.isArray(snap.recentThoughts) && snap.recentThoughts.length > 0) {
+      for (const th of snap.recentThoughts.slice(-4).reverse()) {
+        rows.push(
+          `<div class="radar-item"><div class="radar-item-info"><span class="radar-entity-icon">💭</span><span class="radar-item-name">${escapeHtml(th.text)}</span></div></div>`,
+        );
+      }
+    }
+    if (Array.isArray(snap.landmarks) && snap.landmarks.length > 0) {
+      for (const lm of snap.landmarks.slice(0, 4)) {
+        rows.push(
+          `<div class="radar-item"><div class="radar-item-info"><span class="radar-entity-icon">📍</span><span class="radar-item-name">${escapeHtml(lm.label)} (${lm.x}, ${lm.y}, ${lm.z})</span></div></div>`,
+        );
+      }
+    }
+    aiBrainThoughtsList.innerHTML = rows.length
+      ? rows.join("")
+      : `<p class="radar-empty">Waiting for AI activity…</p>`;
+  }
+}
+
+async function refreshAiBrainUi() {
+  if (!window.api?.aiBrainGetStatus) return;
+  try {
+    renderAiBrainStatus(await window.api.aiBrainGetStatus());
+  } catch (_) {}
+}
+
+if (window.api?.onAiBrainStatus) {
+  window.api.onAiBrainStatus((snap) => renderAiBrainStatus(snap));
+}
+refreshAiBrainUi();
+
+// --- Botting Swarm & Proxy Pool / Free Proxy Auto-Tester UI ---
+const mainProxyToggle = $id("main-proxy-toggle");
+const bottingTabCount = $id("botting-tab-count");
+const bottingSummaryBadge = $id("botting-summary-badge");
+const bottingSpawnBtn = $id("botting-spawn-btn");
+const bottingStopAllBtn = $id("botting-stop-all-btn");
+const bottingPrefixInput = $id("botting-prefix-input");
+const bottingCountInput = $id("botting-count-input");
+const bottingDelayInput = $id("botting-delay-input");
+const bottingProxyMode = $id("botting-proxy-mode");
+const bottingTargetInput = $id("botting-target-input");
+const bottingBotsList = $id("botting-bots-list");
+
+const proxySummaryBadge = $id("proxy-summary-badge");
+const proxyFetchFreeBtn = $id("proxy-fetch-free-btn");
+const proxyTestAllBtn = $id("proxy-test-all-btn");
+const proxyClearDeadBtn = $id("proxy-clear-dead-btn");
+const proxyProgressBox = $id("proxy-progress-box");
+const proxyProgressText = $id("proxy-progress-text");
+const proxyAddInput = $id("proxy-add-input");
+const proxyAddBtn = $id("proxy-add-btn");
+const proxyListEl = $id("proxy-list");
+
+window.mcbpDropdown?.enhanceSelect(bottingProxyMode);
+
+function updateMainProxyToggleUi(enabled, workingCount = 0) {
+  mainProxyEnabled = Boolean(enabled);
+  if (!mainProxyToggle) return;
+  mainProxyToggle.classList.toggle("status-connected", mainProxyEnabled);
+  mainProxyToggle.setAttribute("aria-pressed", String(mainProxyEnabled));
+  mainProxyToggle.textContent = mainProxyEnabled
+    ? `Proxy: on${workingCount ? ` (${workingCount})` : ""}`
+    : "Proxy: off";
+}
+
+if (mainProxyToggle) {
+  mainProxyToggle.addEventListener("click", async () => {
+    const next = !mainProxyEnabled;
+    updateMainProxyToggleUi(next);
+    if (window.api?.proxySaveConfig) {
+      const st = await window.api.proxySaveConfig({ enabled: next });
+      renderProxyStatus(st);
+    }
+  });
+}
+
+function renderProxyStatus(st) {
+  if (!st) return;
+  const proxies = Array.isArray(st.proxies) ? st.proxies : [];
+  const working = Number(st.workingCount) || 0;
+  updateMainProxyToggleUi(st.config?.enabled, working);
+
+  if (proxySummaryBadge) {
+    proxySummaryBadge.textContent = `${working} working / ${proxies.length} total`;
+    proxySummaryBadge.classList.toggle("status-connected", working > 0);
+  }
+  if (!proxyListEl) return;
+  if (!proxies.length) {
+    proxyListEl.innerHTML = `<p class="radar-empty">No proxies loaded. Click Find Free Proxies then Auto-Test Pool.</p>`;
+    return;
+  }
+  proxyListEl.innerHTML = proxies
+    .slice(0, 80)
+    .map((p) => {
+      const statusBadge =
+        p.status === "working"
+          ? `<span class="ai-model-badge is-installed">${p.latencyMs}ms · OK</span>`
+          : p.status === "dead"
+            ? `<span class="ai-model-badge is-warn">Dead</span>`
+            : `<span class="ai-model-badge">Untested</span>`;
+      const protoBadge = `<span class="ai-model-badge is-code">${escapeHtml(String(p.protocol || "socks5").toUpperCase())}</span>`;
+      return `
+        <div class="radar-item">
+          <div class="radar-item-info">
+            <span class="radar-item-name">${escapeHtml(p.host)}:${escapeHtml(String(p.port))}</span>
+            ${protoBadge}
+            ${statusBadge}
+          </div>
+          <div class="radar-item-actions">
+            <button type="button" class="radar-btn radar-btn-danger" data-proxy-del="${escapeHtml(p.id)}" title="Remove proxy">×</button>
+          </div>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+if (proxyListEl) {
+  proxyListEl.addEventListener("click", async (e) => {
+    const delBtn = e.target.closest("[data-proxy-del]");
+    if (delBtn && window.api?.proxyRemove) {
+      const id = delBtn.getAttribute("data-proxy-del");
+      const st = await window.api.proxyRemove(id);
+      renderProxyStatus(st);
+    }
+  });
+}
+
+if (proxyAddBtn && proxyAddInput) {
+  const addProxyNow = async () => {
+    const raw = proxyAddInput.value.trim();
+    if (!raw || !window.api?.proxyAdd) return;
+    const res = await window.api.proxyAdd(raw);
+    proxyAddInput.value = "";
+    if (res?.status) renderProxyStatus(res.status);
+  };
+  proxyAddBtn.addEventListener("click", addProxyNow);
+  proxyAddInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addProxyNow();
+    }
+  });
+}
+
+if (proxyFetchFreeBtn) {
+  proxyFetchFreeBtn.addEventListener("click", async () => {
+    if (!window.api?.proxyFetchFree) return;
+    proxyFetchFreeBtn.disabled = true;
+    proxyFetchFreeBtn.textContent = "Searching…";
+    if (proxyProgressBox) proxyProgressBox.hidden = false;
+    try {
+      await window.api.proxyFetchFree();
+      if (window.api?.proxyGetStatus) {
+        renderProxyStatus(await window.api.proxyGetStatus());
+      }
+    } finally {
+      proxyFetchFreeBtn.disabled = false;
+      proxyFetchFreeBtn.textContent = "Find Free Proxies";
+      setTimeout(() => {
+        if (proxyProgressBox) proxyProgressBox.hidden = true;
+      }, 1200);
+    }
+  });
+}
+
+if (proxyTestAllBtn) {
+  proxyTestAllBtn.addEventListener("click", async () => {
+    if (!window.api?.proxyTestAll) return;
+    proxyTestAllBtn.disabled = true;
+    proxyTestAllBtn.textContent = "Testing…";
+    if (proxyProgressBox) proxyProgressBox.hidden = false;
+    try {
+      await window.api.proxyTestAll({
+        serverIp: ipInput ? ipInput.value.trim() : "",
+        pruneDead: true,
+      });
+      if (window.api?.proxyGetStatus) {
+        renderProxyStatus(await window.api.proxyGetStatus());
+      }
+    } finally {
+      proxyTestAllBtn.disabled = false;
+      proxyTestAllBtn.textContent = "Auto-Test Pool";
+      setTimeout(() => {
+        if (proxyProgressBox) proxyProgressBox.hidden = true;
+      }, 1500);
+    }
+  });
+}
+
+if (proxyClearDeadBtn) {
+  proxyClearDeadBtn.addEventListener("click", async () => {
+    if (!window.api?.proxyClearDead) return;
+    const st = await window.api.proxyClearDead();
+    renderProxyStatus(st);
+  });
+}
+
+if (window.api?.onProxyStatus) {
+  window.api.onProxyStatus((st) => renderProxyStatus(st));
+}
+if (window.api?.onProxyProgress) {
+  window.api.onProxyProgress((prog) => {
+    if (!prog || !proxyProgressBox) return;
+    proxyProgressBox.hidden = false;
+    if (proxyProgressText && prog.message) {
+      proxyProgressText.textContent = prog.message;
+    }
+  });
+}
+
+function renderBottingStatus(st) {
+  if (!st) return;
+  const bots = Array.isArray(st.bots) ? st.bots : [];
+  const online = Number(st.onlineCount) || 0;
+  const total = Number(st.totalCount) || 0;
+  if (bottingSummaryBadge) {
+    bottingSummaryBadge.textContent = `${online} / ${total} online`;
+    bottingSummaryBadge.classList.toggle("status-connected", online > 0);
+  }
+  if (bottingTabCount) {
+    bottingTabCount.hidden = total === 0;
+    bottingTabCount.textContent = String(online);
+  }
+  if (!bottingBotsList) return;
+  if (!bots.length) {
+    bottingBotsList.innerHTML = `<p class="radar-empty">No swarm bots active. Configure prefix &amp; count above and click Spawn Swarm.</p>`;
+    return;
+  }
+  bottingBotsList.innerHTML = bots
+    .map((b) => {
+      const stateCls =
+        b.state === "online"
+          ? "is-installed"
+          : b.state === "connecting" || b.state === "healing"
+            ? "is-rec"
+            : "is-warn";
+      const posText = b.position
+        ? `(${b.position.x}, ${b.position.y}, ${b.position.z})`
+        : "";
+      const proxyLabel = b.proxy ? `🌐 ${escapeHtml(b.proxy)}` : "Direct";
+      return `
+        <div class="radar-item" title="${escapeHtml(b.lastError || b.task || "")}">
+          <div class="radar-item-info">
+            <span class="radar-entity-icon">🤖</span>
+            <span class="radar-item-name">${escapeHtml(b.username)}</span>
+            <span class="ai-model-badge ${stateCls}">${escapeHtml(b.state)}</span>
+            <span class="ai-model-badge">❤ ${b.health}/20</span>
+            <span class="ai-model-badge">${proxyLabel}</span>
+            <span class="radar-dist">${escapeHtml(b.task || "idle")} ${escapeHtml(posText)}</span>
+          </div>
+          <div class="radar-item-actions">
+            <button type="button" class="radar-btn radar-btn-danger" data-bot-disc="${escapeHtml(b.id)}" title="Disconnect ${escapeHtml(b.username)}">Leave</button>
+          </div>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+if (bottingBotsList) {
+  bottingBotsList.addEventListener("click", async (e) => {
+    const discBtn = e.target.closest("[data-bot-disc]");
+    if (discBtn && window.api?.bottingDisconnectOne) {
+      const id = discBtn.getAttribute("data-bot-disc");
+      const st = await window.api.bottingDisconnectOne(id);
+      renderBottingStatus(st);
+    }
+  });
+}
+
+if (bottingSpawnBtn) {
+  bottingSpawnBtn.addEventListener("click", async () => {
+    if (!window.api?.bottingSpawn) return;
+    bottingSpawnBtn.disabled = true;
+    bottingSpawnBtn.textContent = "Spawning…";
+    try {
+      const res = await window.api.bottingSpawn({
+        ip: ipInput ? ipInput.value.trim() : "localhost",
+        version: versionInput ? versionInput.value.trim() : "",
+        prefix: bottingPrefixInput
+          ? bottingPrefixInput.value.trim()
+          : "MCBP_Bot",
+        count: Number(bottingCountInput?.value) || 3,
+        delayMs: Number(bottingDelayInput?.value) || 1200,
+        proxyMode: bottingProxyMode ? bottingProxyMode.value : "direct",
+        autoHeal: true,
+      });
+      if (res?.status) renderBottingStatus(res.status);
+    } finally {
+      bottingSpawnBtn.disabled = false;
+      bottingSpawnBtn.textContent = "Spawn Swarm";
+    }
+  });
+}
+
+if (bottingStopAllBtn) {
+  bottingStopAllBtn.addEventListener("click", async () => {
+    if (!window.api?.bottingStopAll) return;
+    const res = await window.api.bottingStopAll();
+    if (res?.status) renderBottingStatus(res.status);
+  });
+}
+
+document.querySelectorAll("[data-swarm-action]").forEach((btn) => {
+  btn.addEventListener("click", async () => {
+    if (!window.api?.bottingAction) return;
+    const action = btn.getAttribute("data-swarm-action");
+    const targetVal = bottingTargetInput ? bottingTargetInput.value.trim() : "";
+    const res = await window.api.bottingAction({
+      action,
+      target: targetVal,
+      text: targetVal,
+    });
+    if (res?.status) renderBottingStatus(res.status);
+  });
+});
+
+if (window.api?.onBottingStatus) {
+  window.api.onBottingStatus((st) => renderBottingStatus(st));
+}
+
+async function refreshBottingAndProxyUi() {
+  try {
+    if (window.api?.proxyGetStatus) {
+      renderProxyStatus(await window.api.proxyGetStatus());
+    }
+    if (window.api?.bottingGetStatus) {
+      renderBottingStatus(await window.api.bottingGetStatus());
+    }
+  } catch (_) {}
+}
+refreshBottingAndProxyUi();
+
 // --- Script Studio (templates, Mineflayer docs, local AI generator) ---
 const studioPicker = $id("studio-template-select");
 const studioPrompt = $id("studio-prompt");
@@ -3057,7 +4268,7 @@ document.querySelectorAll(".studio-view-tab").forEach((btn) => {
     const view = btn.getAttribute("data-studio-view");
     document
       .querySelectorAll(".studio-view-tab")
-      .forEach((b) => b.classList.toggle("active", b === btn));
+      .forEach((b) => setTabSelected(b, b === btn));
     document.querySelectorAll(".studio-view").forEach((pane) => {
       pane.hidden = pane.id !== `studio-view-${view}`;
     });
@@ -3148,8 +4359,12 @@ async function validateStudio({ prefix = "", undo = false } = {}) {
   updateGutter();
   const lead = prefix ? `${prefix} · ` : "";
   if (res?.ok) {
-    setStudioCheck(`${lead}✓ ${res.name} looks good`, "ok", undoHtml);
-  } else if (res?.line || /^Syntax/.test(res?.error || "")) {
+    setStudioCheck(
+      `${lead}✓ ${res.name} verified (syntax + sandbox dry-run OK)`,
+      "ok",
+      undoHtml,
+    );
+  } else if (res?.line || /^Syntax|^Runtime/.test(res?.error || "")) {
     setStudioCheck(`${lead}${res.error}`, "error", undoHtml);
   } else {
     setStudioCheck(
@@ -3340,7 +4555,7 @@ async function runStudioGenerate() {
   }
   const before = studioEditor.value;
   setGenerating(true);
-  if (studioGenStatus) studioGenStatus.textContent = "Starting local AI…";
+  if (studioGenStatus) studioGenStatus.textContent = "Starting AI generation…";
   try {
     const res = await window.api.studioGenerate({
       prompt,
@@ -3354,7 +4569,9 @@ async function runStudioGenerate() {
         label: `Generated with ${res.model}`,
       });
       if (studioGenStatus) {
-        studioGenStatus.textContent = `Done with ${res.model}. Review the code, then Save & Load.`;
+        studioGenStatus.textContent = res.validation?.ok
+          ? `✓ Planned, written & verified with ${res.model} (dry-run passed). Click Save & Load.`
+          : `Done with ${res.model} (${res.validation?.error || "review warnings"}).`;
       }
     } else {
       studioEditor.value = before;
@@ -3363,7 +4580,7 @@ async function runStudioGenerate() {
         studioGenStatus.textContent =
           res?.error === "Cancelled"
             ? "Generation cancelled."
-            : `Error: ${res?.error || "Could not reach Ollama"}`;
+            : `Error: ${res?.error || "Could not reach the configured AI provider"}`;
       }
     }
   } finally {

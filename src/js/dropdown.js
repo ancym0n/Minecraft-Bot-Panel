@@ -2,13 +2,17 @@
 // suggestions so every picker in the panel shares the same look.
 (() => {
   let openState = null;
+  let menuSequence = 0;
 
   function closeOpen() {
     if (!openState) return;
-    const { menu, host, onClose } = openState;
+    const { menu, host, anchor, onClose } = openState;
     openState = null;
     menu.remove();
     host.classList.remove("dd-open");
+    anchor.setAttribute("aria-expanded", "false");
+    anchor.removeAttribute("aria-controls");
+    anchor.removeAttribute("aria-activedescendant");
     if (typeof onClose === "function") onClose();
   }
 
@@ -19,7 +23,7 @@
     const wanted = Math.min(menu.scrollHeight, 260);
     const openUp =
       spaceBelow < Math.min(wanted, 160) && spaceAbove > spaceBelow;
-    const maxH = Math.max(80, Math.min(260, openUp ? spaceAbove : spaceBelow));
+    const maxH = Math.max(0, Math.min(260, openUp ? spaceAbove : spaceBelow));
     menu.style.maxHeight = `${maxH}px`;
     menu.style.minWidth = `${rect.width}px`;
     menu.style.left = `${Math.max(6, Math.min(rect.left, window.innerWidth - menu.offsetWidth - 6))}px`;
@@ -33,9 +37,10 @@
     }
   }
 
-  function buildMenu(items, activeValue, onPick) {
+  function buildMenu(items, activeValue, onPick, onDelete = null) {
     const menu = document.createElement("div");
     menu.className = "dd-menu";
+    menu.id = `mcbp-dropdown-${++menuSequence}`;
     menu.setAttribute("role", "listbox");
     if (!items.length) {
       const empty = document.createElement("div");
@@ -45,7 +50,7 @@
       return menu;
     }
     let lastGroup = null;
-    items.forEach((item) => {
+    items.forEach((item, index) => {
       if (item.group && item.group !== lastGroup) {
         lastGroup = item.group;
         const head = document.createElement("div");
@@ -55,7 +60,9 @@
       }
       const opt = document.createElement("div");
       opt.className = "dd-option";
+      opt.id = `${menu.id}-option-${index}`;
       opt.setAttribute("role", "option");
+      opt.setAttribute("aria-selected", String(item.value === activeValue));
       opt.dataset.value = item.value;
       if (item.value === activeValue) opt.classList.add("dd-selected");
       const label = document.createElement("span");
@@ -68,7 +75,22 @@
         hint.textContent = item.hint;
         opt.appendChild(hint);
       }
+      if (item.deletable && typeof onDelete === "function") {
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "dd-delete";
+        del.title = item.deleteTitle || `Remove ${item.label || item.value}`;
+        del.setAttribute("aria-label", del.title);
+        del.textContent = "×";
+        del.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onDelete(item);
+        });
+        opt.appendChild(del);
+      }
       opt.addEventListener("mousedown", (e) => {
+        if (e.target.closest(".dd-delete")) return;
         e.preventDefault();
         onPick(item);
       });
@@ -86,18 +108,34 @@
     opts.forEach((o) => o.classList.remove("dd-active"));
     idx = idx < 0 ? 0 : (idx + dir + opts.length) % opts.length;
     opts[idx].classList.add("dd-active");
+    openState?.anchor.setAttribute("aria-activedescendant", opts[idx].id);
     opts[idx].scrollIntoView({ block: "nearest" });
   }
 
-  function openMenu(host, anchor, items, activeValue, onPick, onClose) {
+  function openMenu(
+    host,
+    anchor,
+    items,
+    activeValue,
+    onPick,
+    onClose,
+    onDelete = null,
+  ) {
     closeOpen();
-    const menu = buildMenu(items, activeValue, (item) => {
-      closeOpen();
-      onPick(item);
-    });
+    const menu = buildMenu(
+      items,
+      activeValue,
+      (item) => {
+        closeOpen();
+        onPick(item);
+      },
+      onDelete,
+    );
     document.body.appendChild(menu);
     host.classList.add("dd-open");
     openState = { menu, host, anchor, onClose };
+    anchor.setAttribute("aria-expanded", "true");
+    anchor.setAttribute("aria-controls", menu.id);
     positionMenu(menu, anchor);
     const sel = menu.querySelector(".dd-selected");
     if (sel) sel.scrollIntoView({ block: "nearest" });
@@ -109,6 +147,13 @@
     const active = openState.menu.querySelector(".dd-option.dd-active");
     if (!active) return false;
     active.dispatchEvent(new MouseEvent("mousedown"));
+    return true;
+  }
+
+  function deleteActive() {
+    const button = openState?.menu.querySelector(".dd-active .dd-delete");
+    if (!button) return false;
+    button.dispatchEvent(new MouseEvent("mousedown", { cancelable: true }));
     return true;
   }
 
@@ -151,9 +196,17 @@
     const trigger = document.createElement("button");
     trigger.type = "button";
     trigger.className = "dd-trigger";
+    trigger.setAttribute("aria-haspopup", "listbox");
+    trigger.setAttribute("aria-expanded", "false");
+    const accessibleLabel = select.getAttribute("aria-label");
+    if (accessibleLabel) trigger.setAttribute("aria-label", accessibleLabel);
     if (select.id) {
       const lbl = document.querySelector(`label[for="${select.id}"]`);
-      if (lbl) lbl.addEventListener("click", () => trigger.focus());
+      if (lbl) {
+        lbl.addEventListener("click", () => trigger.focus());
+        if (!accessibleLabel)
+          trigger.setAttribute("aria-label", lbl.textContent.trim());
+      }
     }
     const text = document.createElement("span");
     text.className = "dd-value";
@@ -192,6 +245,8 @@
       } else if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
         if (!isOpen || !pickActive()) toggle();
+      } else if (e.key === "Delete" && isOpen && deleteActive()) {
+        e.preventDefault();
       } else if (e.key === "Escape" || e.key === "Tab") {
         closeOpen();
       }
@@ -210,7 +265,10 @@
   }
 
   // Free-text input with a themed suggestion list (replaces <datalist>).
-  function attachCombo(input, { items = [], emptyValue = "" } = {}) {
+  function attachCombo(
+    input,
+    { items = [], emptyValue = "", onDelete = null, onSelect = null } = {},
+  ) {
     if (!input || input._combo) return input?._combo;
     let allItems = items;
     const host = document.createElement("div");
@@ -219,6 +277,10 @@
     host.appendChild(input);
     input.removeAttribute("list");
     input.setAttribute("autocomplete", "off");
+    input.setAttribute("role", "combobox");
+    input.setAttribute("aria-autocomplete", "list");
+    input.setAttribute("aria-haspopup", "listbox");
+    input.setAttribute("aria-expanded", "false");
 
     const chev = document.createElement("button");
     chev.type = "button";
@@ -229,6 +291,15 @@
     icon.className = "dd-chevron";
     chev.appendChild(icon);
     host.appendChild(chev);
+
+    const handleDelete =
+      typeof onDelete === "function"
+        ? (item) => {
+            onDelete(item);
+            if (allItems.length > 0) show(false);
+            else closeOpen();
+          }
+        : null;
 
     const show = (filter) => {
       const q = filter ? input.value.trim().toLowerCase() : "";
@@ -242,11 +313,20 @@
           )
         : allItems;
       const current = input.value.trim() || emptyValue;
-      openMenu(host, input, list, current, (item) => {
-        input.value = item.value === emptyValue ? "" : item.value;
-        input.dispatchEvent(new Event("input", { bubbles: true }));
-        input.dispatchEvent(new Event("change", { bubbles: true }));
-      });
+      openMenu(
+        host,
+        input,
+        list,
+        current,
+        (item) => {
+          input.value = item.value === emptyValue ? "" : item.value;
+          if (typeof onSelect === "function") onSelect(item);
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+          input.dispatchEvent(new Event("change", { bubbles: true }));
+        },
+        null,
+        handleDelete,
+      );
     };
 
     chev.addEventListener("mousedown", (e) => {
@@ -269,6 +349,8 @@
       } else if (e.key === "Enter" && isOpen) {
         if (pickActive()) e.preventDefault();
         else closeOpen();
+      } else if (e.key === "Delete" && isOpen && deleteActive()) {
+        e.preventDefault();
       } else if (e.key === "Escape" || e.key === "Tab") {
         closeOpen();
       }

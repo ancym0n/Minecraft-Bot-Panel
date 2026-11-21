@@ -55,36 +55,44 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   }
 
   const { goals } = loadLibraries();
+  const signal = scriptRepeater.signal;
   let lastSavedPos = bot.entity?.position ? bot.entity.position.clone() : null;
   let respawning = false;
 
   async function triggerRespawnAndReturn() {
-    if (!bot || respawning) return;
+    if (!bot || respawning || signal?.aborted) return;
     respawning = true;
     try {
       clearLog("AutoRespawn:");
-      log("AutoRespawn: Bot died — sending respawn packet...");
+      log("AutoRespawn: Bot died - sending respawn packet...");
       bot.respawn();
 
       await new Promise((resolve) => {
-        const timer = setTimeout(resolve, 2200);
-        bot.once("spawn", () => {
+        const finish = () => {
           clearTimeout(timer);
+          bot.removeListener("spawn", finish);
+          signal?.removeEventListener("abort", finish);
           resolve();
-        });
+        };
+        const timer = setTimeout(finish, 2200);
+        bot.once("spawn", finish);
+        signal?.addEventListener("abort", finish, { once: true });
+        if (signal?.aborted) finish();
       });
+      if (signal?.aborted) return;
 
       const [returnOpt, rawWorkPos] = await Promise.all([
         getOption("returnback", info.name),
         getOption("workpos", info.name),
       ]);
+      if (signal?.aborted) return;
 
       if (returnOpt !== "off" && bot && bot.entity && bot.pathfinder) {
         const dest = parseCoords(rawWorkPos, lastSavedPos);
         if (dest) {
           clearLog("AutoRespawn:");
           log(
-            `AutoRespawn: Respawned — returning to (${dest.x}, ${dest.y}, ${dest.z})`,
+            `AutoRespawn: Respawned - returning to (${dest.x}, ${dest.y}, ${dest.z})`,
           );
           bot.pathfinder.setGoal(new goals.GoalNear(dest.x, dest.y, dest.z, 2));
         }
@@ -92,14 +100,15 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
         clearLog("AutoRespawn:");
         log("AutoRespawn: Respawned successfully");
       }
-    } catch (_) {
+    } catch (err) {
+      if (!signal?.aborted) log(`AutoRespawn: ${err.message || err}`);
     } finally {
       respawning = false;
     }
   }
 
   function onDeath() {
-    triggerRespawnAndReturn();
+    void triggerRespawnAndReturn();
   }
 
   bot.on("death", onDeath);
@@ -107,7 +116,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   log("AutoRespawn: Monitoring bot health & death events");
 
   async function checkTick() {
-    if (!bot || !bot.entity) return;
+    if (signal?.aborted || !bot || !bot.entity) return;
     if ((bot.health ?? 20) > 0 && bot.entity.position) {
       lastSavedPos = bot.entity.position.clone();
     } else if ((bot.health ?? 20) <= 0) {
@@ -121,7 +130,9 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   } finally {
     if (bot) {
       bot.removeListener("death", onDeath);
-      clearPathfinderGoal(bot);
+      if (!scriptRepeater.isCurrent || scriptRepeater.isCurrent()) {
+        clearPathfinderGoal(bot);
+      }
     }
   }
 }

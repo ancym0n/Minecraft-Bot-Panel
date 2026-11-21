@@ -5,13 +5,13 @@
    --------------------------------------------------------------- */
 
 :root {
-  --line: rgba(145, 113, 248, 0.22);
-  --line-strong: rgba(164, 136, 255, 0.5);
-  --surface: #1e1a2b;
-  --surface-2: #231e33;
-  --surface-3: #2b2342;
-  --radius: 16px;
-  --radius-sm: 10px;
+  --line: color-mix(in srgb, var(--main-color) 24%, transparent);
+  --line-strong: color-mix(in srgb, var(--main-color) 48%, transparent);
+  --surface: var(--panel-bg);
+  --surface-2: var(--card-bg);
+  --surface-3: var(--accent-dark-bg);
+  --radius: 12px;
+  --radius-sm: 8px;
 }
 
 .panel-dashboard {
@@ -23,8 +23,6 @@
   display: grid;
   grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
   gap: 1rem;
-  opacity: 0;
-  animation: mcbpLoadIn 0.45s var(--spring-ease) 0.05s forwards;
 }
 
 .panel-col {
@@ -55,13 +53,10 @@
 
 .muted-text {
   min-width: 0;
-  font-size: 0.74rem;
-  font-weight: 700;
+  font-size: max(12px, 0.74rem);
+  font-weight: 600;
   color: var(--main-color);
-  opacity: 0.8;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 /* --- Panel controls: chips, buttons, inputs -------------------- */
@@ -85,26 +80,31 @@
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
+  min-width: 0;
+  max-width: 100%;
   padding: 0.22rem 0.65rem;
-  font-size: 0.74rem;
-  font-weight: 800;
+  font-size: max(12px, 0.74rem);
+  font-weight: 700;
+  line-height: 1.3;
+  border: 1px solid transparent;
   border-radius: 999px;
   background-color: var(--surface-3);
   color: var(--light-main-color);
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .chip-muted {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
   background-color: transparent;
   color: var(--main-color);
   padding-left: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .chip-button {
   cursor: pointer;
+  font-size: max(14px, 0.8rem);
   transition:
     background-color 0.2s ease,
     color 0.2s ease;
@@ -128,45 +128,12 @@
 .chip.status-connecting {
   background-color: rgba(145, 113, 248, 0.2);
   color: var(--light-main-color);
-  animation: statusPulse 1.8s ease-in-out infinite;
-}
-
-@keyframes statusPulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.65;
-  }
-}
-
-@keyframes paneEnter {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes optionsReveal {
-  from {
-    opacity: 0;
-    transform: translateY(-4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
 }
 
 @keyframes lineSlideIn {
   from {
-    opacity: 0;
-    transform: translateY(2px);
+    opacity: 0.75;
+    transform: translateY(1px);
   }
   to {
     opacity: 1;
@@ -185,11 +152,12 @@
   align-items: center;
   justify-content: center;
   gap: 0.35rem;
+  min-height: 2rem;
   padding: 0.5rem 1.05rem;
   font-family: inherit;
-  font-size: 0.86rem;
-  font-weight: 800;
-  line-height: 1.1;
+  font-size: max(14px, 0.86rem);
+  font-weight: 700;
+  line-height: 1.2;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
   background-color: var(--surface-3);
@@ -206,7 +174,7 @@
 }
 
 .btn:active:not(:disabled) {
-  transform: translateY(1px) scale(0.98);
+  transform: translateY(1px);
 }
 
 .btn:disabled {
@@ -221,7 +189,7 @@
 }
 
 .btn-primary:hover:not(:disabled) {
-  background-color: #a084ff;
+  background-color: var(--dark-main-color);
   border-color: transparent;
 }
 
@@ -261,14 +229,14 @@
 
 .btn-small {
   padding: 0.3rem 0.7rem;
-  font-size: 0.76rem;
+  font-size: max(14px, 0.8rem);
 }
 
 .input-slim {
   flex: none;
   min-width: 0;
   padding: 0.38rem 0.7rem;
-  font-size: 0.8rem;
+  font-size: max(14px, 0.88rem);
 }
 
 .toolbar .input-slim {
@@ -280,6 +248,7 @@
 .connect-top {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.5rem;
   min-width: 0;
 }
@@ -299,20 +268,16 @@
 }
 
 .field label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 0.68rem;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font-size: max(12px, 0.68rem);
+  font-weight: 700;
+  letter-spacing: 0.01em;
   color: var(--main-color);
-  opacity: 0.85;
+  overflow-wrap: anywhere;
 }
 
 .field input {
   padding: 0.48rem 0.75rem;
-  font-size: 0.88rem;
+  font-size: max(14px, 0.88rem);
 }
 
 .connect-buttons {
@@ -340,7 +305,7 @@ body[data-conn="connecting"] #connect {
   padding: 0.45rem 0.7rem;
   border: 1px dashed var(--line-strong);
   border-radius: var(--radius-sm);
-  font-size: 0.78rem;
+  font-size: max(12px, 0.78rem);
   font-weight: 700;
   color: var(--light-main-color);
 }
@@ -353,8 +318,11 @@ body[data-conn="connecting"] #connect {
   cursor: pointer;
   margin-left: 0.35rem;
   padding: 0.1rem 0.45rem;
+  border: 0;
   border-radius: 7px;
   background-color: var(--surface-3);
+  font-size: inherit;
+  font-weight: 700;
   letter-spacing: 0.12em;
   color: #ffffff;
   -webkit-user-select: all;
@@ -408,7 +376,7 @@ body[data-conn="connecting"] #connect {
 }
 
 .vital-text {
-  font-size: 0.74rem;
+  font-size: max(12px, 0.74rem);
   font-weight: 800;
   color: var(--light-main-color);
   white-space: nowrap;
@@ -416,12 +384,10 @@ body[data-conn="connecting"] #connect {
 
 .vital-meta {
   min-width: 0;
-  font-size: 0.74rem;
+  font-size: max(12px, 0.74rem);
   font-weight: 700;
   color: var(--main-color);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .vital-hand {
@@ -445,14 +411,15 @@ body[data-conn="connecting"] #connect {
   gap: 0.2rem;
   max-width: 100%;
   overflow-x: auto;
-  scrollbar-width: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) var(--bg-dark);
   padding: 0.2rem;
   background-color: var(--bg-dark);
   border-radius: 12px;
 }
 
 .tabs::-webkit-scrollbar {
-  display: none;
+  height: 4px;
 }
 
 .tab {
@@ -463,8 +430,8 @@ body[data-conn="connecting"] #connect {
   gap: 0.4rem;
   padding: 0.34rem 0.85rem;
   font-family: inherit;
-  font-size: 0.8rem;
-  font-weight: 800;
+  font-size: max(14px, 0.85rem);
+  font-weight: 700;
   border: 0;
   border-radius: 9px;
   background: transparent;
@@ -478,6 +445,10 @@ body[data-conn="connecting"] #connect {
   color: var(--title-color);
 }
 
+.tab:focus-visible {
+  outline-offset: -2px;
+}
+
 .tab.active {
   background-color: var(--surface-3);
   color: #ffffff;
@@ -487,7 +458,7 @@ body[data-conn="connecting"] #connect {
   min-width: 1.05rem;
   padding: 0.02rem 0.32rem;
   border-radius: 999px;
-  font-size: 0.66rem;
+  font-size: max(12px, 0.66rem);
   font-weight: 800;
   line-height: 1.3;
   text-align: center;
@@ -507,7 +478,7 @@ body[data-conn="connecting"] #connect {
 }
 
 .tab-count {
-  font-size: 0.68rem;
+  font-size: max(12px, 0.68rem);
   font-weight: 700;
   color: var(--main-color);
   opacity: 0.8;
@@ -522,7 +493,6 @@ body[data-conn="connecting"] #connect {
   flex-direction: column;
   gap: 0.7rem;
   overflow: hidden;
-  animation: paneEnter 0.22s var(--spring-ease);
 }
 
 .workspace-pane[hidden],
@@ -532,7 +502,9 @@ body[data-conn="connecting"] #connect {
 
 #tab-control,
 #tab-inventory,
-#tab-ai {
+#tab-ai,
+#tab-botting,
+#tab-studio {
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
@@ -608,13 +580,13 @@ body[data-conn="connecting"] #connect {
   width: 100%;
   cursor: pointer;
   padding: 0.55rem 2rem 0.55rem 0.75rem;
-  font-size: 0.84rem;
-  font-weight: 800;
+  font-size: max(14px, 0.84rem);
+  font-weight: 700;
   text-align: left;
+  border: 0;
+  background: transparent;
   color: var(--title-color);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
   transition:
     background-color 0.18s ease,
     color 0.18s ease;
@@ -622,6 +594,10 @@ body[data-conn="connecting"] #connect {
 
 .script-name:hover {
   background-color: var(--surface-3);
+}
+
+.script-name:focus-visible {
+  outline-offset: -3px;
 }
 
 .script-name::before {
@@ -663,7 +639,7 @@ body[data-conn="connecting"] #connect {
   border-radius: 7px;
   background: transparent;
   color: var(--main-color);
-  font-size: 0.7rem;
+  font-size: max(12px, 0.7rem);
   transition:
     background-color 0.18s ease,
     color 0.18s ease,
@@ -691,7 +667,6 @@ body[data-conn="connecting"] #connect {
 
 .script-container.open .script-options {
   display: flex;
-  animation: optionsReveal 0.2s var(--spring-ease);
 }
 
 .script-checkbox-row {
@@ -700,19 +675,33 @@ body[data-conn="connecting"] #connect {
   align-items: center;
   gap: 0.5rem;
   cursor: pointer;
-  font-size: 0.76rem;
+  font-size: max(14px, 0.84rem);
   font-weight: 700;
   color: var(--light-main-color);
 }
 
+/* AI-only module options appear once the local AI is set up. */
+.script-checkbox-row.script-ai-only {
+  display: none;
+  margin-top: 0.15rem;
+  padding-top: 0.45rem;
+  border-top: 1px dashed var(--line-strong);
+}
+
+body.ai-ready .script-checkbox-row.script-ai-only {
+  display: flex;
+}
+
+.script-checkbox-row.script-ai-only span {
+  color: var(--accent-border);
+}
+
 .script-checkbox-row span {
   min-width: 0;
-  font-size: 0.76rem;
+  font-size: max(14px, 0.84rem);
   font-weight: 700;
   color: var(--light-main-color);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 input[type="checkbox"] {
@@ -755,19 +744,17 @@ input[type="checkbox"]:checked::after {
 }
 
 .script-input-group label {
-  font-size: 0.68rem;
+  font-size: max(12px, 0.68rem);
   font-weight: 800;
   color: var(--main-color);
   opacity: 0.85;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .script-text-input {
   width: 100%;
   padding: 0.3rem 0.5rem;
-  font-size: 0.78rem;
+  font-size: max(14px, 0.84rem);
 }
 
 /* --- Control ---------------------------------------------------- */
@@ -805,7 +792,7 @@ input[type="checkbox"]:checked::after {
   cursor: pointer;
   padding: 0.5rem 0.2rem;
   font-family: inherit;
-  font-size: 0.8rem;
+  font-size: max(14px, 0.85rem);
   font-weight: 800;
   border: 1px solid var(--line-strong);
   border-radius: 9px;
@@ -817,7 +804,7 @@ input[type="checkbox"]:checked::after {
 }
 
 .key-wide {
-  font-size: 0.74rem;
+  font-size: max(14px, 0.8rem);
 }
 
 .key:hover {
@@ -864,7 +851,7 @@ input[type="checkbox"]:checked::after {
   display: flex;
   align-items: center;
   gap: 0.4rem;
-  font-size: 0.7rem;
+  font-size: max(12px, 0.7rem);
   font-weight: 800;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -875,7 +862,7 @@ input[type="checkbox"]:checked::after {
   padding: 0 0.4rem;
   border-radius: 999px;
   background-color: var(--surface-3);
-  font-size: 0.66rem;
+  font-size: max(12px, 0.66rem);
   color: var(--light-main-color);
 }
 
@@ -892,16 +879,16 @@ input[type="checkbox"]:checked::after {
 
 .radar-empty {
   padding: 0.9rem 0.3rem;
-  font-size: 0.76rem;
+  font-size: max(14px, 0.84rem);
   text-align: center;
   color: var(--main-color);
-  opacity: 0.5;
 }
 
 .radar-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 0.4rem;
   padding: 0.32rem 0.55rem;
   background-color: var(--surface-2);
@@ -918,30 +905,34 @@ input[type="checkbox"]:checked::after {
 }
 
 .radar-item-info {
+  flex: 1 1 9rem;
   min-width: 0;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.4rem;
 }
 
 .radar-item-name {
-  font-size: 0.78rem;
+  min-width: 0;
+  max-width: 100%;
+  font-size: max(14px, 0.84rem);
   font-weight: 800;
   color: var(--title-color);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .radar-dist {
   flex-shrink: 0;
-  font-size: 0.68rem;
+  max-width: 100%;
+  font-size: max(12px, 0.68rem);
   font-weight: 700;
   color: var(--main-color);
+  overflow-wrap: anywhere;
 }
 
 .radar-dist-far {
-  opacity: 0.6;
+  opacity: 0.85;
 }
 
 .radar-tag {
@@ -985,7 +976,9 @@ input[type="checkbox"]:checked::after {
 
 .radar-item-actions {
   flex-shrink: 0;
+  max-width: 100%;
   display: flex;
+  flex-wrap: wrap;
   gap: 0.25rem;
 }
 
@@ -993,7 +986,7 @@ input[type="checkbox"]:checked::after {
   cursor: pointer;
   padding: 0.2rem 0.52rem;
   font-family: inherit;
-  font-size: 0.68rem;
+  font-size: max(14px, 0.8rem);
   font-weight: 800;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -1046,7 +1039,6 @@ input[type="checkbox"]:checked::after {
   background-color: var(--surface-2);
   border: 1px solid var(--line-strong);
   border-radius: 12px;
-  animation: paneEnter 0.22s var(--spring-ease);
 }
 
 .inv-container-Box[hidden],
@@ -1072,7 +1064,7 @@ input[type="checkbox"]:checked::after {
 .inv-container-badge {
   flex-shrink: 0;
   padding: 0.14rem 0.5rem;
-  font-size: 0.68rem;
+  font-size: max(12px, 0.68rem);
   font-weight: 800;
   border-radius: 999px;
   background-color: var(--surface-3);
@@ -1081,12 +1073,10 @@ input[type="checkbox"]:checked::after {
 
 .inv-container-title {
   min-width: 0;
-  font-size: 0.8rem;
+  font-size: max(14px, 0.84rem);
   font-weight: 800;
   color: var(--title-color);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .inv-container-grid {
@@ -1174,7 +1164,7 @@ input[type="checkbox"]:checked::after {
   position: absolute;
   top: 2px;
   left: 4px;
-  font-size: 0.54rem;
+  font-size: max(12px, 0.54rem);
   font-weight: 800;
   color: var(--main-color);
   opacity: 0.6;
@@ -1250,7 +1240,7 @@ input[type="checkbox"]:checked::after {
 .inv-item-label {
   max-width: 100%;
   padding: 0 0.15rem;
-  font-size: 0.56rem;
+  font-size: max(12px, 0.56rem);
   font-weight: 800;
   line-height: 1.1;
   text-align: center;
@@ -1264,7 +1254,7 @@ input[type="checkbox"]:checked::after {
   position: absolute;
   right: 3px;
   bottom: 2px;
-  font-size: 0.62rem;
+  font-size: max(12px, 0.62rem);
   font-weight: 800;
   color: #ffffff;
   text-shadow: 0 1px 2px #000;
@@ -1305,21 +1295,20 @@ input[type="checkbox"]:checked::after {
 
 .inv-inspector-info {
   min-width: 0;
+  max-width: 100%;
   display: flex;
   flex-direction: column;
 }
 
 .inv-selected-name {
-  font-size: 0.82rem;
+  font-size: max(14px, 0.86rem);
   font-weight: 800;
   color: var(--title-color);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .inv-selected-meta {
-  font-size: 0.7rem;
+  font-size: max(12px, 0.7rem);
   font-weight: 700;
   color: var(--main-color);
   opacity: 0.8;
@@ -1345,7 +1334,6 @@ input[type="checkbox"]:checked::after {
   background-color: var(--surface-2);
   border: 1px solid var(--line-strong);
   border-radius: 12px;
-  animation: paneEnter 0.2s var(--spring-ease);
 }
 
 .ai-progress-box[hidden] {
@@ -1360,7 +1348,7 @@ input[type="checkbox"]:checked::after {
 }
 
 .ai-progress-text {
-  font-size: 0.74rem;
+  font-size: max(12px, 0.74rem);
   font-weight: 800;
   color: var(--title-color);
   overflow: hidden;
@@ -1369,7 +1357,7 @@ input[type="checkbox"]:checked::after {
 }
 
 .ai-progress-pct {
-  font-size: 0.72rem;
+  font-size: max(12px, 0.72rem);
   font-weight: 800;
   color: var(--green-color);
 }
@@ -1410,18 +1398,18 @@ input[type="checkbox"]:checked::after {
 .studio-ai-card .input-slim,
 .studio-footer .input-slim {
   padding: 0.4rem 0.65rem;
-  font-size: 0.8rem;
+  font-size: max(14px, 0.88rem);
   font-weight: 700;
 }
 
 .ai-section-title {
-  font-size: 0.82rem;
+  font-size: max(14px, 0.86rem);
   font-weight: 800;
   color: var(--title-color);
 }
 
 .ai-rec-chip {
-  font-size: 0.68rem;
+  font-size: max(12px, 0.68rem);
   padding: 0.14rem 0.55rem;
   background-color: rgba(123, 255, 208, 0.14);
   color: var(--green-color);
@@ -1455,14 +1443,13 @@ input[type="checkbox"]:checked::after {
   gap: 0.5rem;
   padding: 0.4rem 0.65rem;
   font-family: inherit;
-  font-size: 0.8rem;
+  font-size: max(14px, 0.88rem);
   font-weight: 700;
   text-align: left;
   color: var(--title-color);
   background-color: var(--bg-dark);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  outline: none;
   transition:
     border-color 0.18s ease,
     background-color 0.18s ease;
@@ -1539,38 +1526,11 @@ input[type="checkbox"]:checked::after {
   border: 1px solid var(--line-strong);
   border-radius: 12px;
   box-shadow: 0 14px 32px -10px rgba(0, 0, 0, 0.65);
-  animation: ddReveal 0.16s var(--spring-ease);
-}
-
-.dd-menu-up {
-  animation-name: ddRevealUp;
-}
-
-@keyframes ddReveal {
-  from {
-    opacity: 0;
-    transform: translateY(-4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes ddRevealUp {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
 }
 
 .dd-group {
   padding: 0.35rem 0.55rem 0.15rem;
-  font-size: 0.62rem;
+  font-size: max(12px, 0.62rem);
   font-weight: 800;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -1585,7 +1545,7 @@ input[type="checkbox"]:checked::after {
   gap: 0.6rem;
   padding: 0.38rem 0.55rem;
   border-radius: 8px;
-  font-size: 0.78rem;
+  font-size: max(14px, 0.84rem);
   font-weight: 700;
   color: var(--light-main-color);
   transition:
@@ -1607,23 +1567,46 @@ input[type="checkbox"]:checked::after {
 .dd-label {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
   color: inherit;
 }
 
 .dd-hint {
   flex-shrink: 0;
-  font-size: 0.66rem;
+  font-size: max(12px, 0.66rem);
   font-weight: 800;
   color: var(--main-color);
   opacity: 0.85;
 }
 
+.dd-delete {
+  flex-shrink: 0;
+  cursor: pointer;
+  width: 1.25rem;
+  height: 1.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(255, 133, 133, 0.12);
+  color: var(--red-color);
+  font-size: 0.85rem;
+  font-weight: 800;
+  line-height: 1;
+  transition:
+    background-color 0.14s ease,
+    color 0.14s ease;
+}
+
+.dd-delete:hover {
+  background: rgba(255, 133, 133, 0.28);
+  color: #ffffff;
+}
+
 .dd-empty {
   padding: 0.45rem 0.55rem;
-  font-size: 0.74rem;
+  font-size: max(12px, 0.74rem);
   font-weight: 700;
   color: var(--main-color);
   opacity: 0.7;
@@ -1640,6 +1623,7 @@ input[type="checkbox"]:checked::after {
 .ai-toggle-group {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.35rem;
 }
 
@@ -1652,7 +1636,7 @@ input[type="checkbox"]:checked::after {
 }
 
 .ai-sub-title {
-  font-size: 0.7rem;
+  font-size: max(12px, 0.7rem);
   font-weight: 800;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -1672,7 +1656,7 @@ input[type="checkbox"]:checked::after {
 }
 
 .ai-sub-head .muted-text {
-  font-size: 0.7rem;
+  font-size: max(12px, 0.7rem);
 }
 
 .ai-sub-head .muted-text.is-warn {
@@ -1701,7 +1685,7 @@ input[type="checkbox"]:checked::after {
 /* Selects inside script cards */
 .script-options .dd-trigger {
   padding: 0.3rem 0.5rem;
-  font-size: 0.76rem;
+  font-size: max(14px, 0.8rem);
 }
 
 .ai-models-section {
@@ -1727,7 +1711,7 @@ input[type="checkbox"]:checked::after {
 .ai-custom-pull .input-slim {
   width: 11.5rem;
   padding: 0.28rem 0.55rem;
-  font-size: 0.74rem;
+  font-size: max(14px, 0.84rem);
 }
 
 .ai-models-list {
@@ -1737,11 +1721,16 @@ input[type="checkbox"]:checked::after {
 .ai-model-badge {
   flex-shrink: 0;
   padding: 0.08rem 0.42rem;
-  font-size: 0.62rem;
+  font-size: max(12px, 0.62rem);
   font-weight: 800;
   border-radius: 999px;
   background-color: var(--surface-3);
   color: var(--light-main-color);
+}
+
+.radar-item-info .ai-model-badge {
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .ai-model-badge.is-rec {
@@ -1752,6 +1741,125 @@ input[type="checkbox"]:checked::after {
 .ai-model-badge.is-installed {
   background-color: rgba(145, 113, 248, 0.22);
   color: #ffffff;
+}
+
+.ai-model-badge.is-logic {
+  background-color: rgba(196, 181, 253, 0.16);
+  color: #d8b4fe;
+}
+
+.ai-model-badge.is-accuracy {
+  background-color: rgba(123, 255, 208, 0.14);
+  color: #7bffd0;
+}
+
+.ai-model-badge.is-think {
+  background-color: rgba(232, 121, 249, 0.16);
+  color: #f0abfc;
+}
+
+.ai-model-badge.is-chat {
+  background-color: rgba(125, 162, 255, 0.16);
+  color: #93c5fd;
+}
+
+.ai-model-badge.is-fast {
+  background-color: rgba(255, 214, 120, 0.16);
+  color: #ffd678;
+}
+
+.ai-model-badge.is-warn {
+  background-color: rgba(255, 133, 133, 0.16);
+  color: var(--red-color);
+}
+
+/* --- Control AI Section & AI Brain Card ------------------------- */
+
+.control-ai-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--line);
+}
+
+.control-ai-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.div-ai-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 0.5rem;
+  align-items: start;
+}
+
+.ai-brain-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.6rem 0.75rem;
+  background-color: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.ai-brain-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.ai-brain-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.ai-brain-col {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.ai-brain-list {
+  max-height: 5.8rem;
+}
+
+/* --- Botting & Proxy Pool --------------------------------------- */
+
+.botting-actions-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.botting-action-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.botting-bots-list {
+  max-height: 7.5rem;
+}
+
+.proxy-add-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.proxy-list {
+  max-height: 6.8rem;
 }
 
 .ai-test-card {
@@ -1773,7 +1881,7 @@ input[type="checkbox"]:checked::after {
 }
 
 .ai-test-output {
-  font-size: 0.75rem;
+  font-size: max(14px, 0.84rem);
   font-weight: 700;
   color: var(--light-main-color);
   line-height: 1.35;
@@ -1799,7 +1907,6 @@ input[type="checkbox"]:checked::after {
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
-  animation: paneEnter 0.22s var(--spring-ease);
 }
 
 .studio-view[hidden] {
@@ -1857,25 +1964,27 @@ input[type="checkbox"]:checked::after {
 }
 
 .studio-editor-wrap:focus-within {
-  border-color: var(--line-strong);
+  border-color: var(--accent-border);
 }
 
 .studio-gutter,
 .studio-editor {
   font-family:
     "JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace;
-  font-size: 0.76rem;
+  font-size: max(14px, 0.8rem);
   line-height: 1.55;
+  scroll-behavior: auto;
 }
 
 .studio-gutter {
   flex-shrink: 0;
   min-width: 2.6rem;
-  padding: 0.6rem 0.5rem 0.6rem 0.4rem;
+  /* Match the editor's scroll range when its horizontal scrollbar is visible. */
+  padding: 0.6rem 0.5rem calc(0.6rem + var(--scrollbar-size)) 0.4rem;
   text-align: right;
   white-space: pre;
   color: var(--main-color);
-  opacity: 0.45;
+  opacity: 0.85;
   background-color: rgba(145, 113, 248, 0.05);
   border-right: 1px solid var(--line);
   overflow: hidden;
@@ -1908,22 +2017,26 @@ input[type="checkbox"]:checked::after {
   background-color: rgba(145, 113, 248, 0.35);
 }
 
+.studio-editor:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: -2px;
+}
+
 .studio-footer {
   flex-shrink: 0;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.5rem;
   min-width: 0;
 }
 
 .studio-check {
-  flex: 1;
+  flex: 1 0 100%;
   min-width: 0;
-  font-size: 0.74rem;
-  font-weight: 800;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: max(12px, 0.74rem);
+  font-weight: 700;
+  overflow-wrap: anywhere;
   color: var(--main-color);
 }
 
@@ -1944,16 +2057,21 @@ input[type="checkbox"]:checked::after {
 }
 
 .studio-file {
-  flex: 0 1 10rem;
+  flex: 1 1 8rem;
   min-width: 0;
   display: flex;
   align-items: center;
   gap: 0.25rem;
 }
 
+.studio-file .input-slim {
+  flex: 1 1 0;
+  width: auto;
+}
+
 .studio-file-ext {
   margin-right: 0.15rem;
-  font-size: 0.74rem;
+  font-size: max(12px, 0.74rem);
   font-weight: 800;
   color: var(--main-color);
 }
@@ -1985,7 +2103,7 @@ input[type="checkbox"]:checked::after {
 
 .studio-doc-path {
   max-width: 100%;
-  font-size: 0.64rem;
+  font-size: max(12px, 0.64rem);
   font-weight: 700;
   color: var(--main-color);
   opacity: 0.75;
@@ -2002,7 +2120,7 @@ input[type="checkbox"]:checked::after {
   background-color: var(--surface-2);
   border: 1px solid var(--line);
   border-radius: 12px;
-  font-size: 0.78rem;
+  font-size: max(14px, 0.84rem);
   line-height: 1.5;
   color: var(--light-main-color);
   -webkit-user-select: text;
@@ -2016,7 +2134,7 @@ input[type="checkbox"]:checked::after {
 
 .studio-docs-reader h4 {
   margin-bottom: 0.15rem;
-  font-size: 0.9rem;
+  font-size: max(14px, 0.9rem);
   color: var(--title-color);
   word-break: break-word;
 }
@@ -2047,7 +2165,7 @@ input[type="checkbox"]:checked::after {
   border-radius: 5px;
   background-color: var(--surface-3);
   font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
-  font-size: 0.72rem;
+  font-size: max(14px, 0.8rem);
   color: #ffffff;
 }
 
@@ -2056,7 +2174,7 @@ input[type="checkbox"]:checked::after {
   margin: 0.45rem 0;
   padding: 0.5rem 0.65rem;
   font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
-  font-size: 0.72rem;
+  font-size: max(14px, 0.8rem);
   white-space: pre;
   overflow-x: auto;
 }
@@ -2089,6 +2207,62 @@ input[type="checkbox"]:checked::after {
   gap: 0.5rem;
 }
 
+.console-viewport-wrap {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.console-jump-live {
+  position: absolute;
+  right: 0.75rem;
+  bottom: 0.65rem;
+  z-index: 4;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.32rem 0.7rem;
+  font-family: inherit;
+  font-size: max(14px, 0.8rem);
+  font-weight: 800;
+  color: #123a28;
+  background-color: var(--green-color);
+  border: 0;
+  border-radius: 999px;
+  box-shadow: 0 6px 16px -4px rgba(0, 0, 0, 0.55);
+  transition:
+    transform 0.16s var(--spring-ease),
+    opacity 0.16s ease;
+}
+
+.console-jump-live:hover {
+  transform: translateY(-1px);
+}
+
+.console-jump-live[hidden] {
+  display: none !important;
+}
+
+.console-history-divider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.18rem 0.5rem;
+  margin: 0.15rem 0;
+  font-size: max(12px, 0.66rem);
+  font-weight: 800;
+  color: var(--main-color);
+  background-color: rgba(145, 113, 248, 0.08);
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  text-align: center;
+}
+
 .pre-logs,
 .pre-chat,
 pre {
@@ -2100,8 +2274,8 @@ pre {
   border: 1px solid var(--line);
   border-radius: 12px;
   font-family: "Nunito", "Poppins", monospace;
-  font-size: 0.8rem;
-  font-weight: 700;
+  font-size: max(14px, 0.88rem);
+  font-weight: 600;
   line-height: 1.5;
   color: var(--light-main-color);
   overflow-y: auto;
@@ -2116,6 +2290,8 @@ pre {
 
 .pre-logs,
 .pre-chat {
+  overflow-anchor: none;
+  scroll-behavior: auto;
   display: flex;
   flex-direction: column;
   gap: 0.18rem;
@@ -2129,8 +2305,13 @@ pre {
   gap: 0.5rem;
   padding: 0.12rem 0.3rem;
   border-radius: 6px;
-  animation: lineSlideIn 0.16s ease-out;
   transition: background-color 0.15s ease;
+}
+
+/* Only freshly streamed lines animate; history paging and rebuilds stay still */
+.log-line.line-enter,
+.chat-line.line-enter {
+  animation: lineSlideIn 0.14s ease-out;
 }
 
 .log-line:hover,
@@ -2140,15 +2321,14 @@ pre {
 
 time {
   flex-shrink: 0;
-  font-size: 0.68rem;
+  font-size: max(12px, 0.68rem);
   font-weight: 700;
   color: var(--main-color);
-  opacity: 0.55;
 }
 
 .log-tag {
   flex-shrink: 0;
-  font-size: 0.7rem;
+  font-size: max(12px, 0.7rem);
   font-weight: 800;
 }
 
@@ -2172,12 +2352,49 @@ time {
   color: var(--red-color);
 }
 
+.log-tag.tag-ai {
+  padding: 0.04rem 0.38rem;
+  border-radius: 6px;
+  background-color: rgba(145, 113, 248, 0.2);
+  color: #d8b4fe;
+}
+
+.log-tag.tag-plan {
+  padding: 0.04rem 0.38rem;
+  border-radius: 6px;
+  background-color: rgba(123, 255, 208, 0.14);
+  color: var(--green-color);
+}
+
+.log-tag.tag-think {
+  padding: 0.04rem 0.38rem;
+  border-radius: 6px;
+  background-color: rgba(232, 121, 249, 0.13);
+  color: #f0abfc;
+  font-style: italic;
+}
+
+.log-tag.tag-proxy {
+  padding: 0.04rem 0.38rem;
+  border-radius: 6px;
+  background-color: rgba(85, 255, 255, 0.13);
+  color: #63f2ff;
+}
+
+.log-tag.tag-botting {
+  padding: 0.04rem 0.38rem;
+  border-radius: 6px;
+  background-color: rgba(255, 214, 120, 0.15);
+  color: #ffd678;
+}
+
 .log-msg,
 .chat-msg {
   min-width: 0;
   flex: 1;
   color: var(--title-color);
-  word-break: break-word;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   -webkit-user-select: text;
   user-select: text;
 }
@@ -2222,19 +2439,24 @@ time {
 
 .input-chat-message {
   padding: 0.5rem 0.8rem;
-  font-size: 0.84rem;
+  font-size: max(14px, 0.88rem);
 }
 
 .hide {
-  display: none;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 /* --- Footer ----------------------------------------------------- */
 
 #credit {
-  font-size: 0.74rem;
+  font-size: max(12px, 0.74rem);
   gap: 0.5rem;
-  opacity: 0.8;
 }
 
 #runtime-status {
@@ -2257,4 +2479,10 @@ time {
 
 .link-button:hover {
   text-decoration-color: currentColor;
+}
+
+#ai-ds-key-field[hidden],
+#ai-ds-actions[hidden],
+#ai-ds-note[hidden] {
+  display: none;
 }

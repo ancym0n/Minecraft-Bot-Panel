@@ -145,7 +145,13 @@
         currentMsaUri =
           data.verificationUri || "https://www.microsoft.com/link";
         if (codeBox) codeBox.hidden = false;
-        if (codeValue) codeValue.textContent = currentMsaCode;
+        if (codeValue) {
+          codeValue.textContent = currentMsaCode;
+          codeValue.setAttribute(
+            "aria-label",
+            `Copy Microsoft device code ${currentMsaCode}`,
+          );
+        }
         if (copyBadge) copyBadge.textContent = "Copied to clipboard!";
         if (statusText) {
           statusText.innerHTML = `Enter code <b>${escapeHtml(currentMsaCode)}</b> in the sign-in window or browser. Panel opens automatically once approved.`;

@@ -45,6 +45,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   }
 
   const { goals, mcData, Movements } = loadLibraries();
+  const signal = scriptRepeater.signal;
   const [rawPlayerName, rawDelay, repeat, sprintJumpOpt, bridgeOpt] =
     await Promise.all([
       getOption("playername", info.name),
@@ -53,6 +54,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
       getOption("sprintjump", info.name),
       getOption("bridge", info.name),
     ]);
+  if (signal?.aborted) return;
 
   const initialName = String(rawPlayerName || "").trim();
   if (!initialName) {
@@ -75,12 +77,13 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   });
 
   async function follow() {
-    if (!bot || !bot.players || !bot.pathfinder) return;
+    if (signal?.aborted || !bot || !bot.players || !bot.pathfinder) return;
     const liveName =
       String(
         (await getOption("playername", info.name)) || initialName,
       ).trim() || initialName;
     const liveSprintJump = await getOption("sprintjump", info.name);
+    if (signal?.aborted) return;
     bot._mcbpSprintJump = liveSprintJump !== "off";
 
     const exact = bot.players[liveName]?.entity;
@@ -103,25 +106,26 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
       `Following player: ${player.username || liveName} (${Math.floor(x)}, ${Math.floor(y)}, ${Math.floor(z)})`,
     );
 
+    if (signal?.aborted) return;
     if (repeat === "on") {
       setDynamicFollowGoal(bot, goals, player, 2);
     } else {
-      bot.pathfinder.setGoal(new goals.GoalNear(x, y, z, 2));
+      await bot.pathfinder.goto(new goals.GoalNear(x, y, z, 2));
     }
   }
 
   try {
     await follow();
-    if (repeat === "on") {
+    if (!signal?.aborted && repeat === "on") {
       await scriptRepeater(follow, realDelay);
     }
   } finally {
-    if (bot) {
+    if (bot && (!scriptRepeater.isCurrent || scriptRepeater.isCurrent())) {
       bot._mcbpSprintJump = false;
-      if (repeat === "on") {
-        clearPathfinderGoal(bot);
-      }
-      configureSmartMovements(bot, mcData, Movements);
+      const owner = bot.pathfinder?.getPathOwner?.();
+      clearPathfinderGoal(bot);
+      if (!owner || owner === info.name)
+        configureSmartMovements(bot, mcData, Movements);
     }
   }
 }

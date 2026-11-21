@@ -112,6 +112,35 @@ contextBridge.exposeInMainWorld("api", {
     }
     return element.value;
   },
+  // Used by the AI Agent; fires the same events as a user edit so the
+  // value is saved and themed dropdowns refresh.
+  setOptionValue: (option, scriptName, value) => {
+    const element = document.getElementById(`${option}-${scriptName}`);
+    if (!element) return false;
+    const v = String(value ?? "");
+    if (element.type === "checkbox") {
+      const on = /^(on|true|yes|1)$/i.test(v);
+      element.checked = on;
+      element.setAttribute("value", on ? "on" : "off");
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    }
+    if (element.tagName === "SELECT") {
+      const match = [...element.options].find(
+        (o) =>
+          o.value.toLowerCase() === v.toLowerCase() ||
+          o.textContent.trim().toLowerCase() === v.toLowerCase(),
+      );
+      if (!match) return false;
+      element.value = match.value;
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    }
+    element.value = v;
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  },
   onScriptToggleOn: (scriptId) => {
     ipcRenderer.send("on-script-toggle-on", scriptId);
   },
@@ -126,6 +155,7 @@ contextBridge.exposeInMainWorld("api", {
   // Ollama Chat AI methods
   ollamaGetStatus: () => ipcRenderer.invoke("ollama-get-status"),
   ollamaSaveConfig: (cfg) => ipcRenderer.invoke("ollama-save-config", cfg),
+  aiTestKey: (key) => ipcRenderer.invoke("ai-test-key", key),
   ollamaAutoSetup: (payload) =>
     ipcRenderer.invoke("ollama-auto-setup", payload),
   ollamaPullModel: (modelName) =>
@@ -153,10 +183,37 @@ contextBridge.exposeInMainWorld("api", {
     onChannel("studio-gen-progress", (_e, prog) => cb(prog)),
   // Session Markdown Logger methods
   sessionLogGetStatus: () => ipcRenderer.invoke("session-log-get-status"),
+  sessionLogReadHistory: (payload) =>
+    ipcRenderer.invoke("session-log-read-history", payload || {}),
   openSessionLog: (filePath) =>
     ipcRenderer.send("open-session-log", filePath || ""),
   openLogsFolder: () => ipcRenderer.send("open-logs-folder"),
   recordUiEvent: (payload) => ipcRenderer.send("record-ui-event", payload),
   onSessionLogStatus: (cb) =>
     onChannel("session-log-status", (_e, status) => cb(status)),
+  // AI Brain methods
+  aiBrainGetStatus: () => ipcRenderer.invoke("ai-brain-get-status"),
+  onAiBrainStatus: (cb) =>
+    onChannel("ai-brain-status", (_e, status) => cb(status)),
+  // Proxy Manager methods
+  proxyGetStatus: () => ipcRenderer.invoke("proxy-get-status"),
+  proxySaveConfig: (cfg) => ipcRenderer.invoke("proxy-save-config", cfg),
+  proxyAdd: (raw) => ipcRenderer.invoke("proxy-add", raw),
+  proxyRemove: (id) => ipcRenderer.invoke("proxy-remove", id),
+  proxyClearDead: () => ipcRenderer.invoke("proxy-clear-dead"),
+  proxyFetchFree: () => ipcRenderer.invoke("proxy-fetch-free"),
+  proxyTestAll: (payload) =>
+    ipcRenderer.invoke("proxy-test-all", payload || {}),
+  onProxyStatus: (cb) => onChannel("proxy-status", (_e, status) => cb(status)),
+  onProxyProgress: (cb) => onChannel("proxy-progress", (_e, prog) => cb(prog)),
+  // Botting Swarm methods
+  bottingGetStatus: () => ipcRenderer.invoke("botting-get-status"),
+  bottingSpawn: (payload) => ipcRenderer.invoke("botting-spawn", payload || {}),
+  bottingStopAll: () => ipcRenderer.invoke("botting-stop-all"),
+  bottingDisconnectOne: (botId) =>
+    ipcRenderer.invoke("botting-disconnect-one", botId),
+  bottingAction: (payload) =>
+    ipcRenderer.invoke("botting-action", payload || {}),
+  onBottingStatus: (cb) =>
+    onChannel("botting-status", (_e, status) => cb(status)),
 });

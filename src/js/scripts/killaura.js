@@ -4,6 +4,7 @@ const {
   equipBestWeapon,
   tryCombatEat,
   performPvpAttack,
+  isLikelyNpcOrFakePlayer,
 } = require("../botUtils");
 
 const info = {
@@ -51,9 +52,10 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   }
 
   let busy = false;
+  const signal = scriptRepeater.signal;
 
   async function auraTick() {
-    if (!bot || !bot.entity || !bot.entities || busy) return;
+    if (signal?.aborted || !bot || !bot.entity || !bot.entities || busy) return;
     busy = true;
 
     try {
@@ -62,6 +64,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
       const ate = await tryCombatEat(bot, {
         minHp: 12,
         minFood: 15,
+        signal,
         onLog: (foodItem, hp, food) => {
           clearLog("KillAura hit:");
           log(
@@ -69,7 +72,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
           );
         },
       });
-      if (ate) return;
+      if (signal?.aborted || ate) return;
 
       const [
         hostilesOpt,
@@ -86,6 +89,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
         getOption("crits", info.name),
         getOption("range", info.name),
       ]);
+      if (signal?.aborted) return;
 
       const hitHostiles =
         hostilesOpt === "on" ||
@@ -113,7 +117,8 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
         if (dist > range) continue;
 
         const kind = String(entity.kind || "").toLowerCase();
-        const isPlayer = entity.type === "player";
+        const isPlayer =
+          entity.type === "player" && !isLikelyNpcOrFakePlayer(bot, entity);
         const hostile = isHostile(entity);
         const isPassive =
           !isPlayer &&
@@ -137,12 +142,14 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
       if (!nearest || isBotEating(bot)) return;
 
       if (autoWeapon) {
-        await equipBestWeapon(bot, { saveLowDurability: true });
+        await equipBestWeapon(bot, { saveLowDurability: true, signal });
       }
+      if (signal?.aborted) return;
 
       const attacked = await performPvpAttack(bot, nearest, {
         useCrits,
         maxRange: range,
+        signal,
       });
       if (attacked) {
         clearLog("KillAura hit:");
@@ -150,14 +157,15 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
           `KillAura hit: ${nearest.username || nearest.displayName || nearest.name} (${bestDist.toFixed(1)}m)`,
         );
       }
-    } catch (_) {
+    } catch (error) {
+      if (!signal?.aborted) log(`KillAura: ${error.message || error}`);
     } finally {
       busy = false;
     }
   }
 
   await auraTick();
-  await scriptRepeater(auraTick, info.default.interval);
+  if (!signal?.aborted) await scriptRepeater(auraTick, info.default.interval);
 }
 
 module.exports = {
