@@ -362,7 +362,7 @@ test("BaritoneAStar multi-coefficient bestSoFar returns progress segment on node
     m,
     new goals.GoalBlock(400, 1, 0),
     2000,
-    50,
+    2000, // generous per-tick budget so only maxNodes ends the search (no load flakiness)
     -1,
     { maxNodes: 90, primaryTimeout: 2000 },
   );
@@ -526,6 +526,17 @@ test("Path ownership: scripts of equal priority still replace each other, and un
   assert.equal(bot.pathfinder.goal, b, "lease is free again after an explicit release");
 });
 
+test("Path ownership: stopping a displaced script preserves the current script's goal", () => {
+  const bot = flatBot();
+  const mineGoal = new goals.GoalBlock(6, 1, 0);
+  const gearGoal = new goals.GoalBlock(0, 1, 6);
+  runWithPathOwner("Mine", "script", () => bot.pathfinder.setGoal(mineGoal));
+  runWithPathOwner("GearUp", "script", () => bot.pathfinder.setGoal(gearGoal));
+  runWithPathOwner("Mine", "script", () => bot.pathfinder.setGoal(null));
+  assert.equal(bot.pathfinder.goal, gearGoal);
+  assert.equal(bot.pathfinder.getPathOwner(), "GearUp");
+});
+
 test("Path ownership: a held-back goto waits for the AI instead of failing, then runs", async () => {
   const bot = flatBot();
   const aiGoal = new goals.GoalBlock(0, 1, 8);
@@ -549,4 +560,58 @@ test("Path ownership: a held-back goto waits for the AI instead of failing, then
   assert.equal(bot.pathfinder.goal, gearGoal, "waiting goto starts once the AI is done");
   bot.pathfinder.setGoal(null);
   void pending;
+});
+
+test("Path ownership: a cancelled waiting goto cannot resume after the AI", async () => {
+  const bot = flatBot();
+  const aiGoal = new goals.GoalBlock(0, 1, 8);
+  const gearGoal = new goals.GoalBlock(8, 1, 0);
+  const controller = new AbortController();
+  runWithPathOwner("AI", "ai", () => bot.pathfinder.setGoal(aiGoal));
+  const pending = runWithPathOwner(
+    "GearUp",
+    "script",
+    () => bot.pathfinder.goto(gearGoal),
+    controller.signal,
+  );
+  controller.abort();
+  await assert.rejects(pending, { name: "AbortError" });
+  assert.equal(bot.pathfinder.goal, aiGoal);
+  runWithPathOwner("AI", "ai", () => bot.pathfinder.setGoal(null));
+  await tick();
+  assert.equal(bot.pathfinder.goal, null);
+});
+
+test("Path ownership: aborting an active goto releases its goal", async () => {
+  const bot = flatBot();
+  const goal = new goals.GoalBlock(8, 1, 0);
+  const controller = new AbortController();
+  const pending = runWithPathOwner(
+    "Mine",
+    "script",
+    () => bot.pathfinder.goto(goal),
+    controller.signal,
+  );
+  assert.equal(bot.pathfinder.goal, goal);
+  controller.abort();
+  await assert.rejects(pending);
+  assert.equal(bot.pathfinder.goal, null);
+});
+
+test("Path ownership: a cancelled preempted goal is not resumed", async () => {
+  const bot = flatBot();
+  const controller = new AbortController();
+  const gearGoal = new goals.GoalBlock(8, 1, 0);
+  const aiGoal = new goals.GoalBlock(0, 1, 8);
+  runWithPathOwner(
+    "GearUp",
+    "script",
+    () => bot.pathfinder.setGoal(gearGoal),
+    controller.signal,
+  );
+  runWithPathOwner("AI", "ai", () => bot.pathfinder.setGoal(aiGoal));
+  controller.abort();
+  runWithPathOwner("AI", "ai", () => bot.pathfinder.setGoal(null));
+  await tick();
+  assert.equal(bot.pathfinder.goal, null);
 });

@@ -155,6 +155,7 @@ contextBridge.exposeInMainWorld("api", {
   // Ollama Chat AI methods
   ollamaGetStatus: () => ipcRenderer.invoke("ollama-get-status"),
   ollamaSaveConfig: (cfg) => ipcRenderer.invoke("ollama-save-config", cfg),
+  aiTestKey: (key) => ipcRenderer.invoke("ai-test-key", key),
   ollamaAutoSetup: (payload) =>
     ipcRenderer.invoke("ollama-auto-setup", payload),
   ollamaPullModel: (modelName) =>
@@ -204,12 +205,10 @@ contextBridge.exposeInMainWorld("api", {
   proxyTestAll: (payload) =>
     ipcRenderer.invoke("proxy-test-all", payload || {}),
   onProxyStatus: (cb) => onChannel("proxy-status", (_e, status) => cb(status)),
-  onProxyProgress: (cb) =>
-    onChannel("proxy-progress", (_e, prog) => cb(prog)),
+  onProxyProgress: (cb) => onChannel("proxy-progress", (_e, prog) => cb(prog)),
   // Botting Swarm methods
   bottingGetStatus: () => ipcRenderer.invoke("botting-get-status"),
-  bottingSpawn: (payload) =>
-    ipcRenderer.invoke("botting-spawn", payload || {}),
+  bottingSpawn: (payload) => ipcRenderer.invoke("botting-spawn", payload || {}),
   bottingStopAll: () => ipcRenderer.invoke("botting-stop-all"),
   bottingDisconnectOne: (botId) =>
     ipcRenderer.invoke("botting-disconnect-one", botId),

@@ -289,9 +289,15 @@ function getWeaponScore(item, preferAxe = false) {
 
 async function equipBestWeapon(
   bot,
-  { preferAxe = false, saveLowDurability = true } = {},
+  { preferAxe = false, saveLowDurability = true, signal } = {},
 ) {
-  if (!bot || !bot.inventory || isBotEating(bot) || isBotDigging(bot)) {
+  if (
+    signal?.aborted ||
+    !bot ||
+    !bot.inventory ||
+    isBotEating(bot) ||
+    isBotDigging(bot)
+  ) {
     return null;
   }
   const items = bot.inventory.items();
@@ -488,12 +494,13 @@ async function equipBestToolForBlock(
   return bestTool;
 }
 
-async function equipBestArmor(bot, { includeOffhand = true } = {}) {
-  if (!bot || !bot.inventory) return [];
+async function equipBestArmor(bot, { includeOffhand = true, signal } = {}) {
+  if (signal?.aborted || !bot || !bot.inventory) return [];
   const equippedNames = [];
   const items = bot.inventory.items();
 
   for (const piece of ARMOR_SLOTS) {
+    if (signal?.aborted) return equippedNames;
     const current = bot.inventory.slots[piece.slotIndex];
     const currentRank = current ? piece.ranks.indexOf(current.name) : 999;
     const effectiveCurrent = currentRank === -1 ? 999 : currentRank;
@@ -518,7 +525,7 @@ async function equipBestArmor(bot, { includeOffhand = true } = {}) {
     }
   }
 
-  if (includeOffhand) {
+  if (includeOffhand && !signal?.aborted) {
     const offhandSlot = bot.inventory.slots[45];
     if (
       !offhandSlot ||
@@ -592,8 +599,9 @@ function findBestFood(bot, { emergencyHeal = false } = {}) {
  * not swap weapons mid-eat. Also works around Mineflayer's heldItemChanged
  * premature resolve bug by waiting for entityStatus 9 or actual consumption.
  */
-async function consumeFoodSafely(bot, foodItem) {
-  if (!bot || !bot.entity || !bot.inventory || !foodItem) return false;
+async function consumeFoodSafely(bot, foodItem, { signal } = {}) {
+  if (signal?.aborted || !bot || !bot.entity || !bot.inventory || !foodItem)
+    return false;
   if (isBotEating(bot) && bot._mcbpEatPromise) {
     return bot._mcbpEatPromise;
   }
@@ -611,7 +619,7 @@ async function consumeFoodSafely(bot, foodItem) {
         await new Promise((r) => setTimeout(r, 60));
       }
 
-      if (!bot || !bot.entity) return false;
+      if (signal?.aborted || !bot || !bot.entity) return false;
       const held = bot.heldItem || foodItem;
       const startCount = held.count || 1;
       const startFood = bot.food ?? 20;
@@ -626,6 +634,7 @@ async function consumeFoodSafely(bot, foodItem) {
           finished = true;
           if (timer) clearTimeout(timer);
           if (pollTimer) clearInterval(pollTimer);
+          signal?.removeEventListener("abort", done);
           if (
             bot?._client &&
             typeof bot._client.removeListener === "function"
@@ -648,6 +657,11 @@ async function consumeFoodSafely(bot, foodItem) {
         if (bot._client && typeof bot._client.on === "function") {
           bot._client.on("entity_status", onStatus);
         }
+        signal?.addEventListener("abort", done, { once: true });
+        if (signal?.aborted) {
+          done();
+          return;
+        }
 
         try {
           if (typeof bot.activateItem === "function") {
@@ -663,6 +677,7 @@ async function consumeFoodSafely(bot, foodItem) {
           return;
         }
 
+        if (finished) return;
         pollTimer = setInterval(() => {
           if (!bot || !bot.entity) {
             done();
@@ -690,7 +705,7 @@ async function consumeFoodSafely(bot, foodItem) {
           bot.deactivateItem();
         }
       } catch (_) {}
-      return true;
+      return !signal?.aborted;
     } catch (_) {
       return false;
     } finally {
@@ -712,9 +727,9 @@ async function consumeFoodSafely(bot, foodItem) {
  */
 async function tryCombatEat(
   bot,
-  { minHp = 13, minFood = 16, onLog = null } = {},
+  { minHp = 13, minFood = 16, onLog = null, signal } = {},
 ) {
-  if (!bot || !bot.entity || !bot.inventory) return false;
+  if (signal?.aborted || !bot || !bot.entity || !bot.inventory) return false;
   if (isBotEating(bot)) {
     if (bot._mcbpEatPromise) await bot._mcbpEatPromise;
     return true;
@@ -737,7 +752,7 @@ async function tryCombatEat(
   if (typeof onLog === "function") {
     onLog(bestFood, hp, food);
   }
-  await consumeFoodSafely(bot, bestFood);
+  await consumeFoodSafely(bot, bestFood, { signal });
   return true;
 }
 
@@ -752,9 +767,16 @@ async function tryCombatEat(
 async function performPvpAttack(
   bot,
   target,
-  { useCrits = true, maxRange = 4.3, allowNpc = false } = {},
+  { useCrits = true, maxRange = 4.3, allowNpc = false, signal } = {},
 ) {
-  if (!bot || !bot.entity || !target || !target.position || isBotEating(bot)) {
+  if (
+    signal?.aborted ||
+    !bot ||
+    !bot.entity ||
+    !target ||
+    !target.position ||
+    isBotEating(bot)
+  ) {
     return false;
   }
 
@@ -814,7 +836,13 @@ async function performPvpAttack(
     const startWait = Date.now();
     while (Date.now() - startWait < 310) {
       await new Promise((r) => setTimeout(r, 35));
-      if (!bot || !bot.entity || isBotEating(bot) || !target.position) {
+      if (
+        signal?.aborted ||
+        !bot ||
+        !bot.entity ||
+        isBotEating(bot) ||
+        !target.position
+      ) {
         if (bot) bot._mcbpCritJumping = false;
         return false;
       }
@@ -832,13 +860,21 @@ async function performPvpAttack(
       const startWait = Date.now();
       while (Date.now() - startWait < 170) {
         await new Promise((r) => setTimeout(r, 35));
-        if (!bot || !bot.entity || isBotEating(bot)) return false;
+        if (signal?.aborted || !bot || !bot.entity || isBotEating(bot))
+          return false;
         if ((bot.entity.velocity?.y ?? 0) < -0.015) break;
       }
     }
   }
 
-  if (!bot || !bot.entity || !target || !target.position || isBotEating(bot)) {
+  if (
+    signal?.aborted ||
+    !bot ||
+    !bot.entity ||
+    !target ||
+    !target.position ||
+    isBotEating(bot)
+  ) {
     return false;
   }
   if (Date.now() - (bot._mcbpLastAttackTime || 0) < cooldownMs) {
@@ -852,6 +888,7 @@ async function performPvpAttack(
   const savedPitch = bot.entity.pitch;
   const aimPos = target.position.offset(0, (target.height || 1.62) * 0.82, 0);
   await humanLookAt(bot, aimPos, true);
+  if (signal?.aborted) return false;
 
   const isFalling =
     !bot.entity.onGround && (bot.entity.velocity?.y ?? 0) < -0.01;
@@ -873,7 +910,7 @@ async function performPvpAttack(
 
   if (useCrits && isFalling && wasSprinting) {
     setTimeout(() => {
-      if (bot && bot.entity && !isBotEating(bot)) {
+      if (!signal?.aborted && bot && bot.entity && !isBotEating(bot)) {
         bot.setControlState("sprint", true);
       }
     }, 55);
@@ -911,9 +948,16 @@ function getVisibleDigFace(bot, block) {
 async function smartDig(
   bot,
   block,
-  { autoTool = true, saveLowDurability = true } = {},
+  { autoTool = true, saveLowDurability = true, signal, canDigTarget } = {},
 ) {
-  if (!bot || !bot.entity || !block || !block.position || isBotEating(bot)) {
+  if (
+    signal?.aborted ||
+    !bot ||
+    !bot.entity ||
+    !block ||
+    !block.position ||
+    isBotEating(bot)
+  ) {
     return false;
   }
 
@@ -989,6 +1033,7 @@ async function smartDig(
     } catch (_) {}
   }
 
+  if (canDigTarget && !canDigTarget(targetToDig)) return false;
   if (autoTool) {
     const prevSlot = bot.heldItem?.slot;
     await equipBestToolForBlock(bot, targetToDig, { saveLowDurability });
@@ -997,10 +1042,38 @@ async function smartDig(
     }
   }
 
-  if (!bot || !bot.entity) return false;
+  if (signal?.aborted || !bot || !bot.entity) return false;
   const digStartedAt = Date.now();
   const digFace = getVisibleDigFace(bot, targetToDig);
-  await bot.dig(targetToDig, true, digFace);
+  if (signal) {
+    await bot.lookAt(
+      targetToDig.position.offset(
+        0.5 + digFace.x * 0.5,
+        0.5 + digFace.y * 0.5,
+        0.5 + digFace.z * 0.5,
+      ),
+      true,
+    );
+    if (signal.aborted) return false;
+    const current = bot.blockAt(targetToDig.position);
+    if (!current || current.type !== targetToDig.type) return false;
+    if (canDigTarget && !canDigTarget(current)) return false;
+  }
+  const stopOwnDig = () => {
+    if (bot.targetDigBlock === targetToDig) {
+      bot.stopDigging?.();
+    }
+  };
+  signal?.addEventListener("abort", stopOwnDig, { once: true });
+  try {
+    await bot.dig(targetToDig, signal ? "ignore" : true, digFace);
+  } catch (err) {
+    if (signal?.aborted) return false;
+    throw err;
+  } finally {
+    signal?.removeEventListener("abort", stopOwnDig);
+  }
+  if (signal?.aborted) return false;
   if (bot._mcbpDenied && bot._mcbpDenied.at >= digStartedAt - 100) {
     bot._mcbpProtectedBlocks.add(blockKey);
     bot._mcbpProtectedZoneUntil = Date.now() + 30000;
@@ -1840,7 +1913,10 @@ function attachSmartMovement(bot, manualControls = {}) {
     ) {
       bot._mcbpLastSetbackRepathAt = now;
       try {
-        if (typeof bot.pathfinder.penalizeNode === "function" && bot.entity?.position) {
+        if (
+          typeof bot.pathfinder.penalizeNode === "function" &&
+          bot.entity?.position
+        ) {
           bot.pathfinder.penalizeNode(bot.entity.position, 40);
         }
         if (typeof bot.pathfinder.repath === "function") {
@@ -2036,7 +2112,7 @@ function attachSmartMovement(bot, manualControls = {}) {
       }
     }
 
-    // 1. Liquid float handling — only release jump on transition out of liquid
+    // 1. Liquid float handling - only release jump on transition out of liquid
     if (inLiquid) {
       bot.setControlState("jump", true);
       wasInLiquid = true;
@@ -2648,7 +2724,7 @@ async function performVerifiedJumpOrUnwedge(
         : `not onGround (${diag.feet})`;
     recordMoveProblem(
       `${reason}: Jump blocked (${cause})`,
-      `${diag.summary} — un-wedging horizontally`,
+      `${diag.summary} - un-wedging horizontally`,
     );
     return runHorizontalUnwedge(`jump blocked (${cause})`);
   }
@@ -2681,7 +2757,7 @@ async function performVerifiedJumpOrUnwedge(
   if (dy < 0.25) {
     recordMoveProblem(
       `${reason}: Jump did not register on server`,
-      `ΔY=${dy.toFixed(2)}m, ΔXZ=${dHoriz.toFixed(2)}m | ${diag.summary} — switching to horizontal un-wedge`,
+      `ΔY=${dy.toFixed(2)}m, ΔXZ=${dHoriz.toFixed(2)}m | ${diag.summary} - switching to horizontal un-wedge`,
     );
     return runHorizontalUnwedge(`server jump failed (ΔY=${dy.toFixed(2)}m)`);
   }
@@ -2690,7 +2766,7 @@ async function performVerifiedJumpOrUnwedge(
   if (dHoriz < 0.25) {
     recordMoveProblem(
       `${reason}: Jumped but blocked horizontally`,
-      `ΔY=${dy.toFixed(2)}m, ΔXZ=${dHoriz.toFixed(2)}m | ${diag.summary} — stepping around obstacle`,
+      `ΔY=${dy.toFixed(2)}m, ΔXZ=${dHoriz.toFixed(2)}m | ${diag.summary} - stepping around obstacle`,
     );
     return runHorizontalUnwedge(
       `jump blocked horizontally (ΔXZ=${dHoriz.toFixed(2)}m)`,

@@ -22,10 +22,11 @@ const info = {
 
 async function script(bot, log, clearLog, getOption, scriptRepeater) {
   clearLog("AIAgent:");
-  await ollamaManager.getStatus();
   const res = await prepareOllama(log, clearLog, "AIAgent", {
     model: () => ollamaManager.resolveAgentModel(),
-    isActive: () => Boolean(ollamaManager.config.agentEnabled),
+    isActive: () =>
+      !scriptRepeater.signal?.aborted &&
+      Boolean(ollamaManager.config.agentEnabled),
   });
   if (res.ok) {
     const cfg = ollamaManager.config;
@@ -35,7 +36,8 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
       `AIAgent: Ready (${res.model} · obeys ${allowed || "everyone"}${code}) · try "${bot?.username || "bot"}, come here"`,
     );
   }
-  await scriptRepeater(() => {}, info.default.interval);
+  if (!scriptRepeater.signal?.aborted)
+    await scriptRepeater(() => {}, info.default.interval);
 }
 
 module.exports = { info, script };

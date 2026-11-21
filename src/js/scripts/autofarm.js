@@ -1,5 +1,5 @@
 const { loadLibraries } = require("../runtime");
-const { isBotEating, clearPathfinderGoal } = require("../botUtils");
+const { isBotEating, clearPathfinderGoal, smartDig } = require("../botUtils");
 
 const info = {
   name: "AutoFarm",
@@ -83,12 +83,14 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   }
 
   const { Vec3, goals } = loadLibraries();
+  const signal = scriptRepeater.signal;
   let busy = false;
   clearLog("AutoFarm:");
   log("AutoFarm: Active (harvesting, replanting & bonemealing)");
 
   async function farmTick() {
-    if (!bot || !bot.entity || busy || isBotEating(bot)) return;
+    if (signal?.aborted || !bot || !bot.entity || busy || isBotEating(bot))
+      return;
     busy = true;
 
     try {
@@ -99,6 +101,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
           getOption("collect", info.name),
           getOption("radius", info.name),
         ]);
+      if (signal?.aborted) return;
 
       const doReplant = replantOpt !== "off";
       const doBonemeal = bonemealOpt !== "off";
@@ -122,14 +125,22 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
         if (cropBlock) {
           const cropName = cropBlock.name;
           if (bot.entity.position.distanceTo(pos) > 3.6) {
-            await bot.pathfinder
-              .goto(new goals.GoalNear(pos.x, pos.y, pos.z, 2.5))
-              .catch(() => {});
+            await bot.pathfinder.goto(
+              new goals.GoalNear(pos.x, pos.y, pos.z, 2.5),
+            );
           }
+          if (signal?.aborted) return;
           const fresh = bot.blockAt(pos);
           if (fresh && isMatureCrop(fresh)) {
             await bot.lookAt(pos.offset(0.5, 0.2, 0.5), true);
-            await bot.dig(fresh, true);
+            if (signal?.aborted) return;
+            const harvested = await smartDig(bot, fresh, {
+              autoTool: false,
+              signal,
+              canDigTarget: (target) =>
+                target.position.equals(pos) && isMatureCrop(target),
+            });
+            if (signal?.aborted || !harvested) return;
             clearLog("AutoFarm status:");
             log(
               `AutoFarm status: Harvested ${cropName} at (${pos.x}, ${pos.y}, ${pos.z})`,
@@ -142,10 +153,9 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
                 .find((i) => i.name === seedName);
               const soilBlock = bot.blockAt(pos.offset(0, -1, 0));
               if (seedItem && soilBlock) {
-                await bot.equip(seedItem, "hand").catch(() => {});
-                await bot
-                  .placeBlock(soilBlock, new Vec3(0, 1, 0))
-                  .catch(() => {});
+                await bot.equip(seedItem, "hand");
+                if (signal?.aborted) return;
+                await bot.placeBlock(soilBlock, new Vec3(0, 1, 0));
               }
             }
             return;
@@ -167,17 +177,20 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
             count: 24,
           });
           for (const fPos of emptyFarmland) {
+            if (signal?.aborted) return;
             const above = bot.blockAt(fPos.offset(0, 1, 0));
             if (above && above.name === "air") {
               if (bot.entity.position.distanceTo(fPos) > 3.6) {
-                await bot.pathfinder
-                  .goto(new goals.GoalNear(fPos.x, fPos.y, fPos.z, 2.5))
-                  .catch(() => {});
+                await bot.pathfinder.goto(
+                  new goals.GoalNear(fPos.x, fPos.y, fPos.z, 2.5),
+                );
               }
+              if (signal?.aborted) return;
               const soil = bot.blockAt(fPos);
               if (soil) {
-                await bot.equip(seedItem, "hand").catch(() => {});
-                await bot.placeBlock(soil, new Vec3(0, 1, 0)).catch(() => {});
+                await bot.equip(seedItem, "hand");
+                if (signal?.aborted) return;
+                await bot.placeBlock(soil, new Vec3(0, 1, 0));
                 clearLog("AutoFarm status:");
                 log(
                   `AutoFarm status: Planted ${seedItem.name} at (${fPos.x}, ${fPos.y + 1}, ${fPos.z})`,
@@ -203,14 +216,16 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
           if (immaturePositions.length > 0) {
             const pos = immaturePositions[0];
             if (bot.entity.position.distanceTo(pos) > 3.6) {
-              await bot.pathfinder
-                .goto(new goals.GoalNear(pos.x, pos.y, pos.z, 2.5))
-                .catch(() => {});
+              await bot.pathfinder.goto(
+                new goals.GoalNear(pos.x, pos.y, pos.z, 2.5),
+              );
             }
+            if (signal?.aborted) return;
             const crop = bot.blockAt(pos);
             if (crop && isImmatureCrop(crop)) {
-              await bot.equip(boneMeal, "hand").catch(() => {});
-              await bot.activateBlock(crop).catch(() => {});
+              await bot.equip(boneMeal, "hand");
+              if (signal?.aborted) return;
+              await bot.activateBlock(crop);
               clearLog("AutoFarm status:");
               log(
                 `AutoFarm status: Applied bone meal to ${crop.name} at (${pos.x}, ${pos.y}, ${pos.z})`,
@@ -243,7 +258,8 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
           bot.pathfinder.setGoal(new goals.GoalFollow(nearestDrop, 1), true);
         }
       }
-    } catch (_) {
+    } catch (error) {
+      if (!signal?.aborted) log(`AutoFarm: ${error.message || error}`);
     } finally {
       busy = false;
     }
@@ -251,9 +267,11 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
 
   try {
     await farmTick();
-    await scriptRepeater(farmTick, info.default.interval);
+    if (!signal?.aborted) await scriptRepeater(farmTick, info.default.interval);
   } finally {
-    clearPathfinderGoal(bot);
+    if (!scriptRepeater.isCurrent || scriptRepeater.isCurrent()) {
+      clearPathfinderGoal(bot);
+    }
   }
 }
 

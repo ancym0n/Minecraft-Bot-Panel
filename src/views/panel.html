@@ -24,20 +24,28 @@
       <section class="panel-col panel-col-main">
         <div class="panel-card connect-card">
           <div class="connect-top">
-            <span
+            <button
+              type="button"
               id="switch-account"
               class="chip chip-button"
               title="Back to login"
-              >← Account</span
             >
+              ← Account
+            </button>
             <span id="account-badge" class="chip chip-muted">Offline</span>
-            <span
+            <button
+              type="button"
               id="main-proxy-toggle"
               class="chip chip-button"
               title="Toggle proxy tunneling for the main bot connection"
-              >Proxy: off</span
+              aria-pressed="false"
             >
-            <span id="status-badge" class="chip status-disconnected"
+              Proxy: off
+            </button>
+            <span
+              id="status-badge"
+              class="chip status-disconnected"
+              role="status"
               >Disconnected</span
             >
           </div>
@@ -78,12 +86,15 @@
           <div id="panel-msa-banner" class="msa-banner" hidden>
             <span class="msa-banner-text">
               Microsoft code
-              <b
+              <button
+                type="button"
                 id="panel-msa-code"
                 class="msa-banner-code"
                 title="Click to copy"
-                >--------</b
+                aria-label="Copy Microsoft device code"
               >
+                --------
+              </button>
             </span>
             <span class="msa-banner-actions">
               <button id="panel-msa-popup" type="button" class="btn btn-small">
@@ -104,15 +115,15 @@
               <div class="vital-bar">
                 <div id="tele-hp-fill" class="vital-fill fill-hp"></div>
               </div>
-              <span id="tele-hp-text" class="vital-text">— / 20</span>
+              <span id="tele-hp-text" class="vital-text">- / 20</span>
             </div>
             <div class="vital" title="Food">
               <div class="vital-bar">
                 <div id="tele-food-fill" class="vital-fill fill-food"></div>
               </div>
-              <span id="tele-food-text" class="vital-text">— / 20</span>
+              <span id="tele-food-text" class="vital-text">- / 20</span>
             </div>
-            <span id="tele-pos" class="vital-meta" title="Position">—</span>
+            <span id="tele-pos" class="vital-meta" title="Position">-</span>
             <span id="tele-hand" class="vital-meta vital-hand" title="Held item"
               >Empty hand</span
             >
@@ -121,7 +132,7 @@
 
         <div class="panel-card workspace-card">
           <div class="workspace-head">
-            <div class="tabs" role="tablist">
+            <div class="tabs" role="tablist" aria-label="Workspace">
               <button
                 type="button"
                 class="tab workspace-tab active"
@@ -172,6 +183,7 @@
                 id="script-search"
                 class="input-slim"
                 placeholder="Search scripts"
+                aria-label="Search scripts"
                 spellcheck="false"
               />
               <button
@@ -535,6 +547,59 @@
               </button>
             </div>
 
+            <div class="ai-config-card">
+              <div class="ai-config-top">
+                <div class="ai-config-title-group">
+                  <span class="ai-section-title">Provider</span>
+                  <span id="ai-ds-usage" class="muted-text"></span>
+                </div>
+              </div>
+              <div class="ai-form-grid ai-form-grid-2">
+                <div class="field">
+                  <label for="ai-provider-select">AI backend</label>
+                  <select id="ai-provider-select">
+                    <option value="ollama">Ollama (local)</option>
+                    <option value="deepseek">DeepSeek (cloud API)</option>
+                  </select>
+                </div>
+                <div class="field" id="ai-ds-key-field" hidden>
+                  <label for="ai-ds-key-input">DeepSeek API key</label>
+                  <input
+                    type="password"
+                    id="ai-ds-key-input"
+                    class="input-slim"
+                    placeholder="sk-..."
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                </div>
+              </div>
+              <div id="ai-ds-actions" class="ai-toggle-group" hidden>
+                <button
+                  type="button"
+                  id="ai-ds-save-btn"
+                  class="btn btn-small btn-primary"
+                  title="Verify the key with DeepSeek and save it (encrypted)"
+                >
+                  Save &amp; test key
+                </button>
+                <button
+                  type="button"
+                  id="ai-ds-clear-btn"
+                  class="btn btn-small btn-ghost"
+                  title="Remove the stored key"
+                >
+                  Remove key
+                </button>
+                <span id="ai-ds-status" class="muted-text"></span>
+              </div>
+              <span id="ai-ds-note" class="muted-text" hidden>
+                Requests go to DeepSeek servers (China). Account name, email,
+                server address, IPs, URLs, paths, tokens and passwords are
+                removed before sending.
+              </span>
+            </div>
+
             <div id="ai-progress-box" class="ai-progress-box" hidden>
               <div class="ai-progress-head">
                 <span id="ai-progress-text" class="ai-progress-text"
@@ -731,6 +796,7 @@
                     id="ai-custom-model-input"
                     class="input-slim"
                     placeholder="Pull custom tag (e.g. mistral:7b)"
+                    aria-label="Custom model tag"
                     spellcheck="false"
                   />
                   <button
@@ -752,6 +818,7 @@
                   id="ai-test-input"
                   class="input-slim"
                   placeholder="Test a chat message (e.g. come here and mine 3 oak logs)"
+                  aria-label="Test message"
                   spellcheck="false"
                 />
                 <label
@@ -886,6 +953,7 @@
                   id="botting-target-input"
                   class="input-slim"
                   placeholder="Target player or chat/command (e.g. ancymon or /register pass pass)"
+                  aria-label="Target player or chat command"
                   spellcheck="false"
                 />
                 <div class="botting-action-btns">
@@ -967,7 +1035,9 @@
             <div class="ai-config-card proxy-card">
               <div class="ai-config-top">
                 <div class="ai-config-title-group">
-                  <span class="ai-section-title">Proxy Pool &amp; Auto-Tester</span>
+                  <span class="ai-section-title"
+                    >Proxy Pool &amp; Auto-Tester</span
+                  >
                   <span id="proxy-summary-badge" class="chip chip-muted"
                     >0 working / 0 total</span
                   >
@@ -1014,20 +1084,18 @@
                   id="proxy-add-input"
                   class="input-slim"
                   placeholder="Add proxy (e.g. socks5://1.2.3.4:1080 or host:port)"
+                  aria-label="Proxy address"
                   spellcheck="false"
                 />
-                <button
-                  type="button"
-                  id="proxy-add-btn"
-                  class="btn btn-small"
-                >
+                <button type="button" id="proxy-add-btn" class="btn btn-small">
                   Add Proxy
                 </button>
               </div>
 
               <div id="proxy-list" class="radar-list proxy-list">
                 <p class="radar-empty">
-                  No proxies loaded. Click Find Free Proxies then Auto-Test Pool.
+                  No proxies loaded. Click Find Free Proxies then Auto-Test
+                  Pool.
                 </p>
               </div>
             </div>
@@ -1036,7 +1104,7 @@
           <!-- Script Studio -->
           <div id="tab-studio" class="workspace-pane" hidden>
             <div class="toolbar studio-toolbar">
-              <div class="tabs" role="tablist">
+              <div class="tabs" role="tablist" aria-label="Script Studio">
                 <button
                   type="button"
                   class="tab studio-view-tab active"
@@ -1054,7 +1122,10 @@
                 </button>
               </div>
               <div class="studio-picker">
-                <select id="studio-template-select">
+                <select
+                  id="studio-template-select"
+                  aria-label="Script template"
+                >
                   <option value="">Open template or script…</option>
                 </select>
               </div>
@@ -1068,10 +1139,11 @@
                     id="studio-prompt"
                     class="input-slim"
                     placeholder="Describe a script, e.g. chop 20 oak logs then come back to me"
+                    aria-label="Script instructions"
                     spellcheck="false"
                   />
                   <div class="studio-model">
-                    <select id="studio-model-select">
+                    <select id="studio-model-select" aria-label="AI model">
                       <option value="">Auto (coder model)</option>
                     </select>
                   </div>
@@ -1079,15 +1151,15 @@
                     type="button"
                     id="studio-generate-btn"
                     class="btn btn-small btn-primary"
-                    title="Write or edit the script with your local AI (Ollama)"
+                    title="Write or edit the script with your configured AI"
                   >
                     Generate
                   </button>
                 </div>
                 <div class="studio-ai-meta">
                   <span id="studio-gen-status" class="muted-text"
-                    >Local AI writes the script from the Mineflayer docs. With
-                    code in the editor, it edits that code instead.</span
+                    >Your configured AI writes a script using the Mineflayer
+                    docs, or edits the code already in the editor.</span
                   >
                 </div>
               </div>
@@ -1103,6 +1175,7 @@
                 <textarea
                   id="studio-editor"
                   class="studio-editor"
+                  aria-label="Script editor"
                   spellcheck="false"
                   autocomplete="off"
                   wrap="off"
@@ -1119,6 +1192,7 @@
                     id="studio-filename"
                     class="input-slim"
                     placeholder="file-name"
+                    aria-label="Script filename"
                     spellcheck="false"
                   />
                   <span class="studio-file-ext">.js</span>
@@ -1149,6 +1223,7 @@
                   id="studio-docs-search"
                   class="input-slim"
                   placeholder="Search Mineflayer docs (dig, chat, GoalNear…)"
+                  aria-label="Search Mineflayer docs"
                   spellcheck="false"
                 />
                 <span id="studio-docs-badge" class="chip chip-muted"
@@ -1181,7 +1256,7 @@
       <section class="panel-col panel-col-side">
         <div class="panel-card console-card">
           <div class="console-head">
-            <div class="tabs" role="tablist">
+            <div class="tabs" role="tablist" aria-label="Console">
               <button
                 type="button"
                 class="tab console-tab active"
@@ -1231,6 +1306,7 @@
               id="log-filter"
               class="input-slim"
               placeholder="Filter logs"
+              aria-label="Filter logs"
               spellcheck="false"
             />
             <div class="console-viewport-wrap">
@@ -1252,6 +1328,7 @@
               id="chat-filter"
               class="input-slim"
               placeholder="Filter chat"
+              aria-label="Filter chat"
               spellcheck="false"
             />
             <div class="console-viewport-wrap">

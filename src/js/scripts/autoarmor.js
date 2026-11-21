@@ -79,17 +79,20 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
     getOption("repeat", info.name),
     getOption("offhand", info.name),
   ]);
+  const signal = scriptRepeater.signal;
+  if (signal?.aborted) return;
 
   let equipping = false;
 
   async function checkAndEquipArmor() {
-    if (!bot || !bot.inventory || equipping) return;
+    if (signal?.aborted || !bot || !bot.inventory || equipping) return;
     equipping = true;
 
     try {
       const items = bot.inventory.items();
 
       for (const piece of ARMOR_SLOTS) {
+        if (signal?.aborted) return;
         const equipped = bot.inventory.slots[piece.slotIndex];
         const currentRank = equipped ? piece.ranks.indexOf(equipped.name) : 999;
         const effectiveCurrent = currentRank === -1 ? 999 : currentRank;
@@ -112,7 +115,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
         }
       }
 
-      if (offhand === "on") {
+      if (!signal?.aborted && offhand === "on") {
         const offhandSlot = bot.inventory.slots[45];
         if (
           !offhandSlot ||
@@ -129,14 +132,15 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
           }
         }
       }
-    } catch (_) {
+    } catch (error) {
+      if (!signal?.aborted) log(`AutoArmor: ${error.message || error}`);
     } finally {
       equipping = false;
     }
   }
 
   await checkAndEquipArmor();
-  if (repeat === "on") {
+  if (!signal?.aborted && repeat === "on") {
     await scriptRepeater(checkAndEquipArmor, info.default.interval);
   }
 }

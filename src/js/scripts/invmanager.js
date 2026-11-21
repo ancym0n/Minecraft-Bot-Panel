@@ -115,11 +115,13 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   }
 
   let busy = false;
+  const signal = scriptRepeater.signal;
   clearLog("InvManager:");
   log("InvManager: Active (cleaning junk & organizing gear)");
 
   async function manageTick() {
-    if (!bot || !bot.inventory || busy || isBotEating(bot)) return;
+    if (signal?.aborted || !bot || !bot.inventory || busy || isBotEating(bot))
+      return;
     busy = true;
 
     try {
@@ -130,6 +132,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
           getOption("freeslots", info.name),
           getOption("junklist", info.name),
         ]);
+      if (signal?.aborted) return;
 
       const doDropJunk = dropJunkOpt !== "off";
       const doSortGear = sortGearOpt !== "off";
@@ -146,29 +149,33 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
         .filter(Boolean);
 
       if (doSortGear && !isBotEating(bot)) {
-        await equipBestArmor(bot, { includeOffhand: true });
-        await equipBestWeapon(bot, { saveLowDurability: true });
+        await equipBestArmor(bot, { includeOffhand: true, signal });
+        if (signal?.aborted) return;
+        await equipBestWeapon(bot, { saveLowDurability: true, signal });
       }
 
-      if (!doDropJunk) return;
+      if (signal?.aborted || !doDropJunk) return;
 
       const items = bot.inventory.items();
-      const usedSlots = items.length;
-      const freeSlots = 36 - usedSlots;
+      const inventoryItems = items.filter(
+        (item) =>
+          !Number.isInteger(item.slot) || (item.slot >= 9 && item.slot < 45),
+      );
+      let freeSlots = 36 - inventoryItems.length;
 
       // Always drop explicit extraJunk; drop default junk when free slots < targetFreeSlots
       // (keep 1 stack of cobblestone/dirt for bridging unless slots are critically full)
       let keptScaffoldStack = false;
       let droppedStacks = 0;
 
-      for (const item of items) {
-        if (!bot || isBotEating(bot)) break;
+      for (const item of inventoryItems) {
+        if (signal?.aborted || !bot || isBotEating(bot)) break;
         const n = String(item.name || "").toLowerCase();
         const isExtra = extraJunk.some((j) => n.includes(j));
         const isDefaultJunk = DEFAULT_JUNK_ITEMS.has(n) && !isValuableItem(n);
 
         if (!isExtra && !isDefaultJunk) continue;
-        if (!isExtra && freeSlots >= targetFreeSlots && usedSlots < 30) {
+        if (!isExtra && freeSlots >= targetFreeSlots) {
           continue;
         }
 
@@ -185,22 +192,29 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
           .tossStack(item)
           .then(() => {
             droppedStacks++;
+            freeSlots++;
           })
-          .catch(() => {});
+          .catch((err) => {
+            clearLog("InvManager:");
+            log(
+              `InvManager: Could not drop ${item.name}: ${err.message || err}`,
+            );
+          });
       }
 
       if (droppedStacks > 0) {
         clearLog("InvManager:");
         log(`InvManager: Cleaned ${droppedStacks} junk stack(s)`);
       }
-    } catch (_) {
+    } catch (error) {
+      if (!signal?.aborted) log(`InvManager: ${error.message || error}`);
     } finally {
       busy = false;
     }
   }
 
   await manageTick();
-  await scriptRepeater(manageTick, info.default.interval);
+  if (!signal?.aborted) await scriptRepeater(manageTick, info.default.interval);
 }
 
 module.exports = {

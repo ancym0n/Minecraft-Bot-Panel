@@ -32,32 +32,56 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
     return;
   }
 
+  const signal = scriptRepeater.signal;
+  const timers = new Set();
+  const activeControls = new Set();
+  const setControl = (state, active) => {
+    if (!bot.entity) return;
+    bot.setControlState(state, active);
+    if (active) activeControls.add(state);
+    else activeControls.delete(state);
+  };
+  const schedule = (fn, delay) => {
+    const timer = setTimeout(() => {
+      timers.delete(timer);
+      if (!signal?.aborted) fn();
+    }, delay);
+    timers.add(timer);
+  };
+  const cleanup = () => {
+    for (const timer of timers) clearTimeout(timer);
+    timers.clear();
+    for (const state of activeControls) setControl(state, false);
+    activeControls.clear();
+  };
+  signal?.addEventListener("abort", cleanup, { once: true });
+
   function doJump() {
     if (!bot || !bot.entity) return;
-    bot.setControlState("jump", true);
-    setTimeout(() => {
-      if (bot && bot.entity) bot.setControlState("jump", false);
+    setControl("jump", true);
+    schedule(() => {
+      setControl("jump", false);
     }, 150);
   }
 
   function doMove() {
     if (!bot || !bot.entity) return;
-    bot.setControlState("forward", true);
-    setTimeout(() => {
+    setControl("forward", true);
+    schedule(() => {
       if (!bot || !bot.entity) return;
-      bot.setControlState("forward", false);
-      bot.setControlState("back", true);
-      setTimeout(() => {
-        if (bot && bot.entity) bot.setControlState("back", false);
+      setControl("forward", false);
+      setControl("back", true);
+      schedule(() => {
+        setControl("back", false);
       }, 250);
     }, 250);
   }
 
   function doSneak() {
     if (!bot || !bot.entity) return;
-    bot.setControlState("sneak", true);
-    setTimeout(() => {
-      if (bot && bot.entity) bot.setControlState("sneak", false);
+    setControl("sneak", true);
+    schedule(() => {
+      setControl("sneak", false);
     }, 450);
   }
 
@@ -68,43 +92,49 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
     bot.look(randomYaw, randomPitch, true);
   }
 
-  const [jumpSetting, moveSetting, rotateSetting, sneakSetting] =
-    await Promise.all([
-      getOption("jump", info.name),
-      getOption("move", info.name),
-      getOption("rotate", info.name),
-      getOption("sneak", info.name),
-    ]);
+  try {
+    const [jumpSetting, moveSetting, rotateSetting, sneakSetting] =
+      await Promise.all([
+        getOption("jump", info.name),
+        getOption("move", info.name),
+        getOption("rotate", info.name),
+        getOption("sneak", info.name),
+      ]);
+    if (signal?.aborted) return;
 
-  const selectedActions = [];
-  if (jumpSetting === "on") selectedActions.push(doJump);
-  if (moveSetting === "on") selectedActions.push(doMove);
-  if (rotateSetting === "on") selectedActions.push(doRotate);
-  if (sneakSetting === "on") selectedActions.push(doSneak);
+    const selectedActions = [];
+    if (jumpSetting === "on") selectedActions.push(doJump);
+    if (moveSetting === "on") selectedActions.push(doMove);
+    if (rotateSetting === "on") selectedActions.push(doRotate);
+    if (sneakSetting === "on") selectedActions.push(doSneak);
 
-  if (selectedActions.length === 0) {
-    selectedActions.push(doRotate);
-  }
+    if (selectedActions.length === 0) {
+      selectedActions.push(doRotate);
+    }
 
-  clearLog("AntiAFK: J(");
-  log(
-    `AntiAFK: J(${jumpSetting}), M(${moveSetting}), R(${rotateSetting}), S(${sneakSetting})`,
-  );
+    clearLog("AntiAFK: J(");
+    log(
+      `AntiAFK: J(${jumpSetting}), M(${moveSetting}), R(${rotateSetting}), S(${sneakSetting})`,
+    );
 
-  function antiAfk() {
-    if (!bot || !bot.entity || selectedActions.length === 0) return;
-    const action =
-      selectedActions[Math.floor(Math.random() * selectedActions.length)];
-    if (typeof action === "function") action();
-  }
+    function antiAfk() {
+      if (
+        signal?.aborted ||
+        !bot ||
+        !bot.entity ||
+        selectedActions.length === 0
+      )
+        return;
+      const action =
+        selectedActions[Math.floor(Math.random() * selectedActions.length)];
+      if (typeof action === "function") action();
+    }
 
-  antiAfk();
-  await scriptRepeater(antiAfk, info.default.interval);
-
-  if (bot && bot.entity) {
-    ["jump", "forward", "back", "sneak"].forEach((state) => {
-      bot.setControlState(state, false);
-    });
+    antiAfk();
+    await scriptRepeater(antiAfk, info.default.interval);
+  } finally {
+    signal?.removeEventListener("abort", cleanup);
+    cleanup();
   }
 }
 

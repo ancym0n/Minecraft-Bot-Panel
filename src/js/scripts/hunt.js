@@ -43,6 +43,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   }
 
   const { goals } = loadLibraries();
+  const signal = scriptRepeater.signal;
   let busy = false;
 
   function resolveTargetPlayer(targetName) {
@@ -74,7 +75,8 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   log("Hunt: Active (pursuing target player)");
 
   async function huntTick() {
-    if (!bot || !bot.entity || !bot.pathfinder || busy) return;
+    if (signal?.aborted || !bot || !bot.entity || !bot.pathfinder || busy)
+      return;
     busy = true;
 
     try {
@@ -84,6 +86,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
       const ate = await tryCombatEat(bot, {
         minHp: 13,
         minFood: 16,
+        signal,
         onLog: (foodItem, hp, food) => {
           clearLog("Hunt status:");
           log(
@@ -91,7 +94,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
           );
         },
       });
-      if (ate) return;
+      if (signal?.aborted || ate) return;
 
       const [autoWeaponOpt, sprintJumpOpt, critsOpt, rawPlayerName] =
         await Promise.all([
@@ -100,6 +103,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
           getOption("crits", info.name),
           getOption("playername", info.name),
         ]);
+      if (signal?.aborted) return;
 
       const useAutoWeapon = autoWeaponOpt !== "off";
       const useSprintJump = sprintJumpOpt !== "off";
@@ -120,8 +124,9 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
       }
 
       if (useAutoWeapon && !isBotEating(bot)) {
-        await equipBestWeapon(bot, { saveLowDurability: true });
+        await equipBestWeapon(bot, { saveLowDurability: true, signal });
       }
+      if (signal?.aborted) return;
 
       const dist = bot.entity.position.distanceTo(target.position);
       const label = target.username || targetName || "player";
@@ -148,6 +153,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
         await performPvpAttack(bot, target, {
           useCrits,
           maxRange: 4.3,
+          signal,
         });
       }
     } finally {
@@ -157,9 +163,9 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
 
   try {
     await huntTick();
-    await scriptRepeater(huntTick, info.default.interval);
+    if (!signal?.aborted) await scriptRepeater(huntTick, info.default.interval);
   } finally {
-    if (bot) {
+    if (bot && (!scriptRepeater.isCurrent || scriptRepeater.isCurrent())) {
       bot._mcbpSprintJump = false;
       clearPathfinderGoal(bot);
     }

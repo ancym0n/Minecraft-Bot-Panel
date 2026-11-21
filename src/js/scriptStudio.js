@@ -387,7 +387,7 @@ const MINEFLAYER_CHEATSHEET = `CRITICAL MINEFLAYER API RULES (DO NOT INVENT METH
      const block = bot.findBlock({ matching: blockType.id, maxDistance: radius });
    - Multiple block positions (returns an array of Vec3 positions [pos], NOT Block objects! Use pos.x, pos.y, pos.z or bot.blockAt(pos)):
      const positions = bot.findBlocks({ matching: blockType.id, maxDistance: radius, count: 10 });
-   - NEVER write \`find:\` inside bot.findBlock / bot.findBlocks — the key is ALWAYS \`matching:\` (a number id, array of ids, or function (b) => boolean).
+   - NEVER write \`find:\` inside bot.findBlock / bot.findBlocks - the key is ALWAYS \`matching:\` (a number id, array of ids, or function (b) => boolean).
 4. Finding entities / dropped items / players / mobs:
    - Nearest entity:
      const ent = bot.nearestEntity((e) => e.name === "item" && e.position.distanceTo(bot.entity.position) <= radius);
@@ -458,7 +458,10 @@ function pickBestTemplates(request, count = 2) {
   });
   scored.sort((a, b) => b.score - a.score);
   const picked = scored.slice(0, count).map((x) => x.t);
-  if (!picked.some((t) => t.id.includes("collect-blocks")) && picked.length < 2) {
+  if (
+    !picked.some((t) => t.id.includes("collect-blocks")) &&
+    picked.length < 2
+  ) {
     const cb = templates.find((t) => t.id.includes("collect-blocks"));
     if (cb) picked.push(cb);
   }
@@ -468,12 +471,14 @@ function pickBestTemplates(request, count = 2) {
 function buildPlanMessages({ request, currentCode = "" }) {
   const examples = pickBestTemplates(request, 2);
   const examplesBlock = examples
-    .map((ex) => `// Example (${ex.title}):\n\`\`\`js\n${ex.code.trim()}\n\`\`\``)
+    .map(
+      (ex) => `// Example (${ex.title}):\n\`\`\`js\n${ex.code.trim()}\n\`\`\``,
+    )
     .join("\n\n");
   const docs = buildDocsContext(request, 4500);
   const system = `You are a senior Mineflayer & MCBP script architect.
 Before writing code, carefully analyze the user's request and design a concise technical implementation plan.
-Do NOT write the full script yet — output a structured 5-bullet architecture plan covering:
+Do NOT write the full script yet - output a structured 5-bullet architecture plan covering:
 1. Script name (PascalCase) and info.options needed (ONLY type: "input", "checkbox", or "select" with choices).
 2. State variables & concurrency lock (\`let busy = false;\`) needed inside \`async function script(bot, log, clearLog, getOption, scriptRepeater, libs)\`.
 3. Exact Mineflayer API calls & \`bot.registry.blocksByName\` / \`bot.registry.itemsByName\` lookups required.
@@ -507,7 +512,9 @@ function buildGenerationMessages({
 }) {
   const examples = pickBestTemplates(request, 2);
   const examplesBlock = examples
-    .map((ex) => `// Example (${ex.title}):\n\`\`\`js\n${ex.code.trim()}\n\`\`\``)
+    .map(
+      (ex) => `// Example (${ex.title}):\n\`\`\`js\n${ex.code.trim()}\n\`\`\``,
+    )
     .join("\n\n");
   const docs = buildDocsContext(request);
   const system = `You write custom scripts for MCBP (Minecraft Bot Panel), which runs Mineflayer bots.
@@ -520,7 +527,8 @@ Script contract (CommonJS):
 - async function script(bot, log, clearLog, getOption, scriptRepeater, libs)
   - await getOption(id, info.name) returns a string; checkboxes return "on" or "off". Always provide a fallback default!
   - await scriptRepeater(fn, ms) calls fn every ms until the user toggles the script off, then resolves. Keep the script alive with it, and guard async work with a \`let busy = false;\` lock so ticks never overlap.
-  - libs = { goals, Movements, Vec3, mcData }. bot.pathfinder is already loaded; use goals from libs, never require mineflayer packages.
+  - libs = { goals, Movements, Vec3, mcData, ai }. bot.pathfinder is already loaded; use goals from libs, never require mineflayer packages.
+  - libs.ai calls the user's configured AI (local Ollama or DeepSeek, transparently): await libs.ai.ask(prompt, { system, maxTokens, temperature }) -> string; await libs.ai.json(prompt, opts) -> parsed object; await libs.ai.chat(messages, opts); libs.ai.isReady() -> boolean. Use it only when the task needs language understanding or generation, keep prompts short, call it rarely (never every tick; limit is 20 calls/min), wrap in try/catch, and never put passwords, tokens or server addresses in prompts.
   - Only add bot.on listeners when the task reacts to events; remove each one in a finally block after scriptRepeater.
   - Round coordinates with Math.floor before showing them.
   - Prefix log messages with the script name, e.g. log(\`\${info.name}: done\`).
@@ -698,7 +706,7 @@ async function dryRunScript(code) {
       exports: sandboxModule.exports,
       require: (id) => {
         throw new Error(
-          `Disallowed require("${id}") — use bot and libs = { goals, Movements, Vec3, mcData }`,
+          `Disallowed require("${id}") - use bot and libs = { goals, Movements, Vec3, mcData }`,
         );
       },
       console: {
@@ -914,6 +922,13 @@ async function dryRunScript(code) {
   );
 
   const mockLibs = {
+    ai: {
+      provider: "mock",
+      isReady: () => true,
+      ask: async () => "ok",
+      chat: async () => "ok",
+      json: async () => ({}),
+    },
     Vec3: MockVec3,
     Movements: class MockMovements {},
     goals: {
@@ -955,13 +970,17 @@ async function dryRunScript(code) {
         }
       },
     },
-    mcData: new Proxy(() => ({ blocksByName: registryBlocks, itemsByName: registryItems }), {
-      get(_t, prop) {
-        if (prop === "blocks" || prop === "blocksByName") return registryBlocks;
-        if (prop === "items" || prop === "itemsByName") return registryItems;
-        return undefined;
+    mcData: new Proxy(
+      () => ({ blocksByName: registryBlocks, itemsByName: registryItems }),
+      {
+        get(_t, prop) {
+          if (prop === "blocks" || prop === "blocksByName")
+            return registryBlocks;
+          if (prop === "items" || prop === "itemsByName") return registryItems;
+          return undefined;
+        },
       },
-    }),
+    ),
   };
 
   const mockBlock = {
@@ -1047,13 +1066,23 @@ async function dryRunScript(code) {
       bestHarvestTool: () => mockItem,
     },
     findBlock: (opts) => {
-      if (opts && typeof opts === "object" && "find" in opts && !("matching" in opts)) {
+      if (
+        opts &&
+        typeof opts === "object" &&
+        "find" in opts &&
+        !("matching" in opts)
+      ) {
         throw new Error("bot.findBlock requires `matching:`, not `find:`");
       }
       return mockBlock;
     },
     findBlocks: (opts) => {
-      if (opts && typeof opts === "object" && "find" in opts && !("matching" in opts)) {
+      if (
+        opts &&
+        typeof opts === "object" &&
+        "find" in opts &&
+        !("matching" in opts)
+      ) {
         throw new Error("bot.findBlocks requires `matching:`, not `find:`");
       }
       return [mockBlock.position.clone()];
@@ -1156,7 +1185,12 @@ async function dryRunScript(code) {
       ),
       new Promise((_, rej) =>
         setTimeout(
-          () => rej(new Error("Script tick timed out (infinite loop or missing await)")),
+          () =>
+            rej(
+              new Error(
+                "Script tick timed out (infinite loop or missing await)",
+              ),
+            ),
           2500,
         ),
       ),

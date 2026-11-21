@@ -494,6 +494,11 @@ function checkbox(id) {
 
 window.checkbox = checkbox;
 
+function setScriptActive(element, active) {
+  element.classList.toggle("script-name-active", active);
+  element.setAttribute("aria-pressed", String(active));
+}
+
 function updateActiveScriptsBadge() {
   const activeCount = document.querySelectorAll(
     ".div-actions .script-name-active",
@@ -516,12 +521,51 @@ function updateTitle() {
   }
 }
 
+function setTabSelected(tab, selected) {
+  tab.classList.toggle("active", selected);
+  tab.setAttribute("aria-selected", String(selected));
+  tab.tabIndex = selected ? 0 : -1;
+}
+
+function setupTabGroup(selector, dataAttribute, panePrefix) {
+  const tabs = [...document.querySelectorAll(selector)];
+  tabs.forEach((tab, index) => {
+    const pane = document.getElementById(
+      `${panePrefix}${tab.getAttribute(dataAttribute)}`,
+    );
+    if (!pane) return;
+    tab.id ||= `${pane.id}-selector`;
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-controls", pane.id);
+    pane.setAttribute("role", "tabpanel");
+    pane.setAttribute("aria-labelledby", tab.id);
+    setTabSelected(tab, tab.classList.contains("active"));
+    tab.addEventListener("keydown", (event) => {
+      let nextIndex;
+      if (event.key === "ArrowRight") nextIndex = (index + 1) % tabs.length;
+      else if (event.key === "ArrowLeft")
+        nextIndex = (index - 1 + tabs.length) % tabs.length;
+      else if (event.key === "Home") nextIndex = 0;
+      else if (event.key === "End") nextIndex = tabs.length - 1;
+      else return;
+      event.preventDefault();
+      event.stopPropagation();
+      tabs[nextIndex].focus();
+      tabs[nextIndex].click();
+    });
+  });
+}
+
+setupTabGroup(".workspace-tab", "data-tab", "tab-");
+setupTabGroup(".console-tab", "data-console-tab", "console-");
+setupTabGroup(".studio-view-tab", "data-studio-view", "studio-view-");
+
 // --- Workspace Tabs ---
 document.querySelectorAll(".workspace-tab").forEach((tabBtn) => {
   tabBtn.addEventListener("click", () => {
     const targetTab = tabBtn.getAttribute("data-tab");
     document.querySelectorAll(".workspace-tab").forEach((b) => {
-      b.classList.toggle("active", b === tabBtn);
+      setTabSelected(b, b === tabBtn);
     });
     document.querySelectorAll(".workspace-pane").forEach((pane) => {
       const isMatch = pane.id === `tab-${targetTab}`;
@@ -606,11 +650,14 @@ function upsertServerProfile(rawIp, { version, modules } = {}) {
   if (!key) return;
   const list = loadServerProfiles();
   const idx = list.findIndex((p) => normalizeServerKey(p.ip) === key);
-  const existing = idx >= 0 ? list[idx] : { ip: cleanIp, version: "", modules: [] };
+  const existing =
+    idx >= 0 ? list[idx] : { ip: cleanIp, version: "", modules: [] };
   const updated = {
     ip: cleanIp,
     version:
-      version !== undefined ? String(version || "").trim() : existing.version || "",
+      version !== undefined
+        ? String(version || "").trim()
+        : existing.version || "",
     modules: Array.isArray(modules)
       ? [...new Set(modules)]
       : Array.isArray(existing.modules)
@@ -631,9 +678,7 @@ function removeServerProfile(rawIp) {
     (p) => normalizeServerKey(p.ip) !== key,
   );
   saveServerProfiles(next);
-  if (
-    normalizeServerKey(localStorage.getItem(LAST_SERVER_KEY)) === key
-  ) {
+  if (normalizeServerKey(localStorage.getItem(LAST_SERVER_KEY)) === key) {
     localStorage.removeItem(LAST_SERVER_KEY);
   }
   refreshServerAutocomplete();
@@ -673,7 +718,7 @@ if (versionInput) {
 const serverCombo = window.mcbpDropdown?.attachCombo(ipInput, {
   items: [],
   filter: true,
-  onSelect: (selectedIp) => {
+  onSelect: ({ value: selectedIp }) => {
     const prof = getServerProfile(selectedIp);
     if (prof && versionInput) {
       versionInput.value = prof.version || "";
@@ -681,9 +726,12 @@ const serverCombo = window.mcbpDropdown?.attachCombo(ipInput, {
     }
     localStorage.setItem(LAST_SERVER_KEY, selectedIp);
   },
-  onDelete: (deletedIp) => {
+  onDelete: ({ value: deletedIp }) => {
     removeServerProfile(deletedIp);
-    if (ipInput && normalizeServerKey(ipInput.value) === normalizeServerKey(deletedIp)) {
+    if (
+      ipInput &&
+      normalizeServerKey(ipInput.value) === normalizeServerKey(deletedIp)
+    ) {
       ipInput.value = "";
     }
   },
@@ -786,7 +834,13 @@ if (window.api && typeof window.api.onMsaCode === "function") {
       return;
     }
     panelMsaBanner.hidden = false;
-    if (panelMsaCode) panelMsaCode.textContent = data.userCode;
+    if (panelMsaCode) {
+      panelMsaCode.textContent = data.userCode;
+      panelMsaCode.setAttribute(
+        "aria-label",
+        `Copy Microsoft device code ${data.userCode}`,
+      );
+    }
   });
 }
 
@@ -850,7 +904,7 @@ window.api.onConnectionState((stateInfo) => {
     if (panelMsaBanner) panelMsaBanner.hidden = true;
     document
       .querySelectorAll(".script-name-active")
-      .forEach((el) => el.classList.remove("script-name-active"));
+      .forEach((el) => setScriptActive(el, false));
     updateActiveScriptsBadge();
   }
 });
@@ -1329,7 +1383,7 @@ function createVirtualStream({
         filter: "",
       });
       state.diskCursor.initialized = true;
-      state.diskCursor.beforeIndex = res?.nextBeforeIndex ?? 0;
+      state.diskCursor.beforeIndex = res?.nextBeforeIndex ?? null;
       state.diskCursor.fileIndex = res?.nextFileIndex ?? startFileIdx + 1;
       state.diskCursor.hasMore = Boolean(res?.hasMore);
 
@@ -1351,8 +1405,13 @@ function createVirtualStream({
       state.winStart += added;
       state.winEnd += added;
       return added > 0;
-    } catch (_) {
+    } catch (err) {
       state.diskCursor.hasMore = false;
+      console.error(`Could not load ${type} history:`, err);
+      if (filterInput) {
+        filterInput.setAttribute("aria-invalid", "true");
+        filterInput.title = `Could not load history: ${err.message || err}`;
+      }
       return false;
     } finally {
       state.diskCursor.loading = false;
@@ -1493,7 +1552,21 @@ function createVirtualStream({
           if (container.scrollTop < m) {
             let grew = prependOlderFromMemory();
             if (!grew && state.diskCursor.hasMore) {
-              if (await loadOlderFromDisk()) grew = prependOlderFromMemory();
+              const query = state.filterQuery;
+              do {
+                if (await loadOlderFromDisk()) {
+                  grew = prependOlderFromMemory();
+                  break;
+                }
+                if (state.diskCursor.loading) break;
+                if (query && state.diskCursor.hasMore) {
+                  await new Promise((resolve) => setTimeout(resolve, 0));
+                }
+              } while (
+                query &&
+                query === state.filterQuery &&
+                state.diskCursor.hasMore
+              );
             }
             if (grew) trimBottom();
           }
@@ -1524,9 +1597,45 @@ function createVirtualStream({
   }
 
   if (filterInput) {
+    let fillTask = null;
+    const fillFilteredHistory = () => {
+      if (fillTask || !state.filterQuery || !state.diskCursor.hasMore) return;
+      fillTask = (async () => {
+        let pages = 0;
+        while (
+          state.filterQuery &&
+          state.diskCursor.hasMore &&
+          container &&
+          container.scrollHeight <= container.clientHeight &&
+          pages < 5
+        ) {
+          if (state.diskCursor.loading) {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            continue;
+          }
+          const grew = await loadOlderFromDisk();
+          if (grew) prependOlderFromMemory();
+          pages++;
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      })().finally(() => {
+        fillTask = null;
+        if (
+          state.filterQuery &&
+          state.diskCursor.hasMore &&
+          container &&
+          container.scrollHeight <= container.clientHeight
+        ) {
+          setTimeout(fillFilteredHistory, 0);
+        }
+      });
+    };
     filterInput.addEventListener("input", () => {
       state.filterQuery = filterInput.value.trim().toLowerCase();
+      filterInput.removeAttribute("aria-invalid");
+      filterInput.removeAttribute("title");
       renderWindow({ scrollToBottom: true });
+      fillFilteredHistory();
     });
   }
 
@@ -1576,10 +1685,7 @@ const chatUnreadDot = document.getElementById("chat-unread");
 function showConsoleTab(name) {
   activeConsoleTab = name;
   document.querySelectorAll(".console-tab").forEach((tab) => {
-    tab.classList.toggle(
-      "active",
-      tab.getAttribute("data-console-tab") === name,
-    );
+    setTabSelected(tab, tab.getAttribute("data-console-tab") === name);
   });
   document.querySelectorAll(".console-pane").forEach((pane) => {
     const match = pane.id === `console-${name}`;
@@ -1822,7 +1928,7 @@ if (stopAllScriptsBtn) {
         if (scriptName) {
           window.api.onScriptToggleOff(scriptName);
         }
-        el.classList.remove("script-name-active");
+        setScriptActive(el, false);
       });
     updateActiveScriptsBadge();
     persistCurrentServerModules();
@@ -1841,7 +1947,7 @@ if (window.api && typeof window.api.onScriptState === "function") {
       `.script-container[data-script="${CSS.escape(String(scriptId))}"] .script-name`,
     );
     if (card) {
-      card.classList.toggle("script-name-active", Boolean(active));
+      setScriptActive(card, Boolean(active));
       updateActiveScriptsBadge();
       persistCurrentServerModules();
     }
@@ -1923,10 +2029,16 @@ window.api.onScript((html, scriptId, meta = {}) => {
     gear.type = "button";
     gear.className = "script-gear";
     gear.title = "Options";
+    gear.setAttribute("aria-label", `${scriptName} options`);
+    gear.setAttribute("aria-expanded", "false");
     gear.textContent = "▾";
     gear.addEventListener("click", (event) => {
       event.stopPropagation();
       card.classList.toggle("open");
+      gear.setAttribute(
+        "aria-expanded",
+        String(card.classList.contains("open")),
+      );
     });
     card.appendChild(gear);
   }
@@ -1935,10 +2047,10 @@ window.api.onScript((html, scriptId, meta = {}) => {
     toggleEl.addEventListener("click", () => {
       if (toggleEl.classList.contains("script-name-active")) {
         window.api.onScriptToggleOff(scriptName);
-        toggleEl.classList.remove("script-name-active");
+        setScriptActive(toggleEl, false);
       } else {
         window.api.onScriptToggleOn(scriptName);
-        toggleEl.classList.add("script-name-active");
+        setScriptActive(toggleEl, true);
       }
       updateActiveScriptsBadge();
       persistCurrentServerModules();
@@ -1958,7 +2070,10 @@ window.api.onScript((html, scriptId, meta = {}) => {
     `.script-container[data-script="${CSS.escape(scriptName)}"]`,
   );
   if (existing) {
-    if (existing.classList.contains("open")) card.classList.add("open");
+    if (existing.classList.contains("open")) {
+      card.classList.add("open");
+      card.querySelector(".script-gear")?.setAttribute("aria-expanded", "true");
+    }
     existing.replaceWith(card);
     card.classList.add("script-flash");
     setTimeout(() => card.classList.remove("script-flash"), 1200);
@@ -2165,11 +2280,11 @@ if (window.api && typeof window.api.onBotTelemetry === "function") {
   window.api.onBotTelemetry((data) => {
     latestTelemetry = data;
     if (!data || !data.connected) {
-      if (teleHpText) teleHpText.textContent = "— / 20";
+      if (teleHpText) teleHpText.textContent = "- / 20";
       if (teleHpFill) teleHpFill.style.width = "0%";
-      if (teleFoodText) teleFoodText.textContent = "— / 20";
+      if (teleFoodText) teleFoodText.textContent = "- / 20";
       if (teleFoodFill) teleFoodFill.style.width = "0%";
-      if (telePos) telePos.textContent = "—";
+      if (telePos) telePos.textContent = "-";
       if (teleHand) teleHand.textContent = "Empty hand";
       const strip = document.getElementById("telemetry-strip");
       if (strip) strip.title = "";
@@ -2513,7 +2628,7 @@ function updateInspector() {
     if (invSelectedMeta) {
       const loreStr =
         Array.isArray(cItem.lore) && cItem.lore.length > 0
-          ? ` — ${cItem.lore.map((l) => renderMinecraftFormatted(l)).join(" · ")}`
+          ? ` - ${cItem.lore.map((l) => renderMinecraftFormatted(l)).join(" · ")}`
           : "";
       invSelectedMeta.innerHTML = `<span>Slot #${selectedContainerSlot} (${escapeHtml(cItem.name)})</span>${loreStr}`;
     }
@@ -2668,8 +2783,8 @@ function renderInventory(inv) {
                 ? `\n${item.lore.map((l) => l.replace(/§#[0-9a-fA-F]{6}|§[0-9a-fk-or]/gi, "")).join("\n")}`
                 : "";
             const title = item
-              ? `${escapeHtml(item.displayName)} (x${item.count}) — Container Slot #${slot}${escapeHtml(lorePlain)}`
-              : `Container Slot #${slot} (Empty) — Click to interact`;
+              ? `${escapeHtml(item.displayName)} (x${item.count}) - Container Slot #${slot}${escapeHtml(lorePlain)}`
+              : `Container Slot #${slot} (Empty) - Click to interact`;
             return `<div class="inv-slot ${hasItem} ${selected}" data-container-slot="${slot}" title="${title}">${renderSlotInner(item, String(slot))}</div>`;
           })
           .join("");
@@ -2751,7 +2866,7 @@ function renderInventory(inv) {
         const selected = selectedInvSlot === slot ? "inv-slot-selected" : "";
         const hasItem = item ? "has-item" : "";
         const title = item
-          ? `${escapeHtml(item.displayName)} (x${item.count}) — Slot #${slot}`
+          ? `${escapeHtml(item.displayName)} (x${item.count}) - Slot #${slot}`
           : `Empty Slot #${slot}`;
         return `<div class="inv-slot ${hasItem} ${selected}" data-slot="${slot}" title="${title}">${renderSlotInner(item)}</div>`;
       })
@@ -3009,10 +3124,20 @@ const aiTestBtn = $id("ai-test-btn");
 const aiTestAgentCb = $id("ai-test-agent-cb");
 const aiTestOutput = $id("ai-test-output");
 
+const aiProviderSelect = $id("ai-provider-select");
+const aiDsKeyField = $id("ai-ds-key-field");
+const aiDsKeyInput = $id("ai-ds-key-input");
+const aiDsActions = $id("ai-ds-actions");
+const aiDsSaveBtn = $id("ai-ds-save-btn");
+const aiDsClearBtn = $id("ai-ds-clear-btn");
+const aiDsStatus = $id("ai-ds-status");
+const aiDsNote = $id("ai-ds-note");
+const aiDsUsage = $id("ai-ds-usage");
+
 let latestOllamaStatus = null;
 
-[aiModelSelect, aiTriggerSelect, aiAgentModelSelect].forEach((sel) =>
-  window.mcbpDropdown?.enhanceSelect(sel),
+[aiProviderSelect, aiModelSelect, aiTriggerSelect, aiAgentModelSelect].forEach(
+  (sel) => window.mcbpDropdown?.enhanceSelect(sel),
 );
 
 function syncDropdown(sel) {
@@ -3221,7 +3346,43 @@ function renderOllamaStatus(st) {
     Boolean(st.installed && installed.length > 0),
   );
 
-  if (aiServiceBadge) {
+  const isCloud = cfg.provider === "deepseek";
+  const ds = st.deepseek || {};
+  if (aiProviderSelect) {
+    aiProviderSelect.value = isCloud ? "deepseek" : "ollama";
+    syncDropdown(aiProviderSelect);
+  }
+  [aiDsKeyField, aiDsActions, aiDsNote].forEach((el) => {
+    if (el) el.hidden = !isCloud;
+  });
+  [aiAutoSetupBtn, aiHwSummary, aiRecBadge].forEach((el) => {
+    if (el) el.hidden = isCloud;
+  });
+  if (aiDsKeyInput) {
+    aiDsKeyInput.placeholder = ds.hasKey ? `Saved (${ds.keyHint})` : "sk-...";
+  }
+  if (aiDsClearBtn) aiDsClearBtn.disabled = !ds.hasKey;
+  if (aiDsUsage) {
+    const u = ds.usage || {};
+    aiDsUsage.textContent =
+      isCloud && u.requests
+        ? `${u.requests} calls · ${u.inputTokens} in (${u.cacheHitPct}% cached) · ${u.outputTokens} out`
+        : "";
+  }
+
+  if (aiServiceBadge && isCloud) {
+    aiServiceBadge.classList.remove(
+      "status-connected",
+      "status-connecting",
+      "status-disconnected",
+    );
+    aiServiceBadge.classList.add(
+      ds.hasKey ? "status-connected" : "status-disconnected",
+    );
+    aiServiceBadge.textContent = ds.hasKey
+      ? "DeepSeek · Key set"
+      : "DeepSeek · No key";
+  } else if (aiServiceBadge) {
     aiServiceBadge.classList.remove(
       "status-connected",
       "status-connecting",
@@ -3521,6 +3682,31 @@ if (aiAutoSetupBtn) {
 
 aiRefreshBtn?.addEventListener("click", () => refreshOllamaUi());
 
+aiProviderSelect?.addEventListener("change", () =>
+  saveAiConfig({ provider: aiProviderSelect.value }),
+);
+
+aiDsSaveBtn?.addEventListener("click", async () => {
+  const key = aiDsKeyInput?.value.trim() || "";
+  if (!key && !latestOllamaStatus?.deepseek?.hasKey) {
+    if (aiDsStatus) aiDsStatus.textContent = "Paste your API key first.";
+    return;
+  }
+  if (aiDsStatus) aiDsStatus.textContent = "Checking…";
+  const res = await window.api?.aiTestKey?.(key).catch(() => null);
+  if (aiDsStatus)
+    aiDsStatus.textContent = res?.ok
+      ? "Key works."
+      : res?.error || "Could not check key.";
+  if (res?.ok && aiDsKeyInput) aiDsKeyInput.value = "";
+  if (res?.status) renderOllamaStatus(res.status);
+});
+
+aiDsClearBtn?.addEventListener("click", async () => {
+  await saveAiConfig({ deepseekApiKey: "" });
+  if (aiDsStatus) aiDsStatus.textContent = "Key removed.";
+});
+
 if (aiPullCustomBtn && aiCustomModelInput) {
   const pullCustom = async () => {
     const tag = aiCustomModelInput.value.trim();
@@ -3637,28 +3823,51 @@ function renderAiBrainStatus(snap) {
   if (aiBrainGoalBadge) {
     const goalText = snap.activeGoal || "Idle";
     aiBrainGoalBadge.textContent = `Goal: ${goalText}`;
-    aiBrainGoalBadge.classList.toggle(
-      "status-connected",
-      goalText !== "Idle",
-    );
+    aiBrainGoalBadge.classList.toggle("status-connected", goalText !== "Idle");
   }
   if (aiBrainStep) {
-    aiBrainStep.textContent = snap.activeStep || "No active step";
+    const lines = [];
+    if (snap.activeStep) lines.push(snap.activeStep);
+    if (snap.subObjective) {
+      lines.push(
+        `↳ ${snap.subObjective}${snap.subReason ? ` (${snap.subReason})` : ""}`,
+      );
+    }
+    if (snap.aiPlan) lines.push(`Plan: ${snap.aiPlan}`);
+    aiBrainStep.textContent = lines.length
+      ? lines.join("\n")
+      : "No active step";
+    aiBrainStep.style.whiteSpace = "pre-line";
+    aiBrainStep.title = Array.isArray(snap.reasoningHints)
+      ? snap.reasoningHints.join("\n")
+      : "";
   }
   if (aiBrainPlanList) {
     const planItems = [];
     if (Array.isArray(snap.planSteps) && snap.planSteps.length > 0) {
       for (const st of snap.planSteps) {
         const icon =
-          st.status === "done"
-            ? "✓"
-            : st.status === "active"
-              ? "▸"
-              : "·";
+          st.status === "done" ? "✓" : st.status === "active" ? "▸" : "·";
         planItems.push(
           `<div class="radar-item"><div class="radar-item-info"><span class="radar-entity-icon">${icon}</span><span class="radar-item-name">${escapeHtml(st.label)}</span></div></div>`,
         );
       }
+    }
+    if (Array.isArray(snap.scriptActivity)) {
+      for (const a of snap.scriptActivity) {
+        planItems.push(
+          `<div class="radar-item" title="${escapeHtml(a.objective || "")}"><div class="radar-item-info"><span class="radar-entity-icon">▶</span><span class="radar-item-name">${escapeHtml(a.script)}: ${escapeHtml(String(a.text || "").slice(0, 80))}</span></div></div>`,
+        );
+      }
+    }
+    if (
+      snap.pathfinder &&
+      snap.pathfinder.at &&
+      Date.now() - snap.pathfinder.at < 120000
+    ) {
+      planItems.push(
+        `<div class="radar-item"><div class="radar-item-info"><span class="radar-entity-icon">🧭</span><span class="radar-item-name">Pathfinder: ${escapeHtml(snap.pathfinder.engine === "stock" ? "mineflayer-pathfinder" : "Baritone")} (${escapeHtml(snap.pathfinder.lastReason || "")})</span></div></div>`,
+      );
     }
     if (Array.isArray(snap.recentActions) && snap.recentActions.length > 0) {
       for (const act of snap.recentActions.slice(-6).reverse()) {
@@ -3743,6 +3952,7 @@ function updateMainProxyToggleUi(enabled, workingCount = 0) {
   mainProxyEnabled = Boolean(enabled);
   if (!mainProxyToggle) return;
   mainProxyToggle.classList.toggle("status-connected", mainProxyEnabled);
+  mainProxyToggle.setAttribute("aria-pressed", String(mainProxyEnabled));
   mainProxyToggle.textContent = mainProxyEnabled
     ? `Proxy: on${workingCount ? ` (${workingCount})` : ""}`
     : "Proxy: off";
@@ -3963,7 +4173,9 @@ if (bottingSpawnBtn) {
       const res = await window.api.bottingSpawn({
         ip: ipInput ? ipInput.value.trim() : "localhost",
         version: versionInput ? versionInput.value.trim() : "",
-        prefix: bottingPrefixInput ? bottingPrefixInput.value.trim() : "MCBP_Bot",
+        prefix: bottingPrefixInput
+          ? bottingPrefixInput.value.trim()
+          : "MCBP_Bot",
         count: Number(bottingCountInput?.value) || 3,
         delayMs: Number(bottingDelayInput?.value) || 1200,
         proxyMode: bottingProxyMode ? bottingProxyMode.value : "direct",
@@ -4056,7 +4268,7 @@ document.querySelectorAll(".studio-view-tab").forEach((btn) => {
     const view = btn.getAttribute("data-studio-view");
     document
       .querySelectorAll(".studio-view-tab")
-      .forEach((b) => b.classList.toggle("active", b === btn));
+      .forEach((b) => setTabSelected(b, b === btn));
     document.querySelectorAll(".studio-view").forEach((pane) => {
       pane.hidden = pane.id !== `studio-view-${view}`;
     });
@@ -4343,7 +4555,7 @@ async function runStudioGenerate() {
   }
   const before = studioEditor.value;
   setGenerating(true);
-  if (studioGenStatus) studioGenStatus.textContent = "Starting local AI…";
+  if (studioGenStatus) studioGenStatus.textContent = "Starting AI generation…";
   try {
     const res = await window.api.studioGenerate({
       prompt,
@@ -4368,7 +4580,7 @@ async function runStudioGenerate() {
         studioGenStatus.textContent =
           res?.error === "Cancelled"
             ? "Generation cancelled."
-            : `Error: ${res?.error || "Could not reach Ollama"}`;
+            : `Error: ${res?.error || "Could not reach the configured AI provider"}`;
       }
     }
   } finally {

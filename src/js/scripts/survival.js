@@ -46,39 +46,53 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   }
 
   const { goals } = loadLibraries();
+  const signal = scriptRepeater.signal;
   let busy = false;
   let lastArmorCheck = 0;
   let lastLookTime = 0;
   let attackerEntityId = null;
   let attackerExpire = 0;
+  let warnedMissingAttacker = false;
+  let shieldTimer = null;
+  let shieldActive = false;
 
-  function onEntityHurt(entity) {
-    if (!bot || !bot.entity || entity !== bot.entity) return;
-    let closestAttacker = null;
-    let bestDist = 6.5;
-    for (const e of Object.values(bot.entities || {})) {
-      if (!e || e === bot.entity || !e.position) continue;
-      if (e.type === "object" || e.type === "orb") continue;
-      const d = e.position.distanceTo(bot.entity.position);
-      if (d < bestDist) {
-        bestDist = d;
-        closestAttacker = e;
+  function onEntityHurt(entity, source) {
+    if (signal?.aborted || !bot.entity || entity !== bot.entity) return;
+    if (!source) {
+      if (!warnedMissingAttacker) {
+        warnedMissingAttacker = true;
+        log("Survival: Cannot identify the attacker for this hit");
       }
+      return;
     }
-    if (closestAttacker) {
-      attackerEntityId = closestAttacker.id;
+    if (
+      source !== bot.entity &&
+      source.id != null &&
+      (source.type === "player" || source.type === "mob")
+    ) {
+      attackerEntityId = source.id;
       attackerExpire = Date.now() + 12000;
     }
   }
 
+  function releaseShield() {
+    clearTimeout(shieldTimer);
+    shieldTimer = null;
+    if (shieldActive) {
+      shieldActive = false;
+      bot.deactivateItem();
+    }
+  }
+
   bot.on("entityHurt", onEntityHurt);
+  signal?.addEventListener("abort", releaseShield, { once: true });
   bot._mcbpSprintJump = true;
 
   clearLog("Survival:");
   log("Survival: Active (autonomous survival, defense & movement)");
 
   async function survivalTick() {
-    if (!bot || !bot.entity || busy) return;
+    if (signal?.aborted || !bot || !bot.entity || busy) return;
     busy = true;
 
     try {
@@ -90,6 +104,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
         getOption("collect", info.name),
         getOption("look", info.name),
       ]);
+      if (signal?.aborted) return;
 
       const allOff =
         defendOpt === "off" &&
@@ -107,12 +122,14 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
       if (useSurvival) {
         if (now - lastArmorCheck > 2800 && !isBotEating(bot)) {
           lastArmorCheck = now;
-          await equipBestArmor(bot, { includeOffhand: true });
+          await equipBestArmor(bot, { includeOffhand: true, signal });
+          if (signal?.aborted) return;
         }
 
         const ate = await tryCombatEat(bot, {
           minHp: 13,
           minFood: 16,
+          signal,
           onLog: (bestFood, hp, food) => {
             clearLog("Survival status:");
             log(
@@ -120,7 +137,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
             );
           },
         });
-        if (ate) return;
+        if (ate || signal?.aborted) return;
       }
 
       // 2. Self Defense: fight back against attackers or nearby hostile mobs
@@ -166,15 +183,16 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
               threat.position.offset(0, (threat.height || 1.5) * 0.8, 0),
               true,
             );
+            if (signal?.aborted) return;
             bot.activateItem(true);
-            setTimeout(() => {
-              if (bot) bot.deactivateItem();
-            }, 350);
+            shieldActive = true;
+            shieldTimer = setTimeout(releaseShield, 350);
             return;
           }
 
           if (!isBotEating(bot)) {
             await equipBestWeapon(bot, { saveLowDurability: true });
+            if (signal?.aborted) return;
           }
           const label =
             threat.username || threat.displayName || threat.name || "threat";
@@ -191,6 +209,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
             await performPvpAttack(bot, threat, {
               useCrits: true,
               maxRange: 4.2,
+              signal,
             });
           }
           return;
@@ -242,7 +261,8 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
           );
         }
       }
-    } catch (_) {
+    } catch (err) {
+      if (!signal?.aborted) log(`Survival: ${err.message || err}`);
     } finally {
       busy = false;
     }
@@ -253,9 +273,13 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
     await scriptRepeater(survivalTick, info.default.interval);
   } finally {
     if (bot) {
-      bot._mcbpSprintJump = false;
       bot.removeListener("entityHurt", onEntityHurt);
-      clearPathfinderGoal(bot);
+      signal?.removeEventListener("abort", releaseShield);
+      releaseShield();
+      if (!scriptRepeater.isCurrent || scriptRepeater.isCurrent()) {
+        bot._mcbpSprintJump = false;
+        clearPathfinderGoal(bot);
+      }
     }
   }
 }

@@ -12,6 +12,36 @@ const {
   performPvpAttack,
 } = require("../botUtils");
 const { aiBrain } = require("../aiBrain");
+const { upgradeAtSmithingTable } = require("../smithing");
+const {
+  chooseBuildSite,
+  findUnlitPortal,
+  advancePortalFrame,
+  findPortalApproach,
+  enterPortal,
+  leavePortal,
+} = require("../netherPortal");
+const {
+  createNetherSearchState,
+  noNearbyThreats,
+  safeNetherMiningBlock,
+  planNetherTunnelStep,
+  searchBastionChest,
+  exploreNether,
+} = require("../netherExplore");
+const {
+  MiningSkipList,
+  pickMiningTarget,
+  canMineFromHere,
+  miningGoalFor,
+  eyeDistance,
+  isExposed,
+  coverAbove,
+  inProtectedZone,
+  isUnderCover,
+  countClimbBlocks,
+  setClimbMode,
+} = require("../miningReach");
 
 const info = {
   name: "GearUp",
@@ -152,20 +182,14 @@ function hasItemOrHigherTier(bot, baseSuffix, minTier) {
   );
 }
 
-function isBlockFaceOpen(b) {
-  if (!b) return true;
-  if (b.boundingBox === "empty") return true;
-  const n = String(b.name || "");
-  return (
-    n === "air" ||
-    n === "cave_air" ||
-    n === "void_air" ||
-    n === "water" ||
-    n === "short_grass" ||
-    n === "tall_grass" ||
-    n === "fern" ||
-    n === "snow"
-  );
+function getGearSkipList(bot) {
+  if (
+    !bot._mcbpGearSkipList ||
+    !(bot._mcbpGearSkipList instanceof MiningSkipList)
+  ) {
+    bot._mcbpGearSkipList = new MiningSkipList();
+  }
+  return bot._mcbpGearSkipList;
 }
 
 function findBlockByNames(bot, names, maxDistance = 64) {
@@ -174,12 +198,13 @@ function findBlockByNames(bot, names, maxDistance = 64) {
     .map((n) => bot.registry.blocksByName[n]?.id)
     .filter((id) => typeof id === "number");
   if (ids.length === 0) return null;
-  const skipped = bot._mcbpGearSkippedBlocks;
+  const skips = getGearSkipList(bot);
+  const legacySkipped = bot._mcbpGearSkippedBlocks;
   const protectedBlocks = bot._mcbpProtectedBlocks;
   const now = Date.now();
-  if (skipped && skipped.size > 0) {
-    for (const [k, exp] of skipped.entries()) {
-      if (now > exp) skipped.delete(k);
+  if (legacySkipped && legacySkipped.size > 0) {
+    for (const [k, exp] of legacySkipped.entries()) {
+      if (now > exp) legacySkipped.delete(k);
     }
   }
   const positions = bot.findBlocks({
@@ -189,64 +214,23 @@ function findBlockByNames(bot, names, maxDistance = 64) {
   });
   if (!positions || !positions.length) return null;
 
-  const botPos = bot.entity?.position;
-  const botFloorX = botPos ? Math.floor(botPos.x) : null;
-  const botFloorY = botPos ? Math.floor(botPos.y) : null;
-  const botFloorZ = botPos ? Math.floor(botPos.z) : null;
-
-  let bestPos = null;
-  let bestScore = -Infinity;
-
-  for (const p of positions) {
+  const isAllowed = (p) => {
     const k = `${p.x},${p.y},${p.z}`;
-    const colKey = `col:${p.x},${p.z}`;
-    if (skipped?.has(k) || skipped?.has(colKey)) continue;
-    if (protectedBlocks?.has(k)) continue;
-    // Never pick a block directly underneath the bot's own feet (prevents digging a 1x1 pit straight down!)
-    if (botPos && p.x === botFloorX && p.z === botFloorZ && p.y < botFloorY) {
-      continue;
-    }
+    if (skips.has(p)) return false;
+    if (legacySkipped?.has(k) || legacySkipped?.has(`col:${p.x},${p.z}`))
+      return false;
+    if (protectedBlocks?.has(k)) return false;
+    return true;
+  };
 
-    if (!botPos || typeof p.offset !== "function") {
-      return bot.blockAt(p);
-    }
-
-    const dist = p.distanceTo(botPos);
-    const dy = p.y - botFloorY;
-    let score = -dist;
-
-    // Prefer blocks near our current Y level (-2 to +4)
-    if (dy >= -2 && dy <= 4) {
-      score += 25;
-    } else if (dy > 6) {
-      score -= (dy - 6) * 12;
-    } else if (dy < -4) {
-      score -= (-4 - dy) * 6;
-    }
-
-    // Prefer exposed blocks (cliff face, cave wall, tree trunk) over buried blocks
-    let exposed = false;
-    for (const [ox, oy, oz] of [
-      [0, 1, 0],
-      [1, 0, 0],
-      [-1, 0, 0],
-      [0, 0, 1],
-      [0, 0, -1],
-    ]) {
-      const nb = bot.blockAt(p.offset(ox, oy, oz));
-      if (isBlockFaceOpen(nb)) {
-        exposed = true;
-        break;
-      }
-    }
-    if (exposed) score += 35;
-
-    if (score > bestScore) {
-      bestScore = score;
-      bestPos = p;
-    }
-  }
-
+  // Keep walking to the block we already chose instead of switching to a
+  // slightly closer one every step.
+  const gk = bot._mcbpGearGoalKey
+    ? bot._mcbpGearGoalKey.split(",").map(Number)
+    : null;
+  const prefer =
+    gk && gk.length === 3 ? { x: gk[0], y: gk[1], z: gk[2] } : null;
+  const bestPos = pickMiningTarget(bot, positions, isAllowed, { prefer });
   return bestPos ? bot.blockAt(bestPos) : null;
 }
 
@@ -269,8 +253,14 @@ function findNearbyDroppedItems(bot, centerPos, maxDistance = 6) {
   return drops.map((d) => d.entity);
 }
 
-async function collectNearbyDropsAround(bot, goals, centerPos, maxWaitMs = 1500) {
-  if (!bot || !bot.entity || !goals || !centerPos) return;
+async function collectNearbyDropsAround(
+  bot,
+  goals,
+  centerPos,
+  maxWaitMs = 1500,
+  signal,
+) {
+  if (signal?.aborted || !bot || !bot.entity || !goals || !centerPos) return;
   // 1. Step onto/within 1 block of the mined block position
   const distToBlock = centerPos.distanceTo(bot.entity.position);
   if (distToBlock > 1.35) {
@@ -281,6 +271,7 @@ async function collectNearbyDropsAround(bot, goals, centerPos, maxWaitMs = 1500)
     const startWalk = Date.now();
     while (
       Date.now() - startWalk < Math.min(1200, maxWaitMs) &&
+      !signal?.aborted &&
       bot.entity &&
       centerPos.distanceTo(bot.entity.position) > 1.35
     ) {
@@ -291,6 +282,7 @@ async function collectNearbyDropsAround(bot, goals, centerPos, maxWaitMs = 1500)
   // 2. Actively sweep any dropped item entity within 5.5 blocks (critical in caves!)
   const drops = findNearbyDroppedItems(bot, centerPos, 5.5);
   for (const drop of drops.slice(0, 3)) {
+    if (signal?.aborted) break;
     if (!bot.entity || !drop.isValid || !drop.position) continue;
     const dp = drop.position;
     if (dp.distanceTo(bot.entity.position) > 1.2) {
@@ -298,6 +290,7 @@ async function collectNearbyDropsAround(bot, goals, centerPos, maxWaitMs = 1500)
       const waitDrop = Date.now();
       while (
         Date.now() - waitDrop < 1100 &&
+        !signal?.aborted &&
         bot.entity &&
         drop.isValid &&
         drop.position &&
@@ -307,103 +300,221 @@ async function collectNearbyDropsAround(bot, goals, centerPos, maxWaitMs = 1500)
       }
     }
   }
-  await new Promise((r) => setTimeout(r, 180));
+  if (!signal?.aborted) await new Promise((r) => setTimeout(r, 180));
   clearPathfinderGoal(bot);
 }
 
-async function moveNearAndDig(bot, goals, block, stepLog) {
-  if (!bot || !block || !bot.entity) return false;
-  const pos = block.position;
-  const targetName = block.name;
-  const dist = pos.distanceTo(bot.entity.position);
-  const goalKey = `${pos.x},${pos.y},${pos.z}`;
-
-  const markUnreachable = (ttlMs = 60000) => {
-    if (!bot._mcbpGearSkippedBlocks) bot._mcbpGearSkippedBlocks = new Map();
-    const exp = Date.now() + ttlMs;
-    bot._mcbpGearSkippedBlocks.set(goalKey, exp);
-    // Also skip the entire vertical column (and 1-block neighbors) so we don't
-    // waste time trying y+1, y+2, y+3 of the same unreachable tree/vein!
-    for (let dx = -1; dx <= 1; dx++) {
-      for (let dz = -1; dz <= 1; dz++) {
-        bot._mcbpGearSkippedBlocks.set(`col:${pos.x + dx},${pos.z + dz}`, exp);
-      }
+// Counts "no path" for the current GearUp target. With engine failover on,
+// Baritone's noPath is handed to the backup engine instead of being emitted,
+// so the engine-switch event counts too. The first one turns on climbing.
+function watchGearNoPath(bot) {
+  if (bot._mcbpGearPathWatch) return;
+  bot._mcbpGearPathWatch = true;
+  const onNoPath = () => {
+    const key = bot._mcbpGearGoalKey;
+    if (!key) return;
+    bot._mcbpGearNoPathCount = (bot._mcbpGearNoPathCount || 0) + 1;
+    if (bot._mcbpGearClimbKey !== key) {
+      bot._mcbpGearClimbKey = key;
+      if (setClimbMode(bot, true)) bot._mcbpGearNeedRegoal = true;
     }
   };
+  bot.on("path_update", (r) => {
+    if (r?.status === "noPath") onNoPath();
+  });
+  bot.on("pathfinder_engine_switched", (info) => {
+    if (/noPath/i.test(String(info?.reason || ""))) onNoPath();
+  });
+}
 
-  // Walk until ~1 block away from the target block (<= 2.55m center-to-feet)
-  // so we don't mine intervening cave walls from 4m away and lose the drop!
-  if (dist > 2.55) {
-    let targetChanged = false;
-    if (bot._mcbpGearGoalKey === goalKey) {
-      const elapsed = Date.now() - (bot._mcbpGearGoalSince || 0);
-      if (elapsed > 8500 || (bot._mcbpGearNoPathCount || 0) >= 2) {
-        // If we got within 3.9m and pathfinder can't get closer because a block is in the way,
-        // fall through and let smartDig tunnel the 1 intervening block!
-        if (dist > 3.95) {
-          markUnreachable(60000);
-          bot._mcbpGearGoalKey = "";
-          bot._mcbpGearNoPathCount = 0;
-          clearPathfinderGoal(bot);
-          stepLog(
-            `Skipping unreachable ${block.name} at (${pos.x}, ${pos.y}, ${pos.z}), trying another...`,
-          );
-          await escapeHazardsAndObstructions(bot, { log: stepLog });
-          return false;
-        }
-      } else {
-        stepLog(
-          `Walking to 1m of ${block.name} at (${pos.x}, ${pos.y}, ${pos.z}) [${dist.toFixed(1)}m]`,
-        );
-        if (!bot.pathfinder.isMoving()) {
-          bot.pathfinder.setGoal(
-            new goals.GoalNear(pos.x, pos.y, pos.z, 1),
-            false,
-          );
+async function moveNearAndDig(bot, goals, block, stepLog, signal) {
+  if (signal?.aborted || !bot || !block || !bot.entity) return false;
+  const pos = block.position;
+  const targetName = block.name;
+  const eyeDist = eyeDistance(bot, pos);
+  const goalKey = `${pos.x},${pos.y},${pos.z}`;
+  const skips = getGearSkipList(bot);
+
+  const markUnreachable = (ttlMs = 60000) => {
+    skips.skip(pos, { ttlMs, columnAbove: true });
+  };
+  const nether =
+    String(bot.game?.dimension || "").replace(/^minecraft:/, "") ===
+    "the_nether";
+  const canDigTarget = nether
+    ? (candidate) => safeNetherMiningBlock(bot, candidate)
+    : undefined;
+  if (canDigTarget && !canDigTarget(block)) {
+    markUnreachable();
+    stepLog(
+      `Skipping ${block.name}: nearby lava, falling blocks, or unloaded terrain`,
+    );
+    return false;
+  }
+
+  // Walk until the block is within normal mining reach (~4.5m from eyes with
+  // line of sight). Buried blocks (stone under dirt) need the pathfinder to
+  // dig down to them, so digging is switched on only for those.
+  if (!canMineFromHere(bot, pos)) {
+    if (nether && !isExposed(bot, pos)) {
+      const step = planNetherTunnelStep(bot, pos);
+      if (step.type === "blocked") {
+        markUnreachable();
+        clearPathfinderGoal(bot);
+        stepLog(`Cannot tunnel to ${block.name}: ${step.reason}`);
+        return false;
+      }
+      if (step.type === "dig") {
+        clearPathfinderGoal(bot);
+        stepLog(`Opening a safe tunnel toward ${block.name}`);
+        const dug = await smartDig(bot, step.block, {
+          signal,
+          saveLowDurability: false,
+          canDigTarget: (candidate) =>
+            candidate.position.equals(step.block.position) &&
+            safeNetherMiningBlock(bot, candidate),
+        });
+        if (!dug && !signal?.aborted) {
+          markUnreachable();
+          stepLog(`Could not safely excavate toward ${block.name}`);
         }
         return false;
       }
-    } else {
-      bot._mcbpGearGoalKey = goalKey;
-      bot._mcbpGearGoalSince = Date.now();
-      bot._mcbpGearNoPathCount = 0;
-      targetChanged = true;
-      stepLog(
-        `Walking to 1m of ${block.name} at (${pos.x}, ${pos.y}, ${pos.z}) [${dist.toFixed(1)}m]`,
-      );
-      if (targetChanged || !bot.pathfinder.isMoving()) {
-        const goalObj = new goals.GoalNear(pos.x, pos.y, pos.z, 1);
-        const onPathCheck = (results) => {
-          if (!results || bot._mcbpGearGoalKey !== goalKey) return;
-          if (results.status === "noPath") {
-            bot._mcbpGearNoPathCount = (bot._mcbpGearNoPathCount || 0) + 1;
-            const inProt =
-              bot._mcbpProtectedZoneUntil &&
-              Date.now() < bot._mcbpProtectedZoneUntil;
-            if (
-              bot._mcbpGearNoPathCount === 1 &&
-              !inProt &&
-              bot.pathfinder?.movements &&
-              !bot.pathfinder.movements.canDig
-            ) {
-              bot.pathfinder.movements.canDig = true;
-            }
-          }
-        };
-        bot.once("path_update", onPathCheck);
-        bot.pathfinder.setGoal(goalObj, false);
+      const key = `tunnel:${step.position.toString()}`;
+      if (bot._mcbpGearGoalKey !== key) {
+        bot._mcbpGearGoalKey = key;
+        bot._mcbpGearGoalSince = Date.now();
+        bot.pathfinder.setGoal(
+          new goals.GoalNear(
+            step.position.x,
+            step.position.y,
+            step.position.z,
+            0,
+          ),
+          false,
+        );
+      } else if (Date.now() - bot._mcbpGearGoalSince > 12000) {
+        markUnreachable();
+        bot._mcbpGearGoalKey = "";
+        clearPathfinderGoal(bot);
+        stepLog(`No safe path through the tunnel toward ${block.name}`);
       }
       return false;
     }
+    const where = `(${pos.x}, ${pos.y}, ${pos.z})`;
+    const buried = !isExposed(bot, pos);
+    const cover = buried ? coverAbove(bot, pos) : { count: 0, names: [] };
+    const protectedZone = inProtectedZone(bot);
+    const underCover = isUnderCover(bot);
+    watchGearNoPath(bot);
+    // Dig/pillar only when walking can't do it: buried target, the bot is in
+    // a pit/cave, or the pathfinder already found no walkable path.
+    const climb =
+      !nether && (buried || underCover || bot._mcbpGearClimbKey === goalKey);
+    const why = buried
+      ? `${block.name} is buried${cover.count ? ` under ${cover.count} block(s) of ${cover.names.slice(0, 2).join("/")}` : ""}, digging down to it`
+      : underCover
+        ? `${block.name} is ${eyeDist.toFixed(1)}m away and I'm under cover (pit/cave), so I may dig or pillar out with junk blocks`
+        : `${block.name} is ${eyeDist.toFixed(1)}m away, walking until it is in reach`;
+    setClimbMode(bot, climb);
+
+    const now = Date.now();
+    if (bot._mcbpGearGoalKey !== goalKey) {
+      bot._mcbpGearGoalKey = goalKey;
+      bot._mcbpGearGoalSince = now;
+      bot._mcbpGearBestDist = eyeDist;
+      bot._mcbpGearProgressAt = now;
+      bot._mcbpGearNoPathCount = 0;
+      stepLog(
+        `Going for ${block.name} at ${where} [${eyeDist.toFixed(1)}m] - ${why}`,
+      );
+      aiBrain?.setSubObjective?.(
+        `Reach ${block.name} at ${where}`,
+        {
+          reason: why,
+          source: "GearUp",
+          objective: aiBrain?.getObjective?.() || "GearUp",
+        },
+        bot,
+      );
+      bot.pathfinder.setGoal(miningGoalFor(bot, goals, pos, { buried }), false);
+      return false;
+    }
+
+    // No walkable path: retry once with digging + pillaring enabled.
+    if (bot._mcbpGearNeedRegoal) {
+      bot._mcbpGearNeedRegoal = false;
+      bot._mcbpGearProgressAt = now;
+      bot._mcbpGearNoPathCount = 0;
+      const blocks = countClimbBlocks(bot);
+      stepLog(
+        `No walkable path to ${block.name} at ${where} - ${protectedZone ? "digging is blocked here, trying anyway" : `allowing digging${blocks ? ` and pillaring (${blocks} dirt/cobblestone)` : ""} to get there`}`,
+      );
+      aiBrain?.setSubObjective?.(
+        `Reach ${block.name} at ${where}`,
+        {
+          reason: "no walkable path, so digging/pillaring a way there",
+          source: "GearUp",
+          objective: aiBrain?.getObjective?.() || "GearUp",
+        },
+        bot,
+      );
+      try {
+        bot.pathfinder.setMovements(bot.pathfinder.movements);
+      } catch (_) {}
+      bot.pathfinder.setGoal(miningGoalFor(bot, goals, pos, { buried }), false);
+      return false;
+    }
+
+    // Judge by progress, not a fixed timer: digging down through dirt is slow
+    // but steady. Give up only after no progress for a while or a hard cap.
+    if (eyeDist < (bot._mcbpGearBestDist ?? Infinity) - 0.4) {
+      bot._mcbpGearBestDist = eyeDist;
+      bot._mcbpGearProgressAt = now;
+    }
+    const stalledMs = now - (bot._mcbpGearProgressAt || now);
+    const totalMs = now - (bot._mcbpGearGoalSince || now);
+    const noPath = (bot._mcbpGearNoPathCount || 0) >= 2;
+    if (noPath || stalledMs > (buried ? 12000 : 8500) || totalMs > 45000) {
+      const reason = noPath
+        ? "no path to it"
+        : stalledMs > 8500
+          ? `no progress for ${Math.round(stalledMs / 1000)}s`
+          : "took too long";
+      markUnreachable(60000);
+      bot._mcbpGearGoalKey = "";
+      bot._mcbpGearNoPathCount = 0;
+      clearPathfinderGoal(bot);
+      stepLog(
+        `Skipping ${block.name} at ${where} (${reason}${protectedZone && buried ? ", digging is blocked here" : ""}), picking another...`,
+      );
+      aiBrain?.recordProblem?.(
+        "GearUp",
+        `could not reach ${block.name} at ${where}: ${reason}`,
+        buried
+          ? "prefer exposed blocks (cliffs, caves, surface stone) or dig a staircase down"
+          : "try a different target",
+        bot,
+      );
+      if (!nether) await escapeHazardsAndObstructions(bot, { log: stepLog });
+      return false;
+    }
+    if (!bot.pathfinder.isMoving()) {
+      bot.pathfinder.setGoal(miningGoalFor(bot, goals, pos, { buried }), false);
+    }
+    return false;
   }
 
   bot._mcbpGearGoalKey = "";
   bot._mcbpGearNoPathCount = 0;
   clearPathfinderGoal(bot);
-  stepLog(`Mining ${targetName} at (${pos.x}, ${pos.y}, ${pos.z}) [1m range]...`);
+  stepLog(
+    `Mining ${targetName} at (${pos.x}, ${pos.y}, ${pos.z}) [${eyeDist.toFixed(1)}m]...`,
+  );
 
-  // Up to 3 dig passes in case 1–2 dirt/stone blocks are covering the ore face
-  for (let pass = 0; pass < 3; pass++) {
+  // Up to 4 dig passes in case 1-2 dirt/stone/leaf blocks are covering the block face
+  for (let pass = 0; pass < 4; pass++) {
+    if (signal?.aborted) return false;
     const liveTarget = bot.blockAt(pos);
     if (
       !liveTarget ||
@@ -416,7 +527,10 @@ async function moveNearAndDig(bot, goals, block, stepLog) {
     const dug = await smartDig(bot, liveTarget, {
       autoTool: true,
       saveLowDurability: false,
+      signal,
+      canDigTarget,
     });
+    if (signal?.aborted) return false;
     if (dug === false) {
       markUnreachable(45000);
       return false;
@@ -431,22 +545,31 @@ async function moveNearAndDig(bot, goals, block, stepLog) {
     ) {
       break;
     }
-    // We dug a blocker in front of the ore — step closer (1 block away) before digging the ore itself
-    if (pos.distanceTo(bot.entity.position) > 2.2) {
-      bot.pathfinder.setGoal(new goals.GoalNear(pos.x, pos.y, pos.z, 1), false);
+    if (!canMineFromHere(bot, pos)) {
+      bot.pathfinder.setGoal(miningGoalFor(bot, goals, pos), false);
       await new Promise((r) => setTimeout(r, 450));
       clearPathfinderGoal(bot);
     }
   }
 
-  await collectNearbyDropsAround(bot, goals, pos, 1500);
+  // Next leg: walk without digging on open ground, but keep digging/pillaring
+  // on while we are still in the pit we just dug (drops, next target).
+  if (!nether) setClimbMode(bot, isUnderCover(bot));
+  await collectNearbyDropsAround(bot, goals, pos, 1500, signal);
   return true;
 }
 
-async function craftItemByName(bot, itemName, count = 1, craftingTable = null) {
-  if (!bot || !bot.registry) return false;
+async function craftItemByName(
+  bot,
+  itemName,
+  count = 1,
+  craftingTable = null,
+  signal,
+) {
+  if (signal?.aborted || !bot || !bot.registry) return false;
   attachCraftingFix(bot);
   await cleanCraftingGrid(bot);
+  if (signal?.aborted) return false;
   const itemType = bot.registry.itemsByName[itemName];
   if (!itemType) return false;
   const recipes = bot.recipesFor(itemType.id, null, 1, craftingTable);
@@ -459,16 +582,17 @@ async function craftItemByName(bot, itemName, count = 1, craftingTable = null) {
   }
 }
 
-async function craftAnyPlanks(bot) {
-  if (!bot || !bot.registry) return false;
+async function craftAnyPlanks(bot, signal) {
+  if (signal?.aborted || !bot || !bot.registry) return false;
   await cleanCraftingGrid(bot);
+  if (signal?.aborted) return false;
   const logItem = bot.inventory
     .items()
     .find((i) => LOG_NAMES.includes(i.name) || i.name.endsWith("_log"));
   if (!logItem) return false;
   const prefix = logItem.name.replace(/_(log|stem)$/, "");
   const plankName = `${prefix}_planks`;
-  return craftItemByName(bot, plankName, 1, null);
+  return craftItemByName(bot, plankName, 1, null, signal);
 }
 
 async function findRememberedOrNearbyWorkstation(
@@ -478,8 +602,9 @@ async function findRememberedOrNearbyWorkstation(
   landmarkKey,
   label,
   stepLog,
+  signal,
 ) {
-  if (!bot || !bot.entity) return null;
+  if (signal?.aborted || !bot || !bot.entity) return null;
   // 1. Scan nearby loaded chunks up to 36 blocks
   let found = findBlockByNames(bot, names, 36);
   // 2. If not immediately found, check aiBrain landmarks memory within 56 blocks
@@ -503,6 +628,7 @@ async function findRememberedOrNearbyWorkstation(
           );
           await new Promise((r) => setTimeout(r, 1500));
           clearPathfinderGoal(bot);
+          if (signal?.aborted) return null;
           found = findBlockByNames(bot, names, 36);
         }
       }
@@ -514,8 +640,8 @@ async function findRememberedOrNearbyWorkstation(
   return found;
 }
 
-async function ensureCraftingTablePlaced(bot, goals, stepLog) {
-  if (!bot || !bot.registry) return null;
+async function ensureCraftingTablePlaced(bot, goals, stepLog, signal) {
+  if (signal?.aborted || !bot || !bot.registry) return null;
   const existing = await findRememberedOrNearbyWorkstation(
     bot,
     goals,
@@ -523,7 +649,9 @@ async function ensureCraftingTablePlaced(bot, goals, stepLog) {
     "crafting_table",
     "Crafting Table",
     stepLog,
+    signal,
   );
+  if (signal?.aborted) return null;
   if (existing) {
     const d = existing.position.distanceTo(bot.entity.position);
     if (d > 2.6) {
@@ -542,11 +670,13 @@ async function ensureCraftingTablePlaced(bot, goals, stepLog) {
       const waitStart = Date.now();
       while (
         Date.now() - waitStart < 6000 &&
+        !signal?.aborted &&
         existing.position.distanceTo(bot.entity.position) > 2.8
       ) {
         await new Promise((r) => setTimeout(r, 200));
       }
       clearPathfinderGoal(bot);
+      if (signal?.aborted) return null;
     }
     if (existing.position.distanceTo(bot.entity.position) <= 4.2) {
       aiBrain?.recordLandmark?.(
@@ -560,23 +690,25 @@ async function ensureCraftingTablePlaced(bot, goals, stepLog) {
   }
 
   if (countByName(bot, "crafting_table") === 0) {
-    while (countPlanks(bot) < 8 && countLogs(bot) > 0) {
+    while (!signal?.aborted && countPlanks(bot) < 8 && countLogs(bot) > 0) {
       stepLog("Crafting planks from logs for crafting_table...");
-      const ok = await craftAnyPlanks(bot);
+      const ok = await craftAnyPlanks(bot, signal);
       if (!ok) break;
     }
-    if (countPlanks(bot) >= 4) {
+    if (!signal?.aborted && countPlanks(bot) >= 4) {
       stepLog("Crafting crafting_table (no existing table nearby)...");
-      await craftItemByName(bot, "crafting_table", 1, null);
+      await craftItemByName(bot, "crafting_table", 1, null, signal);
     }
   }
 
+  if (signal?.aborted) return null;
   const tableItem = bot.inventory
     .items()
     .find((i) => i.name === "crafting_table");
   if (!tableItem) return null;
 
-  await placeBlockNearby(bot, tableItem, "crafting_table", stepLog);
+  await placeBlockNearby(bot, tableItem, "crafting_table", stepLog, signal);
+  if (signal?.aborted) return null;
   const placed = findBlockByNames(bot, ["crafting_table"], 6);
   if (placed?.position) {
     aiBrain?.recordLandmark?.(
@@ -589,8 +721,8 @@ async function ensureCraftingTablePlaced(bot, goals, stepLog) {
   return placed;
 }
 
-async function placeBlockNearby(bot, item, blockName, stepLog) {
-  if (!bot || !bot.entity || !item) return false;
+async function placeBlockNearby(bot, item, blockName, stepLog, signal) {
+  if (signal?.aborted || !bot || !bot.entity || !item) return false;
   const { Vec3 } = loadLibraries();
   const botPos = bot.entity.position;
   const base = botPos.floored();
@@ -633,20 +765,25 @@ async function placeBlockNearby(bot, item, blockName, stepLog) {
 
   candidates.sort((a, b) => a.score - b.score);
 
+  let lastError;
   for (const cand of candidates.slice(0, 6)) {
+    if (signal?.aborted) return false;
     const { targetFloor, targetSpace, isAir } = cand;
     try {
       if (!isAir) {
         await bot.dig(targetSpace, true).catch(() => {});
         await new Promise((r) => setTimeout(r, 120));
+        if (signal?.aborted) return false;
       }
       const freshItem =
         bot.inventory.items().find((i) => i.name === item.name) || item;
       await bot.equip(freshItem, "hand");
+      if (signal?.aborted) return false;
       stepLog(
         `Placing ${blockName} at (${targetSpace.position.x}, ${targetSpace.position.y}, ${targetSpace.position.z})...`,
       );
       await bot.lookAt(targetFloor.position.offset(0.5, 1, 0.5), true);
+      if (signal?.aborted) return false;
       await bot.placeBlock(targetFloor, new Vec3(0, 1, 0));
       await new Promise((r) => setTimeout(r, 250));
       if (blockName === "crafting_table" || blockName === "furnace") {
@@ -658,20 +795,38 @@ async function placeBlockNearby(bot, item, blockName, stepLog) {
         );
       }
       return true;
-    } catch (_) {}
+    } catch (error) {
+      lastError = error;
+    }
   }
+  if (lastError && !signal?.aborted)
+    stepLog(`Could not place ${blockName}: ${lastError.message || lastError}`);
   return false;
 }
 
-async function ensureSticksAndPlanks(bot, minSticks, minPlanks, stepLog) {
-  while (countPlanks(bot) < minPlanks + 2 && countLogs(bot) > 0) {
+async function ensureSticksAndPlanks(
+  bot,
+  minSticks,
+  minPlanks,
+  stepLog,
+  signal,
+) {
+  while (
+    !signal?.aborted &&
+    countPlanks(bot) < minPlanks + 2 &&
+    countLogs(bot) > 0
+  ) {
     stepLog("Crafting planks from logs...");
-    const ok = await craftAnyPlanks(bot);
+    const ok = await craftAnyPlanks(bot, signal);
     if (!ok) break;
   }
-  while (countByName(bot, "stick") < minSticks && countPlanks(bot) >= 2) {
+  while (
+    !signal?.aborted &&
+    countByName(bot, "stick") < minSticks &&
+    countPlanks(bot) >= 2
+  ) {
     stepLog("Crafting sticks from planks...");
-    const ok = await craftItemByName(bot, "stick", 1, null);
+    const ok = await craftItemByName(bot, "stick", 1, null, signal);
     if (!ok) break;
   }
 }
@@ -684,11 +839,16 @@ async function smeltInFurnace(
     outputName = "iron_ingot",
     neededCount = 1,
     stepLog = () => {},
+    reservePlanks = 0,
+    signal,
+    requireEmptyFurnace = false,
+    recoveryLog = stepLog,
   } = {},
 ) {
-  if (!bot || !bot.registry) return false;
+  if (!bot || !bot.registry || signal?.aborted) return false;
   attachCraftingFix(bot);
   await cleanCraftingGrid(bot);
+  if (signal?.aborted) return false;
   let furnaceBlock = await findRememberedOrNearbyWorkstation(
     bot,
     goals,
@@ -696,19 +856,35 @@ async function smeltInFurnace(
     "furnace",
     "Furnace",
     stepLog,
+    signal,
   );
+  if (signal?.aborted) return false;
 
   if (!furnaceBlock) {
     if (countByName(bot, "furnace") === 0) {
-      if (countCobble(bot) < 8) return false;
-      const table = await ensureCraftingTablePlaced(bot, goals, stepLog);
-      if (!table) return false;
-      stepLog("Crafting furnace (8 cobblestone, no existing furnace nearby)...");
-      await craftItemByName(bot, "furnace", 1, table);
+      if (countCobble(bot) < 8) {
+        const stone = findBlockByNames(bot, [...STONE_NAMES, "blackstone"], 48);
+        if (stone) await moveNearAndDig(bot, goals, stone, stepLog, signal);
+        else stepLog("Need 8 cobblestone or blackstone for a furnace");
+        return false;
+      }
+      const table = await ensureCraftingTablePlaced(
+        bot,
+        goals,
+        stepLog,
+        signal,
+      );
+      if (!table || signal?.aborted) return false;
+      stepLog(
+        "Crafting furnace (8 cobblestone, no existing furnace nearby)...",
+      );
+      await craftItemByName(bot, "furnace", 1, table, signal);
+      if (signal?.aborted) return false;
     }
     const furnaceItem = bot.inventory.items().find((i) => i.name === "furnace");
     if (furnaceItem) {
-      await placeBlockNearby(bot, furnaceItem, "furnace", stepLog);
+      await placeBlockNearby(bot, furnaceItem, "furnace", stepLog, signal);
+      if (signal?.aborted) return false;
       furnaceBlock = findBlockByNames(bot, ["furnace", "blast_furnace"], 6);
       if (furnaceBlock?.position) {
         aiBrain?.recordLandmark?.(
@@ -737,49 +913,83 @@ async function smeltInFurnace(
     const walkStart = Date.now();
     while (
       Date.now() - walkStart < 6000 &&
+      !signal?.aborted &&
       furnaceBlock.position.distanceTo(bot.entity.position) > 2.8
     ) {
       await new Promise((r) => setTimeout(r, 250));
     }
     clearPathfinderGoal(bot);
+    if (signal?.aborted) return false;
     if (furnaceBlock.position.distanceTo(bot.entity.position) > 4.2) {
       return false;
     }
   }
 
   clearPathfinderGoal(bot);
+  let openFurnace = null;
+  const inventoryItems = () =>
+    openFurnace
+      ? openFurnace.slots
+          .slice(openFurnace.inventoryStart, openFurnace.inventoryEnd)
+          .filter(Boolean)
+      : bot.inventory.items();
+  const availableCount = (predicate) =>
+    inventoryItems().reduce(
+      (total, item) => total + (predicate(item) ? item.count : 0),
+      0,
+    );
+  const isFuelPlank = (item) =>
+    item.name.endsWith("_planks") &&
+    !["crimson_planks", "warped_planks"].includes(item.name);
+  const availablePlanks = () => availableCount(isFuelPlank);
   const findInput = () =>
-    bot.inventory.items().find((i) => inputNames.includes(i.name));
+    inventoryItems().find((i) => inputNames.includes(i.name));
   const rawInput = findInput();
 
-  // Convert 1 log into 4 planks if we have no coal/planks fuel
-  if (
-    !bot.inventory
-      .items()
-      .some(
-        (i) =>
-          i.name === "coal" ||
-          i.name === "charcoal" ||
-          i.name.endsWith("_planks"),
-      ) &&
+  // Fuel: coal/charcoal first (8 smelts each); planks only beyond the ones
+  // reserved for crafting (1.5 each); logs are turned into planks first
+  // (1 log = 4 planks = 6 smelts instead of 1.5).
+  const coalLike = (i) =>
+    ["coal", "charcoal", "blaze_rod", "lava_bucket"].includes(i.name);
+  const hasCoal = () => inventoryItems().some(coalLike);
+  while (
+    !hasCoal() &&
+    availablePlanks() - reservePlanks <
+      Math.ceil(Math.max(1, neededCount) / SMELT_PER_PLANK) &&
     countLogs(bot) > 0
   ) {
-    await craftAnyPlanks(bot);
+    if (!(await craftAnyPlanks(bot, signal))) break;
+    if (signal?.aborted) return false;
   }
-
-  const findFuel = () =>
-    bot.inventory
-      .items()
-      .find(
+  const findFuel = () => {
+    const items = inventoryItems();
+    const coal = items.find(coalLike);
+    if (coal) return coal;
+    if (availablePlanks() - reservePlanks > 0) {
+      return items.find(isFuelPlank) || null;
+    }
+    return (
+      items.find(
         (i) =>
-          i.name === "coal" ||
-          i.name === "charcoal" ||
-          i.name === "blaze_rod" ||
-          i.name === "lava_bucket" ||
-          i.name.endsWith("_planks") ||
-          LOG_NAMES.includes(i.name),
-      );
+          LOG_NAMES.includes(i.name) &&
+          !["crimson_stem", "warped_stem"].includes(i.name),
+      ) || null
+    );
+  };
+  // How many of `item` to load for `smelts` smelts.
+  const fuelAmount = (item, smelts) => {
+    if (!item) return 0;
+    const per = coalLike(item) ? SMELT_PER_COAL : SMELT_PER_PLANK;
+    let n = Math.ceil(Math.max(1, smelts) / per);
+    if (item.name.endsWith("_planks"))
+      n = Math.min(n, availablePlanks() - reservePlanks);
+    return Math.max(1, Math.min(item.count, n));
+  };
   const fuelItem = findFuel();
+  if (requireEmptyFurnace && !fuelItem) {
+    stepLog("Need fuel before starting the furnace");
+    return false;
+  }
 
   const initialCount = countByName(bot, outputName);
   const targetTotal = initialCount + Math.max(1, neededCount);
@@ -789,62 +999,150 @@ async function smeltInFurnace(
   );
   try {
     const furnace = await bot.openFurnace(furnaceBlock);
+    openFurnace = furnace;
+    const trackedWindow = bot.currentWindow === furnace;
+    let owned = null;
     try {
+      if (signal?.aborted) return false;
+      if (
+        requireEmptyFurnace &&
+        (furnace.inputItem() || furnace.fuelItem() || furnace.outputItem())
+      ) {
+        throw new Error("Furnace is occupied; refusing to move its contents");
+      }
+      if (requireEmptyFurnace) {
+        owned = {
+          inputs: new Set(),
+          fuels: new Set(),
+          outstandingInput: 0,
+          insertedFuel: 0,
+        };
+      }
+      if (
+        furnace.inputItem() &&
+        !inputNames.includes(furnace.inputItem().name)
+      ) {
+        throw new Error("Furnace contains a different input item");
+      }
       if (furnace.outputItem()) {
-        await furnace.takeOutput().catch(() => {});
+        if (furnace.outputItem().name !== outputName) {
+          throw new Error("Furnace contains a different output item");
+        }
+        await furnace.takeOutput();
       }
+      if (signal?.aborted) return false;
       if (!furnace.fuelItem() && fuelItem) {
-        await furnace
-          .putFuel(fuelItem.type, null, Math.min(fuelItem.count, 20))
-          .catch(() => {});
+        const amount = fuelAmount(fuelItem, neededCount);
+        await furnace.putFuel(fuelItem.type, null, amount);
+        if (owned) {
+          owned.fuels.add(fuelItem.name);
+          owned.insertedFuel += amount;
+        }
       }
+      if (signal?.aborted) return false;
       const curIn = furnace.inputItem();
       const freshIn = findInput();
       if (!curIn && freshIn) {
-        await furnace
-          .putInput(
-            freshIn.type,
-            null,
-            Math.min(freshIn.count, Math.max(1, neededCount)),
-          )
-          .catch(() => {});
+        const amount = Math.min(freshIn.count, Math.max(1, neededCount));
+        await furnace.putInput(freshIn.type, null, amount);
+        if (owned) {
+          owned.inputs.add(freshIn.name);
+          owned.outstandingInput += amount;
+        }
       }
 
       const maxWaitMs = Math.max(1, Math.min(32, neededCount)) * 11200 + 2500;
       const startWait = Date.now();
-      while (Date.now() - startWait < maxWaitMs) {
+      while (!signal?.aborted && Date.now() - startWait < maxWaitMs) {
         await new Promise((r) => setTimeout(r, 900));
+        if (signal?.aborted) return false;
         if (furnace.outputItem()) {
-          await furnace.takeOutput().catch(() => {});
-          if (countByName(bot, outputName) >= targetTotal) break;
+          if (furnace.outputItem().name !== outputName) {
+            throw new Error("Furnace produced an unexpected item");
+          }
+          const outputCount = furnace.outputItem().count;
+          await furnace.takeOutput();
+          if (owned) owned.outstandingInput -= outputCount;
+          if (availableCount((item) => item.name === outputName) >= targetTotal)
+            break;
         }
         const inSlot = furnace.inputItem();
         if (!inSlot && !furnace.outputItem()) {
           const moreIn = findInput();
-          const remaining = targetTotal - countByName(bot, outputName);
+          const remaining =
+            targetTotal - availableCount((item) => item.name === outputName);
           if (moreIn && remaining > 0) {
-            await furnace
-              .putInput(moreIn.type, null, Math.min(moreIn.count, remaining))
-              .catch(() => {});
+            const amount = Math.min(moreIn.count, remaining);
+            await furnace.putInput(moreIn.type, null, amount);
+            if (owned) {
+              owned.inputs.add(moreIn.name);
+              owned.outstandingInput += amount;
+            }
           } else {
             break;
           }
         }
         if (!furnace.fuelItem() && (!furnace.fuel || furnace.fuel <= 0)) {
           const moreFuel = findFuel();
-          if (moreFuel) {
-            await furnace
-              .putFuel(moreFuel.type, null, Math.min(moreFuel.count, 4))
-              .catch(() => {});
+          const left =
+            targetTotal - availableCount((item) => item.name === outputName);
+          if (moreFuel && left > 0) {
+            const amount = fuelAmount(moreFuel, left);
+            await furnace.putFuel(moreFuel.type, null, amount);
+            if (owned) {
+              owned.fuels.add(moreFuel.name);
+              owned.insertedFuel += amount;
+            }
           }
         }
       }
-      if (furnace.outputItem()) {
-        await furnace.takeOutput().catch(() => {});
+      if (!signal?.aborted && furnace.outputItem()?.name === outputName) {
+        const outputCount = furnace.outputItem().count;
+        await furnace.takeOutput();
+        if (owned) owned.outstandingInput -= outputCount;
       }
     } finally {
-      furnace.close();
+      try {
+        if (owned) {
+          if (trackedWindow && bot.currentWindow !== furnace) {
+            recoveryLog(
+              "Furnace window changed; recover its contents manually",
+            );
+          } else {
+            const input = furnace.inputItem();
+            const fuel = furnace.fuelItem();
+            const output = furnace.outputItem();
+            const inputCount = input?.count || 0;
+            const outputCount = output?.count || 0;
+            const unexpected =
+              (input && !owned.inputs.has(input.name)) ||
+              (output && output.name !== outputName) ||
+              (fuel && !owned.fuels.has(fuel.name)) ||
+              inputCount + outputCount > owned.outstandingInput ||
+              (fuel?.count || 0) > owned.insertedFuel;
+            if (unexpected) {
+              recoveryLog(
+                "Furnace contents changed unexpectedly; recover your materials manually",
+              );
+            } else {
+              if (output) await furnace.takeOutput();
+              if (input) await furnace.takeInput();
+              if (fuel) await furnace.takeFuel();
+              if (input || output || fuel)
+                recoveryLog("Recovered remaining furnace materials");
+            }
+          }
+        }
+      } catch (error) {
+        recoveryLog(
+          `Could not recover furnace materials; retrieve them manually: ${error.message || error}`,
+        );
+      } finally {
+        await furnace.close();
+        openFurnace = null;
+      }
     }
+    if (signal?.aborted) return false;
     const afterCount = countByName(bot, outputName);
     if (afterCount > initialCount) {
       stepLog(
@@ -853,7 +1151,8 @@ async function smeltInFurnace(
       return true;
     }
     return false;
-  } catch (_) {
+  } catch (err) {
+    if (!signal?.aborted) stepLog(`Smelting failed: ${err.message || err}`);
     return false;
   }
 }
@@ -869,7 +1168,12 @@ async function smeltIronInFurnace(bot, goals, neededIngots, stepLog) {
 
 async function smeltGoldInFurnace(bot, goals, neededIngots, stepLog) {
   return smeltInFurnace(bot, goals, {
-    inputNames: ["raw_gold", "gold_ore", "deepslate_gold_ore", "nether_gold_ore"],
+    inputNames: [
+      "raw_gold",
+      "gold_ore",
+      "deepslate_gold_ore",
+      "nether_gold_ore",
+    ],
     outputName: "gold_ingot",
     neededCount: neededIngots,
     stepLog,
@@ -909,15 +1213,16 @@ function buildGearUpPlanSnapshot(
     Boolean(findBlockByNames(bot, ["furnace", "blast_furnace"], 36)) ||
     Boolean(aiBrain?.landmarks?.has("furnace"));
 
-  const tierRank = {
-    leather: 0,
-    wooden: 0,
-    stone: 1,
-    gold: 2,
-    iron: 3,
-    diamond: 4,
-    netherite: 5,
-  }[targetTier] ?? 4;
+  const tierRank =
+    {
+      leather: 0,
+      wooden: 0,
+      stone: 1,
+      gold: 2,
+      iron: 3,
+      diamond: 4,
+      netherite: 5,
+    }[targetTier] ?? 4;
 
   const steps = [];
 
@@ -968,7 +1273,11 @@ function buildGearUpPlanSnapshot(
         done: hasItemOrHigherTier(bot, "sword", "stone"),
       });
     }
-    if (targetTier === "stone" && wantArmor && countByName(bot, "leather") >= 4) {
+    if (
+      targetTier === "stone" &&
+      wantArmor &&
+      countByName(bot, "leather") >= 4
+    ) {
       const hasLeatherPieces =
         hasItemOrHigherTier(bot, "chestplate", "leather") ||
         hasItemOrHigherTier(bot, "helmet", "leather") ||
@@ -1045,8 +1354,7 @@ function buildGearUpPlanSnapshot(
     if (wantTools) {
       steps.push({
         label: `Mine diamond_ore & craft Diamond Tools (${countByName(bot, "diamond")} diamonds)`,
-        done:
-          hasDiamondPick && hasItemOrHigherTier(bot, "sword", "diamond"),
+        done: hasDiamondPick && hasItemOrHigherTier(bot, "sword", "diamond"),
       });
     }
     if (wantArmor) {
@@ -1057,6 +1365,21 @@ function buildGearUpPlanSnapshot(
           hasItemOrHigherTier(bot, "leggings", "diamond") &&
           hasItemOrHigherTier(bot, "helmet", "diamond") &&
           hasItemOrHigherTier(bot, "boots", "diamond"),
+      });
+    }
+  }
+
+  if (targetTier === "netherite") {
+    const pieces = [
+      ...(wantTools ? ["sword", "pickaxe", "axe", "shovel"] : []),
+      ...(wantArmor ? ["helmet", "chestplate", "leggings", "boots"] : []),
+    ];
+    if (pieces.length) {
+      steps.push({
+        label: "Upgrade requested equipment to Netherite",
+        done: pieces.every((piece) =>
+          hasItemOrHigherTier(bot, piece, "netherite"),
+        ),
       });
     }
   }
@@ -1084,8 +1407,8 @@ function buildGearUpPlanSnapshot(
   };
 }
 
-async function huntNearestLeatherAnimal(bot, goals, stepLog) {
-  if (!bot || !bot.entity || !bot.entities) return false;
+async function huntNearestLeatherAnimal(bot, goals, stepLog, signal) {
+  if (signal?.aborted || !bot || !bot.entity || !bot.entities) return false;
   const me = bot.entity.position;
   const candidates = Object.values(bot.entities)
     .filter(
@@ -1117,17 +1440,268 @@ async function huntNearestLeatherAnimal(bot, goals, stepLog) {
   }
   clearPathfinderGoal(bot);
   await equipBestWeapon(bot);
+  if (signal?.aborted) return false;
   const lastPos = target.position.clone();
-  await performPvpAttack(bot, target, { useCrits: true, maxRange: 3.8 }).catch(
-    () => {
-      bot.attack(target);
-    },
-  );
+  await performPvpAttack(bot, target, {
+    useCrits: true,
+    maxRange: 3.8,
+    signal,
+  }).catch((error) => {
+    if (signal?.aborted) return;
+    stepLog(`Attack failed: ${error.message || error}`);
+    bot.attack(target);
+  });
   await new Promise((r) => setTimeout(r, 350));
-  if (!target.isValid) {
-    await collectNearbyDropsAround(bot, goals, lastPos, 1500);
+  if (!signal?.aborted && !target.isValid) {
+    await collectNearbyDropsAround(bot, goals, lastPos, 1500, signal);
   }
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Bill of materials: what a whole stage needs before anything is crafted.
+// ---------------------------------------------------------------------------
+
+// Vanilla recipes: material count + sticks per tool, material per armor piece.
+const TOOL_COST = {
+  pickaxe: { count: 3, sticks: 2 },
+  axe: { count: 3, sticks: 2 },
+  sword: { count: 2, sticks: 1 },
+  shovel: { count: 1, sticks: 2 },
+};
+const ARMOR_COST = { helmet: 5, chestplate: 8, leggings: 7, boots: 4 };
+const STONE_TOOL_MATS = ["cobblestone", "cobbled_deepslate", "blackstone"];
+const SMELT_PER_COAL = 8;
+const SMELT_PER_PLANK = 1.5;
+const RAW_FOR_INGOT = {
+  iron_ingot: ["raw_iron", "iron_ore", "deepslate_iron_ore"],
+  gold_ingot: ["raw_gold", "gold_ore", "deepslate_gold_ore", "nether_gold_ore"],
+};
+
+function isLogName(n) {
+  return LOG_NAMES.includes(n) || n.endsWith("_log") || n.endsWith("_stem");
+}
+
+// { itemName: count } for everything in the inventory.
+function inventoryCounts(bot) {
+  const counts = {};
+  for (const i of bot?.inventory?.items?.() || []) {
+    counts[i.name] = (counts[i.name] || 0) + i.count;
+  }
+  return counts;
+}
+
+function sumCounts(counts, pred) {
+  let n = 0;
+  for (const [name, c] of Object.entries(counts || {})) if (pred(name)) n += c;
+  return n;
+}
+
+// Everything still to craft in `stage` for the chosen tier/options.
+// `owns(suffix, tier)` and `hasPick(name)` say what the bot already has.
+function gearStageItems(stage, tier, opts, owns, hasPick, countOf) {
+  const { wantTools = true, wantArmor = true, wantShield = true } = opts || {};
+  const items = [];
+  const tool = (prefix, kind, mat) => ({
+    name: `${prefix}_${kind}`,
+    mat,
+    count: TOOL_COST[kind].count,
+    sticks: TOOL_COST[kind].sticks,
+  });
+  const armor = (prefix, piece, mat) => ({
+    name: `${prefix}_${piece}`,
+    mat,
+    count: ARMOR_COST[piece],
+    sticks: 0,
+  });
+  const fullSet = (prefix, toolTier, mat, toolKinds) => {
+    if (wantTools) {
+      for (const kind of toolKinds) {
+        if (!owns(kind, toolTier)) items.push(tool(prefix, kind, mat));
+      }
+    }
+    if (wantArmor) {
+      for (const piece of Object.keys(ARMOR_COST)) {
+        if (!owns(piece, toolTier)) items.push(armor(prefix, piece, mat));
+      }
+    }
+  };
+  if (stage === "wooden") {
+    if (!hasPick("wooden_pickaxe"))
+      items.push(tool("wooden", "pickaxe", "planks"));
+    if ((tier === "wooden" || tier === "leather") && wantTools) {
+      if (!owns("sword", "wooden"))
+        items.push(tool("wooden", "sword", "planks"));
+      if (!owns("axe", "wooden")) items.push(tool("wooden", "axe", "planks"));
+    }
+  } else if (stage === "stone") {
+    if (!hasPick("stone_pickaxe"))
+      items.push(tool("stone", "pickaxe", "cobblestone"));
+    if (tier === "stone" && wantTools) {
+      if (!owns("sword", "stone"))
+        items.push(tool("stone", "sword", "cobblestone"));
+      if (!owns("axe", "stone"))
+        items.push(tool("stone", "axe", "cobblestone"));
+    }
+  } else if (stage === "iron") {
+    if (!hasPick("iron_pickaxe"))
+      items.push(tool("iron", "pickaxe", "iron_ingot"));
+    if (wantShield && countOf("shield") === 0) {
+      items.push({
+        name: "shield",
+        mat: "iron_ingot",
+        count: 1,
+        sticks: 0,
+        planks: 6,
+      });
+    }
+    if (tier === "iron") {
+      if (wantTools) {
+        for (const kind of ["sword", "axe", "shovel"]) {
+          if (!owns(kind, "iron")) items.push(tool("iron", kind, "iron_ingot"));
+        }
+      }
+      if (wantArmor) {
+        for (const piece of Object.keys(ARMOR_COST)) {
+          if (!owns(piece, "iron"))
+            items.push(armor("iron", piece, "iron_ingot"));
+        }
+      }
+    }
+  } else if (stage === "gold") {
+    fullSet("golden", "golden", "gold_ingot", ["sword", "pickaxe", "axe"]);
+  } else if (stage === "diamond") {
+    fullSet("diamond", "diamond", "diamond", [
+      "sword",
+      "pickaxe",
+      "axe",
+      "shovel",
+    ]);
+  }
+  return items;
+}
+
+// Totals for `items` against the inventory `inv` ({name: count}), including
+// sticks -> planks -> logs, a crafting table, a furnace (8 cobblestone), one
+// raw ore per missing ingot, and smelting fuel (coal 8 / plank 1.5 smelts).
+// `missing` is what still has to be gathered; `ready` = craft now.
+function computeGearBudget(
+  items,
+  inv,
+  { haveTable = false, haveFurnace = false, coalAvailable = true } = {},
+) {
+  const c = inv || {};
+  const planksHave = sumCounts(c, (n) => n.endsWith("_planks"));
+  const logsHave = sumCounts(c, isLogName);
+  const sticksHave = c.stick || 0;
+  const cobbleHave = sumCounts(c, (n) => STONE_TOOL_MATS.includes(n));
+
+  const mats = {};
+  let sticks = 0;
+  let planksDirect = 0;
+  for (const it of items) {
+    mats[it.mat] = (mats[it.mat] || 0) + it.count;
+    sticks += it.sticks || 0;
+    planksDirect += it.planks || 0;
+  }
+  if (mats.planks) planksDirect += mats.planks;
+
+  const smeltOut = mats.iron_ingot
+    ? "iron_ingot"
+    : mats.gold_ingot
+      ? "gold_ingot"
+      : null;
+  const ingotsNeed = smeltOut ? mats[smeltOut] : 0;
+  const ingotsHave = smeltOut ? c[smeltOut] || 0 : 0;
+  const ingotsMissing = Math.max(0, ingotsNeed - ingotsHave);
+  const rawNames = smeltOut ? RAW_FOR_INGOT[smeltOut] : [];
+  const rawHave = sumCounts(c, (n) => rawNames.includes(n));
+  const rawMissing = Math.max(0, ingotsMissing - rawHave);
+  const smelts = Math.min(ingotsMissing, rawHave);
+
+  const needFurnace = ingotsMissing > 0 && !haveFurnace && !(c.furnace > 0);
+  const cobbleNeed = (mats.cobblestone || 0) + (needFurnace ? 8 : 0);
+  const cobbleMissing = Math.max(0, cobbleNeed - cobbleHave);
+
+  // Fuel for every ingot still to make (not only what is smeltable now).
+  const coalHave = (c.coal || 0) + (c.charcoal || 0);
+  const smeltsWithoutCoal = Math.max(
+    0,
+    ingotsMissing - coalHave * SMELT_PER_COAL,
+  );
+  let coalMissing = 0;
+  let fuelPlanks = 0;
+  if (smeltsWithoutCoal > 0) {
+    if (coalAvailable)
+      coalMissing = Math.ceil(smeltsWithoutCoal / SMELT_PER_COAL);
+    else fuelPlanks = Math.ceil(smeltsWithoutCoal / SMELT_PER_PLANK);
+  }
+
+  const sticksMissing = Math.max(0, sticks - sticksHave);
+  const planksForSticks = Math.ceil(sticksMissing / 4) * 2;
+  const planksForTable = haveTable || c.crafting_table > 0 ? 0 : 4;
+  const craftPlanks = planksDirect + planksForSticks + planksForTable;
+  const planksNeed = craftPlanks + fuelPlanks;
+  const planksMissing = Math.max(0, planksNeed - planksHave);
+  const logsMissing = Math.max(0, Math.ceil(planksMissing / 4) - logsHave);
+
+  const missing = {};
+  if (logsMissing) missing.logs = logsMissing;
+  if (cobbleMissing) missing.cobblestone = cobbleMissing;
+  if (coalMissing) missing.coal = coalMissing;
+  if (rawMissing) missing[rawNames[0]] = rawMissing;
+  for (const m of ["diamond", "leather"]) {
+    const miss = Math.max(0, (mats[m] || 0) - (c[m] || 0));
+    if (miss) missing[m] = miss;
+  }
+  return {
+    items,
+    mats,
+    sticks,
+    craftPlanks,
+    fuelPlanks,
+    planksNeed,
+    cobbleNeed,
+    needFurnace,
+    smeltOut,
+    ingotsNeed,
+    ingotsMissing,
+    smelts,
+    missing,
+    ready: Object.keys(missing).length === 0 && ingotsMissing === 0,
+  };
+}
+
+// "need 24 iron_ingot (have 3), 7 sticks, 8 cobblestone (furnace), 3 coal - missing: 21 raw_iron, 3 coal"
+function describeGearBudget(stage, b, inv) {
+  const c = inv || {};
+  const parts = [];
+  for (const [mat, n] of Object.entries(b.mats)) {
+    if (mat === "planks") continue;
+    const have =
+      mat === "cobblestone"
+        ? sumCounts(c, (x) => STONE_TOOL_MATS.includes(x))
+        : c[mat] || 0;
+    parts.push(`${n} ${mat} (have ${have})`);
+  }
+  if (b.sticks) parts.push(`${b.sticks} sticks`);
+  if (b.craftPlanks) parts.push(`${b.craftPlanks} planks`);
+  if (b.needFurnace) parts.push("8 cobblestone for a furnace");
+  if (b.ingotsMissing) {
+    parts.push(
+      b.fuelPlanks
+        ? `${b.fuelPlanks} planks as fuel`
+        : `${Math.ceil(b.ingotsMissing / SMELT_PER_COAL)} coal`,
+    );
+  }
+  const miss = Object.entries(b.missing).map(([k, v]) => `${v} ${k}`);
+  return `${stage} plan: craft ${b.items.map((i) => i.name).join(", ")} - needs ${parts.join(", ")}${
+    miss.length
+      ? ` - still missing: ${miss.join(", ")}`
+      : b.smelts
+        ? ` - smelting ${b.smelts} first`
+        : " - have everything"
+  }`;
 }
 
 async function script(bot, log, clearLog, getOption, scriptRepeater) {
@@ -1138,7 +1712,15 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   }
 
   const { goals, mcData, Movements } = loadLibraries();
+  const signal = scriptRepeater.signal;
   let busy = false;
+  let netheriteBlocked = false;
+  let portalPlan = null;
+  const portalEntryState = {};
+  const portalLandmarks = new Map();
+  let observedDimension = "";
+  let lastDimensionChange = 0;
+  const netherSearch = createNetherSearchState();
   bot._mcbpSprintJump = true;
   configureSmartMovements(bot, mcData, Movements, {
     canDig: false,
@@ -1149,12 +1731,790 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   function stepLog(msg) {
     clearLog("GearUp:");
     log(`GearUp: ${msg}`);
+    aiBrain?.setSubObjective?.(
+      msg,
+      { source: "GearUp", objective: aiBrain?.getObjective?.() || "GearUp" },
+      bot,
+    );
+  }
+
+  function recoveryLog(msg) {
+    if (signal?.aborted && scriptRepeater.report) {
+      scriptRepeater.report(`GearUp: ${msg}`);
+    } else {
+      stepLog(msg);
+    }
   }
 
   stepLog("Starting full progression (Wood ➙ Stone ➙ Iron ➙ Diamond)...");
 
+  let lastPlanLine = "";
+
+  // One step of a stage: gather the next missing material, smelt, or craft
+  // the whole batch. Returns "done" once the stage has nothing left to craft.
+  async function runGearStage(stage, tier, opts) {
+    const items = gearStageItems(
+      stage,
+      tier,
+      opts,
+      (suffix, t) => hasItemOrHigherTier(bot, suffix, t),
+      (name) => hasPickaxeAtLeast(bot, name),
+      (name) => countByName(bot, name),
+    );
+    if (!items.length) return "done";
+
+    const inv = inventoryCounts(bot);
+    const haveTable =
+      Boolean(findBlockByNames(bot, ["crafting_table"], 32)) ||
+      Boolean(aiBrain?.landmarks?.has?.("crafting_table"));
+    const haveFurnace =
+      Boolean(findBlockByNames(bot, ["furnace", "blast_furnace"], 36)) ||
+      Boolean(aiBrain?.landmarks?.has?.("furnace"));
+    const coalOre = findBlockByNames(bot, COAL_ORE_NAMES, 48);
+    const budget = computeGearBudget(items, inv, {
+      haveTable,
+      haveFurnace,
+      coalAvailable:
+        Boolean(coalOre) || (inv.coal || 0) + (inv.charcoal || 0) > 0,
+    });
+    const planLine = describeGearBudget(stage, budget, inv);
+    if (planLine !== lastPlanLine) {
+      lastPlanLine = planLine;
+      stepLog(planLine);
+      aiBrain?.setSubObjective?.(
+        `${stage} stage: ${
+          budget.ready
+            ? "craft everything"
+            : `gather ${
+                Object.entries(budget.missing)
+                  .map(([k, v]) => `${v} ${k}`)
+                  .join(", ") || "smelt"
+              }`
+        }`,
+        {
+          reason: "collect every material for the whole set before crafting",
+          source: "GearUp",
+          objective: aiBrain?.getObjective?.() || "GearUp",
+        },
+        bot,
+      );
+    }
+
+    const m = budget.missing;
+    // 1. Wood (planks for sticks, table, shield, wooden tools, plank fuel).
+    if (m.logs) {
+      const logBlock = findBlockByNames(bot, LOG_NAMES, 64);
+      if (!logBlock) {
+        if (
+          String(bot.game?.dimension || "").replace(/^minecraft:/, "") ===
+          "the_nether"
+        ) {
+          await ensureOverworld();
+          return "busy";
+        }
+        stepLog(`Searching for trees (need ${m.logs} more logs)...`);
+        return "busy";
+      }
+      await moveNearAndDig(bot, goals, logBlock, stepLog, signal);
+      return "busy";
+    }
+    // 2. Cobblestone (stone tools, furnace).
+    if (m.cobblestone) {
+      const stoneBlock = findBlockByNames(bot, STONE_NAMES, 48);
+      if (!stoneBlock) {
+        stepLog(
+          `Searching for stone (need ${m.cobblestone} more cobblestone)...`,
+        );
+        return "busy";
+      }
+      await moveNearAndDig(bot, goals, stoneBlock, stepLog, signal);
+      return "busy";
+    }
+    // 3. Fuel for every ingot.
+    if (m.coal) {
+      if (coalOre) {
+        await moveNearAndDig(bot, goals, coalOre, stepLog, signal);
+        return "busy";
+      }
+      // computeGearBudget switches to plank fuel when no coal is around.
+    }
+    // 4. Ore / diamonds / leather.
+    const rawKey = Object.keys(m).find((k) => k.startsWith("raw_"));
+    if (rawKey) {
+      const names = rawKey === "raw_iron" ? IRON_ORE_NAMES : GOLD_ORE_NAMES;
+      const ore = findBlockByNames(bot, names, 64);
+      if (!ore) {
+        if (
+          rawKey === "raw_iron" &&
+          String(bot.game?.dimension || "").replace(/^minecraft:/, "") ===
+            "the_nether"
+        ) {
+          await ensureOverworld();
+          return "busy";
+        }
+        stepLog(
+          `Searching for ${names[0]} (need ${m[rawKey]} more ${rawKey})...`,
+        );
+        return "busy";
+      }
+      await moveNearAndDig(bot, goals, ore, stepLog, signal);
+      return "busy";
+    }
+    if (m.diamond) {
+      const ore = findBlockByNames(bot, DIAMOND_ORE_NAMES, 64);
+      if (!ore) {
+        if (
+          String(bot.game?.dimension || "").replace(/^minecraft:/, "") ===
+          "the_nether"
+        ) {
+          await ensureOverworld();
+          return "busy";
+        }
+        stepLog(
+          `Scanning for diamond_ore (need ${m.diamond} more diamonds)...`,
+        );
+        return "busy";
+      }
+      await moveNearAndDig(bot, goals, ore, stepLog, signal);
+      return "busy";
+    }
+    // 5. Smelt every ingot in one furnace visit.
+    if (budget.ingotsMissing > 0) {
+      const ok = await smeltInFurnace(bot, goals, {
+        inputNames: RAW_FOR_INGOT[budget.smeltOut],
+        outputName: budget.smeltOut,
+        neededCount: budget.ingotsMissing,
+        reservePlanks: budget.craftPlanks,
+        stepLog,
+        signal,
+      });
+      if (!ok)
+        stepLog(
+          `Could not smelt ${budget.smeltOut} yet (furnace/fuel) - retrying...`,
+        );
+      return "busy";
+    }
+    // 6. Everything is here: craft the whole batch at one table.
+    await ensureSticksAndPlanks(
+      bot,
+      budget.sticks,
+      budget.craftPlanks,
+      stepLog,
+      signal,
+    );
+    if (signal?.aborted) return "busy";
+    const table = await ensureCraftingTablePlaced(bot, goals, stepLog, signal);
+    if (!table || signal?.aborted) return "busy";
+    let crafted = 0;
+    for (const it of items) {
+      if (signal?.aborted) return "busy";
+      stepLog(
+        `Crafting ${it.name} (${it.count} ${it.mat}${it.sticks ? ` + ${it.sticks} sticks` : ""})...`,
+      );
+      if (await craftItemByName(bot, it.name, 1, table, signal)) {
+        crafted += 1;
+      } else {
+        stepLog(`Could not craft ${it.name} - re-checking materials`);
+        break;
+      }
+    }
+    if (signal?.aborted) return "busy";
+    await equipBestArmor(bot, { includeOffhand: true, signal });
+    if (!signal?.aborted) await equipBestWeapon(bot, { signal });
+    if (crafted) stepLog(`Crafted ${crafted}/${items.length} ${stage} item(s)`);
+    return "busy";
+  }
+
+  function observeDimension() {
+    const dimension = String(bot.game?.dimension || "").replace(
+      /^minecraft:/,
+      "",
+    );
+    if (dimension && dimension !== observedDimension) {
+      if (
+        observedDimension ||
+        bot.blockAt(bot.entity.position.floored())?.name === "nether_portal"
+      ) {
+        lastDimensionChange = Date.now();
+      }
+      observedDimension = dimension;
+      portalEntryState.insideSince = 0;
+      portalEntryState.approachKey = null;
+      portalEntryState.returnGoal = null;
+    }
+    if (
+      dimension &&
+      !portalLandmarks.has(dimension) &&
+      bot.registry?.blocksByName?.nether_portal
+    ) {
+      const portal = findPortalApproach(bot);
+      if (portal) portalLandmarks.set(dimension, portal.portal.clone());
+    }
+    return dimension;
+  }
+
+  async function traversePortal(approach) {
+    const coolingDown = Date.now() - lastDimensionChange < 16000;
+    const inside =
+      bot.blockAt(bot.entity.position.floored())?.name === "nether_portal";
+    if (coolingDown) {
+      if (inside) await leavePortal(bot, approach, signal);
+      else stepLog("Waiting for the portal cooldown before travelling");
+      return;
+    }
+    await enterPortal(bot, goals, approach, portalEntryState, signal, stepLog);
+  }
+
+  async function ensureNether() {
+    const dimension = observeDimension();
+    if (dimension === "the_nether") return true;
+    if (dimension !== "overworld") {
+      stepLog("Cannot safely enter the Nether from the current dimension");
+      return false;
+    }
+
+    const approach = findPortalApproach(bot);
+    if (approach) {
+      portalLandmarks.set(dimension, approach.portal.clone());
+      await traversePortal(approach);
+      return false;
+    }
+    const portalId = bot.registry.blocksByName.nether_portal?.id;
+    if (
+      portalId != null &&
+      bot.findBlocks({ matching: [portalId], maxDistance: 64, count: 1 }).length
+    ) {
+      stepLog("Found a Nether portal but no safe entrance is reachable");
+      return false;
+    }
+    if (!portalPlan) portalPlan = findUnlitPortal(bot);
+    if (!portalPlan) {
+      if (countByName(bot, "obsidian") < 10) {
+        const obsidian = findBlockByNames(bot, ["obsidian"], 64);
+        if (obsidian && hasPickaxeAtLeast(bot, "diamond_pickaxe")) {
+          await moveNearAndDig(bot, goals, obsidian, stepLog, signal);
+        } else {
+          stepLog(
+            "Need 10 obsidian and a diamond pickaxe to build a Nether portal",
+          );
+        }
+        return false;
+      }
+      const filler = bot.inventory
+        .items()
+        .reduce(
+          (total, item) =>
+            total +
+            ([
+              "cobblestone",
+              "cobbled_deepslate",
+              "blackstone",
+              "dirt",
+              "netherrack",
+            ].includes(item.name)
+              ? item.count
+              : 0),
+          0,
+        );
+      if (filler < 3) {
+        const stone = findBlockByNames(bot, STONE_NAMES, 48);
+        if (stone) await moveNearAndDig(bot, goals, stone, stepLog, signal);
+        else stepLog("Need 3 support blocks to build a Nether portal");
+        return false;
+      }
+    }
+
+    if (countByName(bot, "flint_and_steel") === 0) {
+      if (countByName(bot, "flint") === 0) {
+        const gravel = findBlockByNames(bot, ["gravel"], 64);
+        if (gravel) await moveNearAndDig(bot, goals, gravel, stepLog, signal);
+        else stepLog("Need flint from gravel to light the Nether portal");
+        return false;
+      }
+      if (countByName(bot, "iron_ingot") === 0) {
+        const rawIron = inventoryCounts(bot);
+        if ((rawIron.raw_iron || 0) + (rawIron.iron_ore || 0) > 0) {
+          if (!(await ensureSmeltingFuel()) || signal?.aborted) return false;
+          await smeltInFurnace(bot, goals, {
+            neededCount: 1,
+            stepLog,
+            signal,
+            requireEmptyFurnace: true,
+            recoveryLog,
+          });
+        } else {
+          const ironOre = findBlockByNames(bot, IRON_ORE_NAMES, 64);
+          if (ironOre)
+            await moveNearAndDig(bot, goals, ironOre, stepLog, signal);
+          else stepLog("Need an iron ingot to craft flint and steel");
+        }
+        return false;
+      }
+      if (!(await craftItemByName(bot, "flint_and_steel", 1, null, signal))) {
+        stepLog("Could not craft flint and steel");
+      }
+      return false;
+    }
+
+    if (!portalPlan) {
+      if (inProtectedZone(bot)) {
+        stepLog("Cannot build a Nether portal in a protected area");
+        return false;
+      }
+      portalPlan = chooseBuildSite(bot);
+      if (!portalPlan) {
+        stepLog("No clear, safe site for a Nether portal in loaded terrain");
+        return false;
+      }
+      stepLog("Building a Nether portal on clear ground");
+    }
+    await advancePortalFrame(bot, goals, portalPlan, signal, stepLog);
+    return false;
+  }
+
+  async function ensureOverworld() {
+    const dimension = observeDimension();
+    if (dimension === "overworld") return true;
+    if (dimension !== "the_nether") {
+      stepLog("Cannot safely return to the Overworld from this dimension");
+      return false;
+    }
+    if (!ensureSafeNetherMovement()) return false;
+    const approach = findPortalApproach(bot);
+    if (approach) {
+      portalLandmarks.set(dimension, approach.portal.clone());
+      await traversePortal(approach);
+      return false;
+    }
+    const remembered = portalLandmarks.get(dimension);
+    if (!remembered) {
+      stepLog("Cannot find a safe return portal in the Nether");
+      return false;
+    }
+    const key = remembered.toString();
+    if (portalEntryState.returnGoal !== key) {
+      portalEntryState.returnGoal = key;
+      portalEntryState.returnSince = Date.now();
+      bot.pathfinder.setGoal(
+        new goals.GoalNear(remembered.x, remembered.y, remembered.z, 3),
+        false,
+      );
+      stepLog("Returning to the remembered Nether portal");
+    } else if (Date.now() - portalEntryState.returnSince > 45000) {
+      clearPathfinderGoal(bot);
+      stepLog("No safe route back to the remembered Nether portal");
+    }
+    return false;
+  }
+
+  async function ensureSmeltingFuel() {
+    const items = bot.inventory.items();
+    if (
+      items.some(
+        (item) =>
+          ["coal", "charcoal", "blaze_rod", "lava_bucket"].includes(
+            item.name,
+          ) ||
+          (item.name.endsWith("_planks") &&
+            !["crimson_planks", "warped_planks"].includes(item.name)) ||
+          (item.name.endsWith("_log") && !item.name.startsWith("stripped_")),
+      )
+    ) {
+      return true;
+    }
+    const coal = findBlockByNames(bot, COAL_ORE_NAMES, 64);
+    if (coal) {
+      await moveNearAndDig(bot, goals, coal, stepLog, signal);
+      return false;
+    }
+    const wood = findBlockByNames(
+      bot,
+      LOG_NAMES.filter((name) => name.endsWith("_log")),
+      64,
+    );
+    if (wood) {
+      await moveNearAndDig(bot, goals, wood, stepLog, signal);
+    } else if (observeDimension() === "the_nether") {
+      await ensureOverworld();
+    } else {
+      stepLog("Searching for coal or wood to fuel the furnace");
+    }
+    return false;
+  }
+
+  function ensureSafeNetherMovement() {
+    const movement = bot.pathfinder.movements;
+    if (
+      movement &&
+      movement.canDig === false &&
+      movement.allowParkour === false &&
+      movement.allowParkourAscend === false &&
+      movement.maxDropDown <= 1
+    ) {
+      return true;
+    }
+    const configured = configureSmartMovements(bot, mcData, Movements, {
+      canDig: false,
+      allowSprinting: false,
+      allowParkour: false,
+      allowParkourAscend: false,
+      maxDropDown: 1,
+    });
+    if (!configured) stepLog("Cannot configure safe Nether navigation");
+    return Boolean(configured);
+  }
+
+  async function runNetheriteStage(pieces) {
+    const remaining = pieces.filter(
+      (piece) => !hasItemOrHigherTier(bot, piece, "netherite"),
+    );
+    if (!remaining.length) return "done";
+    const registry = bot.registry;
+    if (
+      !registry?.itemsByName?.netherite_ingot ||
+      typeof registry.version?.[">="] !== "function" ||
+      !registry.version[">="]("1.16")
+    ) {
+      stepLog("Netherite smithing is not supported by this Minecraft version");
+      return "blocked";
+    }
+
+    if (countByName(bot, "netherite_ingot") === 0) {
+      const scrap = countByName(bot, "netherite_scrap");
+      const gold = countByName(bot, "gold_ingot");
+      if (scrap >= 4 && gold >= 4) {
+        const table = await ensureCraftingTablePlaced(
+          bot,
+          goals,
+          stepLog,
+          signal,
+        );
+        if (signal?.aborted || !table) return "busy";
+        stepLog("Crafting a Netherite ingot from scrap and gold");
+        if (
+          !(await craftItemByName(bot, "netherite_ingot", 1, table, signal))
+        ) {
+          stepLog("Could not craft a Netherite ingot from the available items");
+        }
+        return "busy";
+      }
+      if (scrap < 4) {
+        const debris = countByName(bot, "ancient_debris");
+        if (debris > 0) {
+          if (!(await ensureSmeltingFuel()) || signal?.aborted) return "busy";
+          await smeltInFurnace(bot, goals, {
+            inputNames: ["ancient_debris"],
+            outputName: "netherite_scrap",
+            neededCount: Math.min(debris, 4 - scrap),
+            stepLog,
+            signal,
+            requireEmptyFurnace: true,
+            recoveryLog,
+          });
+          return "busy";
+        }
+        if (!hasPickaxeAtLeast(bot, "diamond_pickaxe")) {
+          if (countByName(bot, "diamond") < 3) {
+            const diamondOre = findBlockByNames(bot, DIAMOND_ORE_NAMES, 64);
+            if (diamondOre) {
+              await moveNearAndDig(bot, goals, diamondOre, stepLog, signal);
+            } else if (
+              String(bot.game?.dimension || "").replace(/^minecraft:/, "") ===
+              "the_nether"
+            ) {
+              await ensureOverworld();
+            } else {
+              stepLog("Need 3 diamonds for a pickaxe to mine ancient debris");
+            }
+            return "busy";
+          }
+          await ensureSticksAndPlanks(bot, 2, 0, stepLog, signal);
+          if (signal?.aborted) return "busy";
+          const table = await ensureCraftingTablePlaced(
+            bot,
+            goals,
+            stepLog,
+            signal,
+          );
+          if (signal?.aborted || !table) return "busy";
+          if (
+            !(await craftItemByName(bot, "diamond_pickaxe", 1, table, signal))
+          ) {
+            stepLog("Could not craft a diamond pickaxe for ancient debris");
+          }
+          return "busy";
+        }
+        if (!(await ensureNether()) || signal?.aborted) return "busy";
+        if (!noNearbyThreats(bot)) {
+          clearPathfinderGoal(bot);
+          stepLog("Waiting for safer conditions before mining ancient debris");
+          return "busy";
+        }
+        const target = findBlockByNames(bot, ["ancient_debris"], 64);
+        if (target) {
+          if (!ensureSafeNetherMovement()) return "busy";
+          netherSearch.exploreGoal = null;
+          await moveNearAndDig(bot, goals, target, stepLog, signal);
+        } else {
+          if (ensureSafeNetherMovement()) {
+            exploreNether(bot, goals, netherSearch, stepLog);
+          }
+        }
+        return "busy";
+      }
+
+      if (countByName(bot, "gold_nugget") >= 9) {
+        const table = await ensureCraftingTablePlaced(
+          bot,
+          goals,
+          stepLog,
+          signal,
+        );
+        if (signal?.aborted || !table) return "busy";
+        if (!(await craftItemByName(bot, "gold_ingot", 1, table, signal))) {
+          stepLog("Could not craft a gold ingot from nuggets");
+        }
+        return "busy";
+      }
+      const goldInputs = [
+        "raw_gold",
+        "gold_ore",
+        "deepslate_gold_ore",
+        "nether_gold_ore",
+      ];
+      const rawGold = inventoryCounts(bot);
+      if (goldInputs.some((name) => rawGold[name] > 0)) {
+        if (!(await ensureSmeltingFuel()) || signal?.aborted) return "busy";
+        await smeltInFurnace(bot, goals, {
+          inputNames: goldInputs,
+          outputName: "gold_ingot",
+          neededCount: Math.min(
+            4 - gold,
+            goldInputs.reduce((total, name) => total + (rawGold[name] || 0), 0),
+          ),
+          stepLog,
+          signal,
+          requireEmptyFurnace: true,
+          recoveryLog,
+        });
+        return "busy";
+      }
+      const goldOre = findBlockByNames(bot, GOLD_ORE_NAMES, 64);
+      const inNether = observeDimension() === "the_nether";
+      if (inNether && !noNearbyThreats(bot)) {
+        clearPathfinderGoal(bot);
+        netherSearch.exploreGoal = null;
+        stepLog("Waiting for safer conditions before searching for gold");
+        return "busy";
+      }
+      if (goldOre) {
+        netherSearch.exploreGoal = null;
+        await moveNearAndDig(bot, goals, goldOre, stepLog, signal);
+      } else if (inNether) {
+        if (ensureSafeNetherMovement()) {
+          exploreNether(bot, goals, netherSearch, stepLog);
+        }
+      } else {
+        stepLog(
+          "No gold ore in loaded chunks; provide gold or explore manually",
+        );
+      }
+      return "busy";
+    }
+
+    const needsTemplate = registry.version[">="]("1.20");
+    if (
+      needsTemplate &&
+      countByName(bot, "netherite_upgrade_smithing_template") === 0
+    ) {
+      if (!(await ensureNether()) || signal?.aborted) return "busy";
+      if (!ensureSafeNetherMovement()) return "busy";
+      if (
+        !(await searchBastionChest(bot, goals, netherSearch, signal, stepLog))
+      ) {
+        if (!signal?.aborted) exploreNether(bot, goals, netherSearch, stepLog);
+      }
+      return "busy";
+    }
+    if (
+      needsTemplate &&
+      remaining.length > 1 &&
+      countByName(bot, "netherite_upgrade_smithing_template") === 1
+    ) {
+      if (countByName(bot, "diamond") < 7) {
+        const diamondOre = findBlockByNames(bot, DIAMOND_ORE_NAMES, 64);
+        if (diamondOre) {
+          await moveNearAndDig(bot, goals, diamondOre, stepLog, signal);
+        } else if (
+          String(bot.game?.dimension || "").replace(/^minecraft:/, "") ===
+          "the_nether"
+        ) {
+          await ensureOverworld();
+        } else {
+          stepLog("Need 7 diamonds to duplicate the last Netherite template");
+        }
+        return "busy";
+      }
+      if (countByName(bot, "netherrack") === 0) {
+        const netherrack = findBlockByNames(bot, ["netherrack"], 64);
+        if (netherrack) {
+          await moveNearAndDig(bot, goals, netherrack, stepLog, signal);
+        } else if (observeDimension() === "overworld") {
+          await ensureNether();
+        } else {
+          stepLog("Need netherrack to duplicate the last Netherite template");
+        }
+        return "busy";
+      }
+      const craftingTable = await ensureCraftingTablePlaced(
+        bot,
+        goals,
+        stepLog,
+        signal,
+      );
+      if (signal?.aborted || !craftingTable) return "busy";
+      stepLog("Duplicating the Netherite Upgrade Smithing Template");
+      if (
+        !(await craftItemByName(
+          bot,
+          "netherite_upgrade_smithing_template",
+          1,
+          craftingTable,
+          signal,
+        ))
+      ) {
+        stepLog("Could not duplicate the Netherite template");
+      }
+      return "busy";
+    }
+
+    let table = findBlockByNames(bot, ["smithing_table"], 36);
+    if (!table) {
+      if (countByName(bot, "smithing_table") === 0) {
+        if (countByName(bot, "iron_ingot") < 2) {
+          const ironInputs = ["raw_iron", "iron_ore", "deepslate_iron_ore"];
+          if (ironInputs.some((name) => countByName(bot, name) > 0)) {
+            if (!(await ensureSmeltingFuel()) || signal?.aborted) return "busy";
+            await smeltInFurnace(bot, goals, {
+              inputNames: ironInputs,
+              outputName: "iron_ingot",
+              neededCount: 2 - countByName(bot, "iron_ingot"),
+              stepLog,
+              signal,
+              requireEmptyFurnace: true,
+              recoveryLog,
+            });
+          } else {
+            const ironOre = findBlockByNames(bot, IRON_ORE_NAMES, 64);
+            if (ironOre) {
+              await moveNearAndDig(bot, goals, ironOre, stepLog, signal);
+            } else if (observeDimension() === "the_nether") {
+              await ensureOverworld();
+            } else {
+              stepLog("Need iron ore to craft a smithing table");
+            }
+          }
+          return "busy";
+        }
+        const nearbyTable = findBlockByNames(bot, ["crafting_table"], 36);
+        const planksNeeded =
+          4 + (nearbyTable || countByName(bot, "crafting_table") ? 0 : 4);
+        if (countPlanks(bot) + countLogs(bot) * 4 < planksNeeded) {
+          const logBlock = findBlockByNames(bot, LOG_NAMES, 64);
+          if (logBlock) {
+            await moveNearAndDig(bot, goals, logBlock, stepLog, signal);
+          } else if (observeDimension() === "the_nether") {
+            await ensureOverworld();
+          } else {
+            stepLog("Need wood to craft a smithing table");
+          }
+          return "busy";
+        }
+        await ensureSticksAndPlanks(bot, 0, 4, stepLog, signal);
+        if (signal?.aborted) return "busy";
+        const craftingTable = await ensureCraftingTablePlaced(
+          bot,
+          goals,
+          stepLog,
+          signal,
+        );
+        if (signal?.aborted || !craftingTable) return "busy";
+        if (
+          !(await craftItemByName(
+            bot,
+            "smithing_table",
+            1,
+            craftingTable,
+            signal,
+          ))
+        ) {
+          stepLog("Could not craft a smithing table");
+          return "busy";
+        }
+      }
+      if (signal?.aborted) return "busy";
+      const item = bot.inventory
+        .items()
+        .find((i) => i.name === "smithing_table");
+      if (
+        !item ||
+        !(await placeBlockNearby(bot, item, "smithing_table", stepLog, signal))
+      ) {
+        stepLog("Could not place a smithing table safely");
+        return "busy";
+      }
+      if (signal?.aborted) return "busy";
+      table = findBlockByNames(bot, ["smithing_table"], 6);
+      if (!table) {
+        stepLog("The server did not confirm the smithing table placement");
+        return "busy";
+      }
+    }
+    if (table.position.distanceTo(bot.entity.position) > 4) {
+      stepLog("Walking to the smithing table");
+      bot.pathfinder.setGoal(
+        new goals.GoalNear(
+          table.position.x,
+          table.position.y,
+          table.position.z,
+          2,
+        ),
+        false,
+      );
+      return "busy";
+    }
+    clearPathfinderGoal(bot);
+    const piece = remaining[0];
+    if (!bot.inventory.items().some((i) => i.name === `diamond_${piece}`)) {
+      const armorSlots = {
+        helmet: "head",
+        chestplate: "torso",
+        leggings: "legs",
+        boots: "feet",
+      };
+      if (!armorSlots[piece]) {
+        stepLog(`Missing diamond_${piece} to upgrade`);
+        return "busy";
+      }
+      await bot.unequip(armorSlots[piece]);
+      if (signal?.aborted) return "busy";
+    }
+    stepLog(`Upgrading diamond_${piece} at the smithing table`);
+    await upgradeAtSmithingTable(bot, table, piece, signal);
+    if (signal?.aborted) return "busy";
+    if (!hasItemOrHigherTier(bot, piece, "netherite")) {
+      stepLog(`Server did not confirm netherite_${piece} in inventory`);
+      return "busy";
+    }
+    await equipBestArmor(bot, { includeOffhand: true, signal });
+    if (signal?.aborted) return "busy";
+    await equipBestWeapon(bot, { signal });
+    return "busy";
+  }
+
   async function gearTick() {
-    if (!bot || !bot.entity || !bot.inventory || busy) return;
+    if (signal?.aborted || !bot || !bot.entity || !bot.inventory || busy)
+      return;
     busy = true;
 
     try {
@@ -1164,11 +2524,25 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
         getOption("shield", info.name),
         getOption("tier", info.name),
       ]);
+      if (signal?.aborted) return;
 
       const wantTools = toolsOpt !== "off";
       const wantArmor = armorOpt !== "off";
       const wantShield = shieldOpt !== "off";
       const targetTier = normalizeGearTier(rawTier);
+      if (targetTier === "netherite" && bot.game?.dimension) {
+        const dimension = observeDimension();
+        if (
+          Date.now() - lastDimensionChange < 16000 &&
+          bot.blockAt(bot.entity.position.floored())?.name === "nether_portal"
+        ) {
+          const approach = findPortalApproach(bot);
+          if (approach) await leavePortal(bot, approach, signal);
+          else stepLog("Cannot find a safe way out of the portal");
+          return;
+        }
+        if (dimension === "the_nether" && !ensureSafeNetherMovement()) return;
+      }
 
       const tierRank =
         {
@@ -1214,421 +2588,121 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
         );
       }
 
-      // Always make sure we have basic wood & sticks before crafting anything
-      const totalWoodPotential = countLogs(bot) * 4 + countPlanks(bot);
-      const hasAnyPick = hasPickaxeAtLeast(bot, "wooden_pickaxe");
-
-      if ((!hasAnyPick && totalWoodPotential < 12) || totalWoodPotential < 6) {
-        const logBlock = findBlockByNames(bot, LOG_NAMES, 64);
-        if (!logBlock) {
-          stepLog("Searching for trees (no logs within 64 blocks)...");
-          return;
-        }
-        await moveNearAndDig(bot, goals, logBlock, stepLog);
-        return;
+      // Stages in order. Each one first works out EVERYTHING it will craft
+      // (all tools/armor for the chosen tier), gathers every material for
+      // it - logs, cobblestone, coal, raw ore - smelts it all in one go and
+      // only then crafts the whole batch at one table.
+      const stages = ["wooden"];
+      if (targetTier !== "wooden" && targetTier !== "leather") {
+        stages.push("stone", "iron");
+        if (targetTier === "gold") stages.push("gold");
+        if (tierRank >= 4) stages.push("diamond");
+      }
+      for (const stage of stages) {
+        if (signal?.aborted) return;
+        const outcome = await runGearStage(stage, targetTier, {
+          wantTools,
+          wantArmor,
+          wantShield,
+        });
+        if (outcome !== "done") return;
       }
 
-      // STAGE 1: WOODEN & LEATHER TIER
-      if (!hasAnyPick) {
-        await ensureSticksAndPlanks(bot, 4, 6, stepLog);
-        const table = await ensureCraftingTablePlaced(bot, goals, stepLog);
-        if (!table) return;
-        await ensureSticksAndPlanks(bot, 4, 4, stepLog);
-        stepLog("Crafting wooden_pickaxe...");
-        await craftItemByName(bot, "wooden_pickaxe", 1, table);
-        await equipBestWeapon(bot);
-        return;
-      }
-
-      if (targetTier === "wooden" || targetTier === "leather") {
-        if (wantTools && !hasItemOrHigherTier(bot, "sword", "wooden")) {
-          await ensureSticksAndPlanks(bot, 4, 4, stepLog);
-          const table = await ensureCraftingTablePlaced(bot, goals, stepLog);
-          if (table) {
-            stepLog("Crafting wooden_sword & wooden_axe...");
-            await craftItemByName(bot, "wooden_sword", 1, table);
-            await craftItemByName(bot, "wooden_axe", 1, table);
-            await equipBestWeapon(bot);
-          }
-          return;
-        }
-        if (targetTier === "leather" && wantArmor) {
-          const leatherTargets = [];
-          if (!hasItemOrHigherTier(bot, "chestplate", "leather")) {
-            leatherTargets.push({ name: "leather_chestplate", cost: 8 });
-          }
-          if (!hasItemOrHigherTier(bot, "leggings", "leather")) {
-            leatherTargets.push({ name: "leather_leggings", cost: 7 });
-          }
-          if (!hasItemOrHigherTier(bot, "helmet", "leather")) {
-            leatherTargets.push({ name: "leather_helmet", cost: 5 });
-          }
-          if (!hasItemOrHigherTier(bot, "boots", "leather")) {
-            leatherTargets.push({ name: "leather_boots", cost: 4 });
-          }
-          if (leatherTargets.length > 0) {
-            const nextLeather = leatherTargets[0];
-            const leatherCount = countByName(bot, "leather");
-            if (leatherCount >= nextLeather.cost) {
-              const table = await ensureCraftingTablePlaced(
-                bot,
-                goals,
-                stepLog,
-              );
-              if (!table) return;
-              stepLog(
-                `Crafting ${nextLeather.name} (${nextLeather.cost} leather)...`,
-              );
-              await craftItemByName(bot, nextLeather.name, 1, table);
-              await equipBestArmor(bot, { includeOffhand: true });
-              return;
-            }
-            const hunted = await huntNearestLeatherAnimal(bot, goals, stepLog);
-            if (!hunted) {
-              stepLog(
-                `Searching for cows/horses for leather (have ${leatherCount}/${nextLeather.cost} for ${nextLeather.name})...`,
-              );
-            }
-            return;
-          }
-        }
-        await equipBestArmor(bot, { includeOffhand: true });
-        await equipBestWeapon(bot);
-        stepLog(
-          `Completed ${targetTier === "leather" ? "Leather & Wood" : "Wooden"} tier gear!`,
-        );
-        bot._mcbpGearUpDone = true;
-        return;
-      }
-
-      // STAGE 2: STONE TIER
-      const hasStonePick = hasPickaxeAtLeast(bot, "stone_pickaxe");
-      if (!hasStonePick) {
-        if (countCobble(bot) < 3) {
-          const stoneBlock = findBlockByNames(bot, STONE_NAMES, 48);
-          if (!stoneBlock) {
-            stepLog("Searching for stone to mine for stone_pickaxe...");
-            return;
-          }
-          await moveNearAndDig(bot, goals, stoneBlock, stepLog);
-          return;
-        }
-        await ensureSticksAndPlanks(bot, 4, 2, stepLog);
-        const table = await ensureCraftingTablePlaced(bot, goals, stepLog);
-        if (!table) return;
-        stepLog("Crafting stone_pickaxe...");
-        await craftItemByName(bot, "stone_pickaxe", 1, table);
-        return;
-      }
-
-      if (targetTier === "stone") {
-        if (wantTools && !hasItemOrHigherTier(bot, "sword", "stone")) {
-          if (countCobble(bot) < 5) {
-            const stoneBlock = findBlockByNames(bot, STONE_NAMES, 48);
-            if (stoneBlock)
-              await moveNearAndDig(bot, goals, stoneBlock, stepLog);
-            return;
-          }
-          await ensureSticksAndPlanks(bot, 4, 2, stepLog);
-          const table = await ensureCraftingTablePlaced(bot, goals, stepLog);
-          if (table) {
-            stepLog("Crafting stone_sword & stone_axe...");
-            await craftItemByName(bot, "stone_sword", 1, table);
-            await craftItemByName(bot, "stone_axe", 1, table);
-            await equipBestWeapon(bot);
-          }
-          return;
-        }
-        // Craft any leather armor piece we already have enough leather for
-        if (wantArmor && countByName(bot, "leather") >= 4) {
-          const leatherOpts = [
-            { suffix: "chestplate", name: "leather_chestplate", cost: 8 },
-            { suffix: "leggings", name: "leather_leggings", cost: 7 },
-            { suffix: "helmet", name: "leather_helmet", cost: 5 },
-            { suffix: "boots", name: "leather_boots", cost: 4 },
-          ];
-          const craftableLeather = leatherOpts.find(
-            (o) =>
-              !hasItemOrHigherTier(bot, o.suffix, "leather") &&
-              countByName(bot, "leather") >= o.cost,
-          );
-          if (craftableLeather) {
-            const table = await ensureCraftingTablePlaced(bot, goals, stepLog);
-            if (table) {
-              stepLog(`Crafting ${craftableLeather.name}...`);
-              await craftItemByName(bot, craftableLeather.name, 1, table);
-              await equipBestArmor(bot, { includeOffhand: true });
-              return;
-            }
-          }
-        }
-        await equipBestArmor(bot, { includeOffhand: true });
-        await equipBestWeapon(bot);
-        stepLog("Completed Stone tier gear!");
-        bot._mcbpGearUpDone = true;
-        return;
-      }
-
-      // STAGE 3: IRON TIER (required for "gold", "iron", "diamond", and "netherite")
-      const ironTargets = [];
-      if (!hasPickaxeAtLeast(bot, "iron_pickaxe")) {
-        ironTargets.push({ name: "iron_pickaxe", cost: 3, sticks: 2 });
-      }
-      if (wantShield && countByName(bot, "shield") === 0) {
-        ironTargets.push({ name: "shield", cost: 1, planks: 6 });
-      }
-      if (targetTier === "iron") {
-        if (wantTools) {
-          if (!hasItemOrHigherTier(bot, "sword", "iron")) {
-            ironTargets.push({ name: "iron_sword", cost: 2, sticks: 1 });
-          }
-          if (!hasItemOrHigherTier(bot, "axe", "iron")) {
-            ironTargets.push({ name: "iron_axe", cost: 3, sticks: 2 });
-          }
-          if (!hasItemOrHigherTier(bot, "shovel", "iron")) {
-            ironTargets.push({ name: "iron_shovel", cost: 1, sticks: 2 });
-          }
-        }
-        if (wantArmor) {
-          if (!hasItemOrHigherTier(bot, "chestplate", "iron")) {
-            ironTargets.push({ name: "iron_chestplate", cost: 8 });
-          }
-          if (!hasItemOrHigherTier(bot, "leggings", "iron")) {
-            ironTargets.push({ name: "iron_leggings", cost: 7 });
-          }
-          if (!hasItemOrHigherTier(bot, "helmet", "iron")) {
-            ironTargets.push({ name: "iron_helmet", cost: 5 });
-          }
-          if (!hasItemOrHigherTier(bot, "boots", "iron")) {
-            ironTargets.push({ name: "iron_boots", cost: 4 });
-          }
-        }
-      }
-
-      if (ironTargets.length > 0) {
-        const nextIronItem = ironTargets[0];
-        const ingots = countByName(bot, "iron_ingot");
-
-        if (ingots >= nextIronItem.cost) {
-          await ensureSticksAndPlanks(
-            bot,
-            nextIronItem.sticks || 0,
-            nextIronItem.planks || 2,
-            stepLog,
-          );
-          const table = await ensureCraftingTablePlaced(bot, goals, stepLog);
-          if (!table) return;
-          stepLog(
-            `Crafting ${nextIronItem.name} (${nextIronItem.cost} iron_ingot)...`,
-          );
-          await craftItemByName(bot, nextIronItem.name, 1, table);
-          await equipBestArmor(bot, { includeOffhand: true });
-          await equipBestWeapon(bot);
-          return;
-        }
-
-        const rawIronCount =
-          countByName(bot, "raw_iron") +
-          countByName(bot, "iron_ore") +
-          countByName(bot, "deepslate_iron_ore");
-        const neededIngots = nextIronItem.cost - ingots;
-
-        // Ensure we have an existing/remembered furnace or 8 cobble to craft one before smelting
-        const nearbyFurnace =
-          findBlockByNames(bot, ["furnace", "blast_furnace"], 36) ||
-          (aiBrain?.landmarks?.has("furnace") ? true : null);
+      // Leather armor (Leather & Wood tier, or any leather on hand for Stone).
+      if (
+        wantArmor &&
+        (targetTier === "leather" ||
+          (targetTier === "stone" && countByName(bot, "leather") >= 4))
+      ) {
+        const leatherOpts = Object.entries(ARMOR_COST)
+          .map(([piece, cost]) => ({ piece, cost, name: `leather_${piece}` }))
+          .sort((a, b) => b.cost - a.cost)
+          .filter((o) => !hasItemOrHigherTier(bot, o.piece, "leather"));
+        const leatherCount = countByName(bot, "leather");
+        const totalLeather = leatherOpts.reduce((n, o) => n + o.cost, 0);
+        const craftable = leatherOpts.find((o) => leatherCount >= o.cost);
         if (
-          !nearbyFurnace &&
-          countByName(bot, "furnace") === 0 &&
-          countCobble(bot) < 8
+          leatherOpts.length &&
+          targetTier === "leather" &&
+          leatherCount < totalLeather
         ) {
-          const stoneBlock = findBlockByNames(bot, STONE_NAMES, 48);
-          if (stoneBlock) {
-            stepLog(
-              `Mining cobblestone for furnace (${countCobble(bot)}/8)...`,
-            );
-            await moveNearAndDig(bot, goals, stoneBlock, stepLog);
-            return;
-          }
-        }
-
-        if (rawIronCount > 0) {
-          await smeltIronInFurnace(bot, goals, neededIngots, stepLog);
-          return;
-        }
-
-        // Mine coal if we see any nearby and have no coal
-        if (countByName(bot, "coal") < 2) {
-          const coalOre = findBlockByNames(bot, COAL_ORE_NAMES, 24);
-          if (coalOre) {
-            await moveNearAndDig(bot, goals, coalOre, stepLog);
-            return;
-          }
-        }
-
-        const ironOre = findBlockByNames(bot, IRON_ORE_NAMES, 64);
-        if (!ironOre) {
-          stepLog(
-            `Searching for iron_ore (need ${neededIngots} more iron for ${nextIronItem.name})...`,
+          // Gather all leather for the full set first.
+          const hunted = await huntNearestLeatherAnimal(
+            bot,
+            goals,
+            stepLog,
+            signal,
           );
+          if (!hunted) {
+            stepLog(
+              `Searching for cows/horses for leather (have ${leatherCount}/${totalLeather} for ${leatherOpts.map((o) => o.name).join(", ")})...`,
+            );
+          }
           return;
         }
-        await moveNearAndDig(bot, goals, ironOre, stepLog);
-        return;
+        if (craftable) {
+          const table = await ensureCraftingTablePlaced(
+            bot,
+            goals,
+            stepLog,
+            signal,
+          );
+          if (!table || signal?.aborted) return;
+          stepLog(`Crafting ${craftable.name} (${craftable.cost} leather)...`);
+          await craftItemByName(bot, craftable.name, 1, table, signal);
+          if (!signal?.aborted)
+            await equipBestArmor(bot, { includeOffhand: true, signal });
+          return;
+        }
       }
 
-      // STAGE 3B: GOLD TIER
-      if (targetTier === "gold") {
-        const goldTargets = [];
-        if (wantTools) {
-          if (!hasItemOrHigherTier(bot, "sword", "golden")) {
-            goldTargets.push({ name: "golden_sword", cost: 2, sticks: 1 });
+      await equipBestArmor(bot, { includeOffhand: true, signal });
+      if (signal?.aborted) return;
+      await equipBestWeapon(bot, { signal });
+      if (signal?.aborted) return;
+      if (targetTier === "netherite") {
+        const pieces = [
+          ...(wantTools ? ["sword", "pickaxe", "axe", "shovel"] : []),
+          ...(wantArmor ? ["helmet", "chestplate", "leggings", "boots"] : []),
+        ];
+        const outcome = await runNetheriteStage(pieces);
+        if (outcome !== "done") {
+          if (outcome === "blocked") {
+            netheriteBlocked = true;
+            scriptRepeater.stop?.();
           }
-          if (!hasItemOrHigherTier(bot, "pickaxe", "golden")) {
-            goldTargets.push({ name: "golden_pickaxe", cost: 3, sticks: 2 });
-          }
-          if (!hasItemOrHigherTier(bot, "axe", "golden")) {
-            goldTargets.push({ name: "golden_axe", cost: 3, sticks: 2 });
-          }
+          return;
         }
         if (wantArmor) {
-          if (!hasItemOrHigherTier(bot, "chestplate", "golden")) {
-            goldTargets.push({ name: "golden_chestplate", cost: 8 });
-          }
-          if (!hasItemOrHigherTier(bot, "leggings", "golden")) {
-            goldTargets.push({ name: "golden_leggings", cost: 7 });
-          }
-          if (!hasItemOrHigherTier(bot, "helmet", "golden")) {
-            goldTargets.push({ name: "golden_helmet", cost: 5 });
-          }
-          if (!hasItemOrHigherTier(bot, "boots", "golden")) {
-            goldTargets.push({ name: "golden_boots", cost: 4 });
-          }
-        }
-        if (goldTargets.length > 0) {
-          const nextGold = goldTargets[0];
-          const goldIngots = countByName(bot, "gold_ingot");
-          if (goldIngots >= nextGold.cost) {
-            await ensureSticksAndPlanks(
-              bot,
-              nextGold.sticks || 0,
-              2,
-              stepLog,
-            );
-            const table = await ensureCraftingTablePlaced(bot, goals, stepLog);
-            if (!table) return;
-            stepLog(
-              `Crafting ${nextGold.name} (${nextGold.cost} gold_ingot)...`,
-            );
-            await craftItemByName(bot, nextGold.name, 1, table);
-            await equipBestArmor(bot, { includeOffhand: true });
-            await equipBestWeapon(bot);
+          const armorSlots = [
+            [5, "helmet"],
+            [6, "chestplate"],
+            [7, "leggings"],
+            [8, "boots"],
+          ];
+          const missing = armorSlots.find(
+            ([slot, piece]) =>
+              bot.inventory.slots?.[slot]?.name !== `netherite_${piece}`,
+          );
+          if (missing) {
+            stepLog(`Could not equip netherite_${missing[1]}`);
             return;
           }
-          const rawGoldCount =
-            countByName(bot, "raw_gold") +
-            countByName(bot, "gold_ore") +
-            countByName(bot, "deepslate_gold_ore");
-          const neededGold = nextGold.cost - goldIngots;
-          if (rawGoldCount > 0) {
-            await smeltGoldInFurnace(bot, goals, neededGold, stepLog);
-            return;
-          }
-          const goldOre = findBlockByNames(bot, GOLD_ORE_NAMES, 64);
-          if (!goldOre) {
-            stepLog(
-              `Searching for gold_ore (need ${neededGold} more gold for ${nextGold.name})...`,
-            );
-            return;
-          }
-          await moveNearAndDig(bot, goals, goldOre, stepLog);
-          return;
-        }
-        await equipBestArmor(bot, { includeOffhand: true });
-        await equipBestWeapon(bot);
-        stepLog("Completed Golden tier gear (armor + tools equipped)!");
-        bot._mcbpGearUpDone = true;
-        return;
-      }
-
-      if (tierRank <= 3) {
-        await equipBestArmor(bot, { includeOffhand: true });
-        await equipBestWeapon(bot);
-        stepLog("Completed Iron tier gear (armor + tools equipped)!");
-        bot._mcbpGearUpDone = true;
-        return;
-      }
-
-      // STAGE 4: DIAMOND TIER
-      const diamondTargets = [];
-      if (wantTools) {
-        if (!hasItemOrHigherTier(bot, "sword", "diamond")) {
-          diamondTargets.push({ name: "diamond_sword", cost: 2, sticks: 1 });
-        }
-        if (!hasItemOrHigherTier(bot, "pickaxe", "diamond")) {
-          diamondTargets.push({ name: "diamond_pickaxe", cost: 3, sticks: 2 });
-        }
-        if (!hasItemOrHigherTier(bot, "axe", "diamond")) {
-          diamondTargets.push({ name: "diamond_axe", cost: 3, sticks: 2 });
-        }
-        if (!hasItemOrHigherTier(bot, "shovel", "diamond")) {
-          diamondTargets.push({ name: "diamond_shovel", cost: 1, sticks: 2 });
         }
       }
-      if (wantArmor) {
-        if (!hasItemOrHigherTier(bot, "chestplate", "diamond")) {
-          diamondTargets.push({ name: "diamond_chestplate", cost: 8 });
-        }
-        if (!hasItemOrHigherTier(bot, "leggings", "diamond")) {
-          diamondTargets.push({ name: "diamond_leggings", cost: 7 });
-        }
-        if (!hasItemOrHigherTier(bot, "helmet", "diamond")) {
-          diamondTargets.push({ name: "diamond_helmet", cost: 5 });
-        }
-        if (!hasItemOrHigherTier(bot, "boots", "diamond")) {
-          diamondTargets.push({ name: "diamond_boots", cost: 4 });
-        }
-      }
-
-      if (diamondTargets.length === 0) {
-        await equipBestArmor(bot, { includeOffhand: true });
-        await equipBestWeapon(bot);
-        stepLog(
-          "Completed full Diamond gear (all selected armor & tools equipped)!",
-        );
-        bot._mcbpGearUpDone = true;
-        return;
-      }
-
-      const nextDiamondItem = diamondTargets[0];
-      const diamonds = countByName(bot, "diamond");
-
-      if (diamonds >= nextDiamondItem.cost) {
-        await ensureSticksAndPlanks(
-          bot,
-          nextDiamondItem.sticks || 0,
-          2,
-          stepLog,
-        );
-        const table = await ensureCraftingTablePlaced(bot, goals, stepLog);
-        if (!table) return;
-        stepLog(
-          `Crafting ${nextDiamondItem.name} (${nextDiamondItem.cost} diamonds)...`,
-        );
-        await craftItemByName(bot, nextDiamondItem.name, 1, table);
-        await equipBestArmor(bot, { includeOffhand: true });
-        await equipBestWeapon(bot);
-        return;
-      }
-
-      const diamondOre = findBlockByNames(bot, DIAMOND_ORE_NAMES, 64);
-      if (!diamondOre) {
-        stepLog(
-          `Scanning for diamond_ore (have ${diamonds}/${nextDiamondItem.cost} diamonds for ${nextDiamondItem.name})...`,
-        );
-        return;
-      }
-      await moveNearAndDig(bot, goals, diamondOre, stepLog);
+      const tierLabel = {
+        leather: "Leather & Wood",
+        wooden: "Wooden",
+        stone: "Stone",
+        gold: "Golden",
+        iron: "Iron",
+        diamond: "Diamond",
+        netherite: "Netherite",
+      }[targetTier];
+      stepLog(
+        `Completed ${tierLabel} tier gear (selected items are available)!`,
+      );
+      bot._mcbpGearUpDone = true;
     } catch (err) {
       stepLog(`Step warning: ${err.message || err}`);
     } finally {
@@ -1639,22 +2713,27 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   bot._mcbpGearUpDone = false;
   try {
     await gearTick();
-    if (!bot._mcbpGearUpDone) {
+    if (!bot._mcbpGearUpDone && !netheriteBlocked) {
       await scriptRepeater(async () => {
         if (bot._mcbpGearUpDone) return;
         await gearTick();
       }, info.default.interval);
     }
   } finally {
-    if (bot) {
+    if (bot && (!scriptRepeater.isCurrent || scriptRepeater.isCurrent())) {
       bot._mcbpSprintJump = false;
       bot._mcbpGearGoalKey = "";
       bot._mcbpActivePlanSummary = "";
+      if (aiBrain?.subSource === "GearUp") {
+        aiBrain.setSubObjective("", {}, bot);
+      }
       if (aiBrain?.currentGoal?.startsWith("GearUp")) {
         aiBrain.syncPlan({ goal: "Idle", currentStep: "", steps: [] }, bot);
       }
+      const owner = bot.pathfinder?.getPathOwner?.();
       clearPathfinderGoal(bot);
-      configureSmartMovements(bot, mcData, Movements);
+      if (!owner || owner === info.name)
+        configureSmartMovements(bot, mcData, Movements);
     }
   }
 }
@@ -1673,4 +2752,7 @@ module.exports = {
   collectNearbyDropsAround,
   buildGearUpPlanSnapshot,
   normalizeGearTier,
+  gearStageItems,
+  computeGearBudget,
+  describeGearBudget,
 };

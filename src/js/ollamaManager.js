@@ -5,6 +5,8 @@ const fs = require("fs");
 const path = require("path");
 const { spawn, execFile } = require("child_process");
 const { aiBrain } = require("./aiBrain");
+const { buildSanitizer } = require("./aiSanitizer");
+const deepseek = require("./deepseek");
 
 const DEFAULT_HOST = "http://127.0.0.1:11434";
 
@@ -413,7 +415,10 @@ function stripAssistantSlop(
 
   // Strip leaked bracketed/parenthesized thoughts or stage directions: [thinking...], *nods*, (note...)
   s = s
-    .replace(/\[(?:thought|thinking|plan|reasoning|note|ai|system)[^\]]*\]/gi, " ")
+    .replace(
+      /\[(?:thought|thinking|plan|reasoning|note|ai|system)[^\]]*\]/gi,
+      " ",
+    )
     .replace(/\((?:thought|thinking|plan|reasoning|note)[^)]*\)/gi, " ")
     .replace(/\*[^*]{1,40}\*/g, " ")
     .trim();
@@ -436,8 +441,14 @@ function stripAssistantSlop(
       /\bi\s+am\s+(?:currently\s+)?(?:trying|attempting)\s+to\s+(?:find|mine|locate|craft)\s+/gi,
       "looking for ",
     )
-    .replace(/\bi\s+will\s+now\s+(?:proceed\s+to|try\s+to|attempt\s+to)\s+/gi, "gonna ")
-    .replace(/\bas\s+an?\s+(?:ai|artificial\s+intelligence|bot|assistant|language\s+model)[^.!?]*[.!?]*/gi, "")
+    .replace(
+      /\bi\s+will\s+now\s+(?:proceed\s+to|try\s+to|attempt\s+to)\s+/gi,
+      "gonna ",
+    )
+    .replace(
+      /\bas\s+an?\s+(?:ai|artificial\s+intelligence|bot|assistant|language\s+model)[^.!?]*[.!?]*/gi,
+      "",
+    )
     .trim();
 
   // Convert raw snake_case Minecraft item/block IDs into natural spaced words ("wooden_pickaxe" -> "wooden pickaxe")
@@ -447,7 +458,10 @@ function stripAssistantSlop(
   );
 
   // Never let the bot address the speaking player by the bot's own username or name prefix ("cool, Micheal. on it." -> "cool. on it.")
-  if (botUsername && String(botUsername).toLowerCase() !== String(sender || "").toLowerCase()) {
+  if (
+    botUsername &&
+    String(botUsername).toLowerCase() !== String(sender || "").toLowerCase()
+  ) {
     const cleanBot = String(botUsername).trim();
     const camelStem = cleanBot.match(/^[A-Z][a-z]{2,}/)?.[0] || "";
     const underStem = cleanBot.split(/[_0-9]+/)[0] || "";
@@ -459,15 +473,9 @@ function stripAssistantSlop(
     for (const selfName of selfNames) {
       const escSelf = selfName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       // Vocative after comma: "cool, Micheal. on it" or "hey, Micheal!"
-      s = s.replace(
-        new RegExp(`,\\s*@?${escSelf}(?=[.!?,;:\\s]|$)`, "gi"),
-        "",
-      );
+      s = s.replace(new RegExp(`,\\s*@?${escSelf}(?=[.!?,;:\\s]|$)`, "gi"), "");
       // Vocative at start: "Micheal, on it"
-      s = s.replace(
-        new RegExp(`^\\s*@?${escSelf}\\s*[,:]\\s*`, "i"),
-        "",
-      );
+      s = s.replace(new RegExp(`^\\s*@?${escSelf}\\s*[,:]\\s*`, "i"), "");
       // Vocative after greeting: "hey Micheal" / "yo Micheal"
       s = s.replace(
         new RegExp(
@@ -484,7 +492,10 @@ function stripAssistantSlop(
     const escSender = String(sender).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     s = s
       .replace(
-        new RegExp(`\\b(heading|walking|coming|running|going)\\s+to\\s+${escSender}\\b`, "gi"),
+        new RegExp(
+          `\\b(heading|walking|coming|running|going)\\s+to\\s+${escSender}\\b`,
+          "gi",
+        ),
         "$1 to you",
       )
       .replace(
@@ -508,7 +519,10 @@ function stripAssistantSlop(
   }
 
   // Tame robotic exclamation marks & ellipses ("Looking for diamonds!..." -> "looking for diamonds")
-  s = s.replace(/!+\s*\.*/g, "").replace(/\.{2,}$/g, "").trim();
+  s = s
+    .replace(/!+\s*\.*/g, "")
+    .replace(/\.{2,}$/g, "")
+    .trim();
 
   // Lowercase first letter unless it starts with a known proper noun / 2+ uppercase acronym
   if (s.length > 1 && /^[A-Z][a-z]+\s/.test(s)) {
@@ -590,7 +604,8 @@ function splitIntoMessages(text, maxLen = 100, maxParts = 3) {
       continue;
     }
     // Too long: break at clause boundaries first, words only as a last resort.
-    const clauses = sentence.match(/[^,;:–—]+[,;:–—]?/g) || [sentence];
+    const clauses =
+      sentence.match(/[^,;:\u2013\u2014]+[,;:\u2013\u2014]?/g) || [sentence];
     let line = "";
     for (const rawClause of clauses) {
       const clause = rawClause.trim();
@@ -624,7 +639,7 @@ function splitIntoMessages(text, maxLen = 100, maxParts = 3) {
   const cap = Math.max(1, Math.min(6, Number(maxParts) || 3));
   if (parts.length > cap) {
     parts.length = cap;
-    const tail = parts[cap - 1].replace(/[\s,;:–—-]+$/, "");
+    const tail = parts[cap - 1].replace(/[\s,;:\u2013\u2014-]+$/, "");
     if (!/[.!?…]$/.test(tail)) {
       parts[cap - 1] =
         tail.length + 3 <= limit
@@ -813,6 +828,19 @@ async function extractArchive(archive, dir) {
   await pipeline(Readable.from(inflate()), tar.x({ cwd: dir }));
 }
 
+const AGENT_PROMPT_FULL =
+  '\nYou control a real Minecraft bot through the provided tools. When an obeyed player asks you to do something (move, follow, mine, craft, smelt, plan, queue tasks, hunt food, store/take chest items, fill bucket, place, collect drops, return to death, sleep, unstuck, fight, equip, gear up, turn a module on or off, change module options), call a tool instead of only talking about it. For multi-step goals (like "make iron armor from scratch", "make stone tools", "craft diamond gear"), use create_plan or craft_item(item="iron_armor") to build and execute an ordered step-by-step dependency plan (wood -> wooden pickaxe -> stone -> stone pickaxe -> furnace -> iron ore -> smelt iron -> craft & equip armor). When a task is already running and you want another task to start right after it finishes, use queue_task (or call the next tool and it will automatically queue behind the current task). Whenever you need info about Minecraft recipes, tool tiers, ore Y-levels, smelting fuels, combat, landmarks, last death position, or recent errors, call query_game_mechanics. The easiest tool is run_commands: pass simple lines like "walk to Steve", "mine 5 oak_log", "craft wooden_pickaxe", "make iron armor from scratch", "queue mine 8 coal_ore", "hunt food", "store all", "fill water bucket", "smelt iron", "gear up to iron", "place crafting_table", "collect drops", "return to death", "unstuck", "turn on KillAura range=4". Never call say or run_commands("say ...") just to reply in chat - your normal text response is automatically sent to chat. Use list_scripts to see every module and its options, get_queue to see active/queued plan steps, and read_logs to see errors when something did not work. If a tool returns an error or says you are stuck, try a different approach (e.g. unstuck, query_game_mechanics, craft missing tool, or another command) before giving up, and tell the player briefly if it still fails. Never invent or guess coordinates; if a player is out of view distance and has no known coords in Player Memory, ask them for their coordinates. Movement, mining, crafting, planning and attack tools start or queue the action in the background: say you are starting or queued it up, never that you already finished. On lobby servers, "join kitpvp" opens the compass menu and clicks the game for you; "use compass" shows the items in a menu and "click <item name>" clicks one. Think privately with the think tool: plans, errors and retries go there, never in chat. For any multi-step or failed task, first call think with objective (the overall goal), sub_objective (the concrete next step that moves you toward it) and plan, reasoning about prerequisites (tools, materials, reach, location). The [AI Brain] block shows your Objective, the Sub-objective the bot is doing right now and why, what each running module is doing, reasoning hints and recent failures: use it to continue where you left off, never repeat an approach listed as failed, and call think with done=yes when the objective is finished. Your chat reply is what a normal player would type: short, casual, no talk about commands, tools, syntax, errors or how to give orders, never explain how to write commands, never write JSON or code. Never invent tool results.';
+
+const AGENT_PROMPT_COMPACT = [
+  "",
+  "You control a real Minecraft bot through the provided tools. When an obeyed player asks for something (move, follow, mine, craft, smelt, plan, hunt, store items, place, fight, equip, gear up, module on/off), call a tool instead of only talking.",
+  'Prefer run_commands with simple lines like "walk to Steve", "mine 5 oak_log", "craft wooden_pickaxe", "make iron armor from scratch", "queue mine 8 coal_ore", "hunt food", "store all", "gear up to iron", "collect drops", "return to death", "unstuck", "turn on KillAura range=4". Use create_plan/craft_item for multi-step goals, queue_task to chain tasks, query_game_mechanics for recipes/tiers/ore levels, list_scripts for modules, get_queue and read_logs for state and errors.',
+  "Never call say just to reply: your normal text answer is sent to chat. Actions start in the background, so say you are starting or queued them, never that they are done. If a tool errors or you are stuck, try another approach before giving up and tell the player briefly.",
+  'Never invent coordinates; if a player has no known coords, ask for them. On lobby servers, "join kitpvp" clicks the compass menu, "click <item name>" clicks an item.',
+  "For multi-step or failed tasks call think first (objective, sub_objective, plan). Use the [AI Brain] block to continue, never repeat a failed approach, and call think with done=yes when finished.",
+  "Your chat reply is what a normal player would type: short and casual, no talk about commands, tools, errors or JSON, never code. Never invent tool results.",
+].join("\n");
+
 class OllamaManager {
   constructor() {
     this.host = process.env.OLLAMA_HOST || DEFAULT_HOST;
@@ -836,7 +864,16 @@ class OllamaManager {
     this.noToolsModels = new Set();
     this.warmModels = new Map();
 
+    this.deepseekKey = process.env.DEEPSEEK_API_KEY || "";
+    this.keyPath = "";
+    this.privacyContext = () => ({});
+    this.usage = this.freshUsage();
+
     this.config = {
+      provider: "ollama", // "ollama" | "deepseek"
+      deepseekChatModel: deepseek.DEFAULT_MODELS.chat,
+      deepseekAgentModel: deepseek.DEFAULT_MODELS.agent,
+      deepseekScriptModel: deepseek.DEFAULT_MODELS.script,
       enabled: false,
       agentEnabled: false,
       model: "",
@@ -864,7 +901,9 @@ class OllamaManager {
     this.userDataDir = userDataDir || "";
     if (this.userDataDir) {
       this.configPath = path.join(this.userDataDir, "ollama-ai-config.json");
+      this.keyPath = path.join(this.userDataDir, "deepseek-key.json");
       this.loadConfig();
+      this.loadApiKey();
     }
   }
 
@@ -895,6 +934,31 @@ class OllamaManager {
       const n = Number(v);
       return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
     };
+    if ("provider" in clean && !["ollama", "deepseek"].includes(clean.provider))
+      clean.provider = "ollama";
+    const remote = (clean.provider || this.config.provider) === "deepseek";
+    if (remote) {
+      // The shared model fields edit the DeepSeek models while it is active.
+      const map = {
+        model: ["deepseekChatModel", deepseek.DEFAULT_MODELS.chat],
+        agentModel: ["deepseekAgentModel", deepseek.DEFAULT_MODELS.agent],
+        scriptModel: ["deepseekScriptModel", deepseek.DEFAULT_MODELS.script],
+      };
+      for (const [src, [dst, fallback]] of Object.entries(map)) {
+        if (!(src in clean)) continue;
+        const v = String(clean[src] || "").trim();
+        clean[dst] = deepseek.isDeepseekModel(v) ? v : fallback;
+        delete clean[src];
+      }
+    }
+    for (const k of [
+      "deepseekChatModel",
+      "deepseekAgentModel",
+      "deepseekScriptModel",
+    ]) {
+      if (k in clean && !deepseek.isDeepseekModel(clean[k]))
+        clean[k] = deepseek.DEFAULT_MODELS[k.slice(8, -5).toLowerCase()];
+    }
     if ("cooldownSec" in clean)
       clean.cooldownSec = num(clean.cooldownSec, 0, 120, 4);
     if ("messageDelaySec" in clean)
@@ -921,6 +985,132 @@ class OllamaManager {
       } catch (_) {}
     }
     return this.config;
+  }
+
+  freshUsage() {
+    return { requests: 0, hit: 0, miss: 0, out: 0, since: Date.now() };
+  }
+
+  isRemote() {
+    return this.config.provider === "deepseek";
+  }
+
+  loadApiKey() {
+    if (!this.keyPath || !fs.existsSync(this.keyPath)) return;
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.keyPath, "utf8"));
+      if (raw.enc) {
+        const { safeStorage } = require("electron");
+        this.deepseekKey = safeStorage.decryptString(
+          Buffer.from(raw.enc, "base64"),
+        );
+      } else if (raw.plain) {
+        this.deepseekKey = String(raw.plain);
+      }
+    } catch (_) {}
+  }
+
+  // The key is encrypted with the OS keychain when Electron offers it and is
+  // never part of the config the UI can read.
+  setApiKey(key) {
+    const clean = String(key || "").trim();
+    this.deepseekKey = clean;
+    if (!this.keyPath) return;
+    try {
+      if (!clean) {
+        fs.rmSync(this.keyPath, { force: true });
+        return;
+      }
+      let data = { plain: clean };
+      try {
+        const { safeStorage } = require("electron");
+        if (safeStorage?.isEncryptionAvailable()) {
+          data = { enc: safeStorage.encryptString(clean).toString("base64") };
+        }
+      } catch (_) {}
+      fs.mkdirSync(path.dirname(this.keyPath), { recursive: true });
+      fs.writeFileSync(this.keyPath, JSON.stringify(data), {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+    } catch (_) {}
+  }
+
+  keyHint() {
+    const k = this.deepseekKey;
+    return k ? `${k.slice(0, 3)}…${k.slice(-4)}` : "";
+  }
+
+  checkApiKey(key) {
+    return deepseek.deepseekCheckKey({
+      baseUrl: deepseek.DEFAULT_BASE_URL,
+      apiKey: String(key || this.deepseekKey || "").trim(),
+    });
+  }
+
+  // Config as shown to the UI: no secrets, DeepSeek models in the shared slots.
+  publicConfig() {
+    const cfg = { ...this.config };
+    if (this.isRemote()) {
+      cfg.model = cfg.deepseekChatModel;
+      cfg.agentModel = cfg.deepseekAgentModel;
+      cfg.scriptModel = cfg.deepseekScriptModel;
+    }
+    return cfg;
+  }
+
+  // Everything leaving the machine to a remote provider passes through this.
+  sanitizer({ code = false } = {}) {
+    let ctx = {};
+    try {
+      ctx = this.privacyContext() || {};
+    } catch (_) {}
+    const rules = [];
+    for (const n of ctx.names || []) rules.push({ value: n, alias: "Bot" });
+    for (const h of ctx.hosts || [])
+      rules.push({ value: h, alias: "[server]" });
+    for (const e of ctx.secrets || [])
+      rules.push({ value: e, alias: "[redacted]" });
+    if (this.deepseekKey)
+      rules.push({ value: this.deepseekKey, alias: "[token]" });
+    return buildSanitizer({ rules, code });
+  }
+
+  setPrivacyContext(fn) {
+    if (typeof fn === "function") this.privacyContext = fn;
+  }
+
+  recordUsage(u) {
+    if (!u) return;
+    const hit = Number(u.prompt_cache_hit_tokens) || 0;
+    const miss =
+      u.prompt_cache_miss_tokens != null
+        ? Number(u.prompt_cache_miss_tokens) || 0
+        : Math.max(0, (Number(u.prompt_tokens) || 0) - hit);
+    this.usage.requests += 1;
+    this.usage.hit += hit;
+    this.usage.miss += miss;
+    this.usage.out += Number(u.completion_tokens) || 0;
+  }
+
+  // One entry point for every non-streaming model call.
+  async chat(body, timeout = 60000) {
+    if (!this.isRemote()) {
+      return httpJsonRequest(`${this.host}/api/chat`, {
+        method: "POST",
+        timeout,
+        body,
+      });
+    }
+    const res = await deepseek.deepseekChat({
+      baseUrl: deepseek.DEFAULT_BASE_URL,
+      apiKey: this.deepseekKey,
+      body,
+      sanitize: this.sanitizer(),
+      timeout,
+    });
+    this.recordUsage(res.usage);
+    return res;
   }
 
   async findOllamaBinary() {
@@ -1108,6 +1298,7 @@ class OllamaManager {
   }
 
   async getStatus() {
+    if (this.isRemote()) return this.getRemoteStatus();
     const hw = await this.detectHardwareAndRecommend();
     const binInfo = await this.findOllamaBinary();
     let serverRunning = false;
@@ -1161,9 +1352,59 @@ class OllamaManager {
       host: this.host,
       installedModels,
       hardware: hw,
-      config: this.config,
+      config: this.publicConfig(),
       agentModelResolved: this.resolveAgentModel(),
       pulling: Array.from(this.activePulls.keys()),
+      deepseek: this.deepseekInfo(),
+    };
+  }
+
+  deepseekInfo() {
+    const u = this.usage;
+    const total = u.hit + u.miss;
+    return {
+      hasKey: Boolean(this.deepseekKey),
+      keyHint: this.keyHint(),
+      usage: {
+        requests: u.requests,
+        inputTokens: total,
+        outputTokens: u.out,
+        cacheHitPct: total ? Math.round((u.hit / total) * 100) : 0,
+      },
+    };
+  }
+
+  async getRemoteStatus() {
+    const hw = await this.detectHardwareAndRecommend();
+    const models = deepseek.DEEPSEEK_MODELS;
+    this.installedNames = models.map((m) => m.name);
+    return {
+      installed: true,
+      binPath: "",
+      serverRunning: Boolean(this.deepseekKey),
+      version: "",
+      host: deepseek.DEFAULT_BASE_URL,
+      installedModels: models.map((m) => ({
+        name: m.name,
+        sizeBytes: 0,
+        sizeLabel: m.sizeLabel,
+        modifiedAt: "",
+      })),
+      hardware: {
+        ...hw,
+        recommendedModel: deepseek.DEFAULT_MODELS.chat,
+        recommendedCodeModel: deepseek.DEFAULT_MODELS.script,
+        recommendReason: "Cloud model via DeepSeek API",
+        catalog: models.map((m) => ({
+          ...m,
+          isRecommended: m.name === deepseek.DEFAULT_MODELS.chat,
+          fitsHardware: true,
+        })),
+      },
+      config: this.publicConfig(),
+      agentModelResolved: this.resolveAgentModel(),
+      pulling: [],
+      deepseek: this.deepseekInfo(),
     };
   }
 
@@ -1633,6 +1874,11 @@ class OllamaManager {
   }
 
   resolveModel(overrideModel = "") {
+    if (this.isRemote()) {
+      return deepseek.isDeepseekModel(overrideModel)
+        ? overrideModel
+        : this.config.deepseekChatModel || deepseek.DEFAULT_MODELS.chat;
+    }
     return String(
       overrideModel ||
         this.config.model ||
@@ -1649,6 +1895,11 @@ class OllamaManager {
   // Model used for actions: explicit choice, else the chat model if it can
   // call tools, else the best installed tools model, else the recommendation.
   resolveAgentModel(overrideModel = "") {
+    if (this.isRemote()) {
+      return deepseek.isDeepseekModel(overrideModel)
+        ? overrideModel
+        : this.config.deepseekAgentModel || deepseek.DEFAULT_MODELS.agent;
+    }
     const explicit = String(
       overrideModel || this.config.agentModel || "",
     ).trim();
@@ -1675,6 +1926,7 @@ class OllamaManager {
 
   // Loads a model into memory so the first reply isn't slow.
   warmUp(model) {
+    if (this.isRemote()) return Promise.resolve(true);
     const name = String(model || "").trim();
     if (!name) return Promise.resolve(false);
     const last = this.warmModels.get(name) || 0;
@@ -1913,17 +2165,20 @@ class OllamaManager {
     if (isObeyed && sender) {
       sysPrompt += `\nOBEY RULE: ${sender} is in your 'obey' list (your leader/teammate). You MUST ALWAYS obey ${sender}'s orders and NEVER refuse or say "no" to ${sender}. However, your chat reply must still sound like a chill human player ("on it", "omw", "mining it rn", "got u"), NEVER like a submissive robot or eager AI assistant.`;
     } else if (obeyList.length > 0 && sender) {
-      sysPrompt += `\nOBEY RULE: You only take orders from [${obeyList.join(", ")}]. ${sender} is not on your obey list, so do not run actions for them — just chat casually like an independent player.`;
+      sysPrompt += `\nOBEY RULE: You only take orders from [${obeyList.join(", ")}]. ${sender} is not on your obey list, so do not run actions for them - just chat casually like an independent player.`;
     }
 
     if (agent) {
-      sysPrompt +=
-        '\nYou control a real Minecraft bot through the provided tools. When an obeyed player asks you to do something (move, follow, mine, craft, smelt, plan, queue tasks, hunt food, store/take chest items, fill bucket, place, collect drops, return to death, sleep, unstuck, fight, equip, gear up, turn a module on or off, change module options), call a tool instead of only talking about it. For multi-step goals (like "make iron armor from scratch", "make stone tools", "craft diamond gear"), use create_plan or craft_item(item="iron_armor") to build and execute an ordered step-by-step dependency plan (wood -> wooden pickaxe -> stone -> stone pickaxe -> furnace -> iron ore -> smelt iron -> craft & equip armor). When a task is already running and you want another task to start right after it finishes, use queue_task (or call the next tool and it will automatically queue behind the current task). Whenever you need info about Minecraft recipes, tool tiers, ore Y-levels, smelting fuels, combat, landmarks, last death position, or recent errors, call query_game_mechanics. The easiest tool is run_commands: pass simple lines like "walk to Steve", "mine 5 oak_log", "craft wooden_pickaxe", "make iron armor from scratch", "queue mine 8 coal_ore", "hunt food", "store all", "fill water bucket", "smelt iron", "gear up to iron", "place crafting_table", "collect drops", "return to death", "unstuck", "turn on KillAura range=4". Never call say or run_commands("say ...") just to reply in chat — your normal text response is automatically sent to chat. Use list_scripts to see every module and its options, get_queue to see active/queued plan steps, and read_logs to see errors when something did not work. If a tool returns an error or says you are stuck, try a different approach (e.g. unstuck, query_game_mechanics, craft missing tool, or another command) before giving up, and tell the player briefly if it still fails. Never invent or guess coordinates; if a player is out of view distance and has no known coords in Player Memory, ask them for their coordinates. Movement, mining, crafting, planning and attack tools start or queue the action in the background: say you are starting or queued it up, never that you already finished. On lobby servers, "join kitpvp" opens the compass menu and clicks the game for you; "use compass" shows the items in a menu and "click <item name>" clicks one. Think privately with the think tool: plans, errors and retries go there, never in chat. Your chat reply is what a normal player would type: short, casual, no talk about commands, tools, syntax, errors or how to give orders, never explain how to write commands, never write JSON or code. Never invent tool results.';
+      sysPrompt += this.isRemote() ? AGENT_PROMPT_COMPACT : AGENT_PROMPT_FULL;
     }
 
-    const memBlock = this.buildMemoryBlock(sender, botContext);
-    if (memBlock) {
-      sysPrompt += `\n${memBlock}`;
+    // Remote: the changing state goes in the user turn so the long fixed
+    // prefix (prompt + tools) stays identical and hits DeepSeek's cache.
+    if (!this.isRemote()) {
+      const memBlock = this.buildMemoryBlock(sender, botContext);
+      if (memBlock) {
+        sysPrompt += `\n${memBlock}`;
+      }
     }
 
     if (isThinkingModel(model) && /^qwen3/i.test(model)) {
@@ -1932,12 +2187,23 @@ class OllamaManager {
     return sysPrompt;
   }
 
+  historyWindow() {
+    return this.chatHistory.slice(this.isRemote() ? -8 : -14);
+  }
+
+  userTurn(sender, message, botContext) {
+    const line = `${sender}: ${message}`;
+    if (!this.isRemote()) return { role: "user", content: line };
+    const mem = this.buildMemoryBlock(sender, botContext);
+    return { role: "user", content: mem ? `${mem}\n${line}` : line };
+  }
+
   chatBody(model, messages, extra = {}) {
     const body = {
       model,
       messages,
       stream: false,
-      keep_alive: "30m",
+      ...(this.isRemote() ? {} : { keep_alive: "30m" }),
       options: {
         temperature: 0.7,
         num_predict: Math.max(
@@ -1947,15 +2213,14 @@ class OllamaManager {
       },
       ...extra,
     };
-    if (isThinkingModel(model)) body.think = false;
+    if (!this.isRemote() && isThinkingModel(model)) body.think = false;
     return body;
   }
 
   finalizeReply(rawText, botContext, { sender = "" } = {}) {
     const cleaned = cleanModelText(rawText);
-    let reply = (looksLikeCode(cleaned) || isThinkingOutLoud(cleaned)
-      ? ""
-      : cleaned
+    let reply = (
+      looksLikeCode(cleaned) || isThinkingOutLoud(cleaned) ? "" : cleaned
     )
       .replace(/\r?\n+/g, " ")
       .replace(/^["']|["']$/g, "")
@@ -2026,9 +2291,7 @@ class OllamaManager {
     if (mem) {
       mem.lastBotReplyAt = Date.now();
       if (
-        /\b(?:coords?|coordinates?|where are you|can'?t see you)\b/i.test(
-          reply,
-        )
+        /\b(?:coords?|coordinates?|where are you|can'?t see you)\b/i.test(reply)
       ) {
         mem.askedForCoordsAt = Date.now();
       }
@@ -2045,6 +2308,58 @@ class OllamaManager {
         }
       }
     }
+  }
+
+  // Stateless completion for user scripts (libs.ai). Works with whichever
+  // provider is active; DeepSeek requests are sanitized in chat(). A small
+  // rate limit stops a looping script from running up the bill.
+  async complete(input, opts = {}) {
+    const o = typeof input === "object" && input !== null ? input : opts;
+    const prompt = typeof input === "string" ? input : o.prompt;
+    const messages = Array.isArray(o.messages) ? o.messages : null;
+    if (!messages && !String(prompt || "").trim()) {
+      throw new Error("ai: empty prompt");
+    }
+    const now = Date.now();
+    this.scriptAiCalls = (this.scriptAiCalls || []).filter(
+      (t) => now - t < 60000,
+    );
+    if (this.scriptAiCalls.length >= 20) {
+      throw new Error("ai: rate limit (20 calls/minute)");
+    }
+    if (this.isRemote()) {
+      if (!this.deepseekKey) throw new Error("ai: DeepSeek API key not set");
+    } else {
+      const started = await this.ensureServerRunning();
+      if (!started.ok) throw new Error(`ai: ${started.error}`);
+    }
+    this.scriptAiCalls.push(now);
+    const model = this.resolveModel(o.model);
+    const msgs = (
+      messages || [{ role: "user", content: String(prompt).slice(0, 6000) }]
+    )
+      .slice(-12)
+      .map((m) => ({
+        role: m.role === "system" || m.role === "assistant" ? m.role : "user",
+        content: String(m.content ?? "").slice(0, 6000),
+      }));
+    if (o.system)
+      msgs.unshift({
+        role: "system",
+        content: String(o.system).slice(0, 3000),
+      });
+    const extra = {
+      options: {
+        temperature: Number.isFinite(o.temperature) ? o.temperature : 0.3,
+        num_predict: Math.max(16, Math.min(1000, Number(o.maxTokens) || 300)),
+      },
+    };
+    if (o.json) extra.format = "json";
+    const res = await this.chat(
+      this.chatBody(model, msgs, extra),
+      Number(o.timeout) || 60000,
+    );
+    return cleanModelText(res?.message?.content);
   }
 
   async generateChatReply({
@@ -2072,15 +2387,11 @@ class OllamaManager {
           role: "system",
           content: this.buildSystemPrompt(botContext, { model, sender }),
         },
-        ...this.chatHistory.slice(-14),
-        { role: "user", content: `${sender}: ${message}` },
+        ...this.historyWindow(),
+        this.userTurn(sender, message, botContext),
       ];
 
-      const res = await httpJsonRequest(`${this.host}/api/chat`, {
-        method: "POST",
-        timeout: 45000,
-        body: this.chatBody(model, messages),
-      });
+      const res = await this.chat(this.chatBody(model, messages), 45000);
 
       const raw = String(res?.message?.content || "");
       const { reply, parts } = this.finalizeReply(raw, botContext, { sender });
@@ -2152,10 +2463,8 @@ class OllamaManager {
       .filter(Boolean)
       .join("\n");
     try {
-      const res = await httpJsonRequest(`${this.host}/api/chat`, {
-        method: "POST",
-        timeout: 60000,
-        body: this.chatBody(
+      const res = await this.chat(
+        this.chatBody(
           model,
           [
             { role: "system", content: system },
@@ -2163,10 +2472,15 @@ class OllamaManager {
           ],
           {
             format: "json",
-            options: { temperature: 0.2, num_predict: 220, num_ctx: 4096 },
+            options: {
+              temperature: 0.2,
+              num_predict: this.isRemote() ? 160 : 220,
+              num_ctx: 4096,
+            },
           },
         ),
-      });
+        60000,
+      );
       const raw = cleanModelText(res?.message?.content || "");
       let obj = null;
       try {
@@ -2262,7 +2576,7 @@ class OllamaManager {
         messages.push({
           role: "tool",
           tool_name: name,
-          content: resultText.slice(0, 1500),
+          content: resultText.slice(0, this.isRemote() ? 700 : 1500),
         });
       }
       return needsFollowUp;
@@ -2277,8 +2591,8 @@ class OllamaManager {
           sender,
         }),
       },
-      ...this.chatHistory.slice(-14),
-      { role: "user", content: `${sender}: ${message}` },
+      ...this.historyWindow(),
+      this.userTurn(sender, message, botContext),
     ];
 
     try {
@@ -2286,10 +2600,8 @@ class OllamaManager {
       for (let round = 0; round < maxRounds; round++) {
         let res;
         try {
-          res = await httpJsonRequest(`${this.host}/api/chat`, {
-            method: "POST",
-            timeout: 90000,
-            body: this.chatBody(model, messages, {
+          res = await this.chat(
+            this.chatBody(model, messages, {
               tools,
               options: {
                 temperature: 0.3,
@@ -2297,7 +2609,8 @@ class OllamaManager {
                 num_ctx: 8192,
               },
             }),
-          });
+            90000,
+          );
         } catch (err) {
           if (/does not support tools/i.test(err.message || "")) {
             this.noToolsModels.add(model);
@@ -2392,8 +2705,9 @@ class OllamaManager {
         !isThinkingOutLoud(cleanDraft) &&
         !looksLikeCode(cleanDraft);
       const msgText = String(message || "").trim();
-      const isPoliteActionQuestion =
-        /\b(?:can|could|would|will)\s+you\b/i.test(msgText);
+      const isPoliteActionQuestion = /\b(?:can|could|would|will)\s+you\b/i.test(
+        msgText,
+      );
       const looksLikeOrder =
         !isInternalReport &&
         (!/\?\s*$/.test(msgText) || isPoliteActionQuestion) &&
@@ -2562,6 +2876,8 @@ class OllamaManager {
   }
 
   resolveScriptModel(installed = []) {
+    if (this.isRemote())
+      return this.config.deepseekScriptModel || deepseek.DEFAULT_MODELS.script;
     if (this.config.scriptModel) return this.config.scriptModel;
     const names = installed.map((m) => m.name);
     const coder = names.find((n) => /coder/i.test(n));
@@ -2575,6 +2891,17 @@ class OllamaManager {
 
   // Streams a full answer for script generation; onToken gets the text so far.
   streamChat({ model, messages, options = {}, onToken = () => {}, signal }) {
+    if (this.isRemote()) {
+      return deepseek.deepseekStream({
+        baseUrl: deepseek.DEFAULT_BASE_URL,
+        apiKey: this.deepseekKey,
+        body: { model, messages, options },
+        sanitize: this.sanitizer({ code: true }),
+        onToken,
+        onUsage: (u) => this.recordUsage(u),
+        signal,
+      });
+    }
     return new Promise((resolve) => {
       let settled = false;
       const finish = (val) => {

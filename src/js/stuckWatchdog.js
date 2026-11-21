@@ -276,7 +276,7 @@ function attachStuckWatchdog(
           repath(goal, pos);
         } else {
           say(
-            `Stuck: protected zone or digging unavailable — detouring around (${diag.summary})`,
+            `Stuck: protected zone or digging unavailable - detouring around (${diag.summary})`,
             "Stuck (Step 3: Detour in Protected Zone)",
             `Target: ${targetDesc} | ${diag.summary}`,
           );

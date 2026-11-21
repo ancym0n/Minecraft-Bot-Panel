@@ -1,9 +1,9 @@
 // Baritone-style CalculationContext:
-// 1. BacktrackMemory — remembers stuck / failed nodes & edges with time decay so replanning
+// 1. BacktrackMemory - remembers stuck / failed nodes & edges with time decay so replanning
 //    immediately detours around problem terrain instead of repeating the same broken move.
-// 2. ToolSet — precomputes inventory tools, enchantments, and memoizes block break times
+// 2. ToolSet - precomputes inventory tools, enchantments, and memoizes block break times
 //    in ticks once per search instead of re-parsing NBT inside the A* inner loop.
-// 3. BlockStateCache — caches per-coordinate processed block states for the active search.
+// 3. BlockStateCache - caches per-coordinate processed block states for the active search.
 
 const { Vec3 } = require("vec3");
 const {

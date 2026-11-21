@@ -19,37 +19,46 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
     return;
   }
 
+  const signal = scriptRepeater.signal;
   const repeat = await getOption("repeat", info.name);
+  if (signal?.aborted) return;
   let isDropping = false;
 
   async function dropAllItems() {
-    if (!bot || !bot.inventory || isDropping) return;
-    await cleanCraftingGrid(bot);
-    const items = bot.inventory.items();
-
-    if (items.length === 0) {
-      clearLog("No items to drop");
-      log("No items to drop");
-      return;
-    }
-
+    if (signal?.aborted || !bot || !bot.inventory || isDropping) return;
     isDropping = true;
-    let dropped = 0;
     try {
-      for (const item of items) {
-        if (!bot || !bot.inventory) break;
-        await bot.tossStack(item).catch(() => {});
-        dropped++;
+      await cleanCraftingGrid(bot);
+      if (signal?.aborted) return;
+      const items = bot.inventory.items();
+      if (items.length === 0) {
+        clearLog("No items to drop");
+        log("No items to drop");
+        return;
       }
-      clearLog("Dropped all items (Total: ");
-      log(`Dropped all items (Total: ${dropped})`);
+
+      let dropped = 0;
+      for (const item of items) {
+        if (signal?.aborted || !bot || !bot.inventory) return;
+        try {
+          await bot.tossStack(item);
+          dropped++;
+        } catch (err) {
+          if (!signal?.aborted) {
+            log(`ClearInv: Could not drop ${item.name}: ${err.message || err}`);
+          }
+        }
+      }
+      if (signal?.aborted) return;
+      clearLog("ClearInv:");
+      log(`ClearInv: Dropped ${dropped}/${items.length} item stacks`);
     } finally {
       isDropping = false;
     }
   }
 
   await dropAllItems();
-  if (repeat === "on") {
+  if (repeat === "on" && !signal?.aborted) {
     await scriptRepeater(dropAllItems, info.default.interval);
   }
 }

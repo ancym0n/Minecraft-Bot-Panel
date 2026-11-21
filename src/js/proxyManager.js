@@ -698,7 +698,7 @@ class ProxyManager {
 
     if (!nextProxy || nextProxy.status !== "working") {
       log(
-        `Proxy AI-Heal: Pool low on verified proxies — auto-fetching & testing free proxies...`,
+        `Proxy AI-Heal: Pool low on verified proxies - auto-fetching & testing free proxies...`,
       );
       if (this.proxies.size < 15) {
         await this.fetchFreeProxies({ maxCount: 80 }).catch(() => {});
@@ -721,7 +721,7 @@ class ProxyManager {
       return { ok: true, proxy: nextProxy, message: msg };
     }
 
-    const fallbackMsg = `No working free proxies responded — falling back to direct connection`;
+    const fallbackMsg = `No working free proxies responded - falling back to direct connection`;
     log(`Proxy AI-Heal: ${fallbackMsg}`);
     if (typeof onAiHeal === "function") onAiHeal(fallbackMsg, null);
     return { ok: false, proxy: null, message: fallbackMsg };

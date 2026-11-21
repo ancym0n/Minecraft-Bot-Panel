@@ -26,6 +26,8 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   }
 
   const { mcData, Movements } = loadLibraries();
+  const signal = scriptRepeater.signal;
+  if (signal?.aborted) return;
   bot._mcbpSafeWalk = true;
 
   configureSmartMovements(bot, mcData, Movements, {
@@ -38,19 +40,21 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   log("SafeWalk: Active (edge crouch & hazard avoidance)");
 
   async function safeWalkTick() {
-    if (!bot || !bot.entity) return;
+    if (signal?.aborted || !bot || !bot.entity) return;
     const [edgesOpt, hazardsOpt] = await Promise.all([
       getOption("edges", info.name),
       getOption("hazards", info.name),
     ]);
+    if (signal?.aborted) return;
     bot._mcbpSafeWalk = edgesOpt !== "off" || hazardsOpt !== "off";
   }
 
   try {
     await safeWalkTick();
-    await scriptRepeater(safeWalkTick, info.default.interval);
+    if (!signal?.aborted)
+      await scriptRepeater(safeWalkTick, info.default.interval);
   } finally {
-    if (bot) {
+    if (bot && (!scriptRepeater.isCurrent || scriptRepeater.isCurrent())) {
       bot._mcbpSafeWalk = false;
       if (bot.controlState?.sneak) {
         bot.setControlState("sneak", false);

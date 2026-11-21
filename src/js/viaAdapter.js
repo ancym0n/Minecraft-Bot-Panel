@@ -98,7 +98,9 @@ function installViaVersionProtocolShims(scopedRequire = require) {
           };
           mcData.versionsByMinecraftVersion.pc[spec.version] = meta;
           if (mcData.postNettyVersionsByProtocolVersion?.pc) {
-            mcData.postNettyVersionsByProtocolVersion.pc[spec.protocol] = [meta];
+            mcData.postNettyVersionsByProtocolVersion.pc[spec.protocol] = [
+              meta,
+            ];
           }
         }
 
@@ -224,7 +226,9 @@ function pingServerProtocol(
           const versionName = String(response?.version?.name || "").trim();
           let resolvedVersion = null;
           if (protocol) {
-            const row = PROTOCOL_FALLBACK_MAP.find((r) => protocol >= r.minProto);
+            const row = PROTOCOL_FALLBACK_MAP.find(
+              (r) => protocol >= r.minProto,
+            );
             if (row) {
               resolvedVersion = resolveSupportedVersion(
                 row.targetVersion,
@@ -322,6 +326,158 @@ function resolveVersionFromKickOrError(errText, mcDataModule = null) {
 }
 
 // Attaches ViaVersion-style packet translation and error resilience to a Mineflayer bot.
+// Vanilla stores the player width as a Java float (0.6F = 0.60000002384...),
+// so its half-width is 0.30000001192..., while prismarine-physics uses exactly
+// 0.3. When mineflayer slides the bot flush against a wall, the server's box
+// then sticks ~1.2e-8 into the block; Paper/Purpur count any overlap as a
+// "new collision" and silently teleport the player back - every tick, in
+// every pit and tunnel (hundreds of setbacks, nothing in the server log).
+// Using the vanilla value keeps the bot exactly where a real client would be.
+// (+1e-7 so rounding can never put the box back inside a wall.)
+const VANILLA_PLAYER_HALF_WIDTH = Math.fround(0.6) / 2 + 1e-7;
+
+function matchVanillaHitbox(bot) {
+  const apply = () => {
+    const ph = bot?.physics;
+    if (!ph || typeof ph.playerHalfWidth !== "number") return false;
+    // The height stays 1.8: taller than the server's float 1.8F box, so the
+    // client is the cautious one at ceilings too.
+    ph.playerHalfWidth = Math.max(
+      ph.playerHalfWidth,
+      VANILLA_PLAYER_HALF_WIDTH,
+    );
+    return true;
+  };
+  // bot.physics is created by mineflayer's physics plugin; it may not exist
+  // yet when the adapter is attached right after createBot().
+  if (!apply() && typeof bot?.once === "function") {
+    bot.once("login", apply);
+    bot.once("spawn", apply);
+  }
+}
+
+// Block-break prediction like the vanilla 1.19+ client. Mineflayer sends
+// "finish digging" without a sequence number and immediately turns the block
+// into air locally. When the server has not finished breaking it yet (its
+// own dig progress is behind, e.g. the bot was not on the ground, or a new
+// dig started first) the block stays on the server, the bot falls into a
+// hole that only exists client-side and the server pulls it back every tick.
+// Vanilla avoids that: each dig gets a sequence number, the client remembers
+// the block's real state, and when the server acknowledges that sequence
+// without having sent an update for the block, the client puts it back.
+function attachDigPrediction(bot, { log = null } = {}) {
+  const client = bot?._client;
+  if (!client || client._mcbpDigPrediction) return;
+  const fields = (() => {
+    try {
+      return (
+        bot.registry?.protocol?.play?.toServer?.types?.packet_block_dig?.[1] ||
+        []
+      );
+    } catch (_) {
+      return [];
+    }
+  })();
+  if (!fields.some((f) => f?.name === "sequence")) return; // pre-1.19
+  client._mcbpDigPrediction = true;
+
+  let sequence = 0;
+  const pending = new Map(); // "x,y,z" -> { seq, stateId, pos, server, armed, at }
+  const keyOf = (p) => `${p.x},${p.y},${p.z}`;
+  let rollbacks = 0;
+
+  const origWrite = client.write.bind(client);
+  client.write = (name, params) => {
+    if (
+      name === "block_dig" &&
+      params &&
+      (params.status === 0 || params.status === 2)
+    ) {
+      sequence += 1;
+      params = { ...params, sequence };
+      if (params.status === 2 && params.location) {
+        const pos = params.location;
+        let stateId;
+        try {
+          stateId = bot.blockAt(
+            pos.offset
+              ? pos
+              : new bot.entity.position.constructor(pos.x, pos.y, pos.z),
+          )?.stateId;
+        } catch (_) {}
+        if (typeof stateId === "number" && stateId !== 0) {
+          const entry = {
+            seq: sequence,
+            stateId,
+            pos,
+            server: undefined,
+            armed: false,
+            at: Date.now(),
+          };
+          pending.set(keyOf(pos), entry);
+          // Mineflayer applies its own "air" prediction right after this
+          // write; updates after that come from the server.
+          setImmediate(() => {
+            entry.armed = true;
+          });
+        }
+      }
+    }
+    return origWrite(name, params);
+  };
+
+  // Server block updates (packet level: an update that matches what the
+  // client already shows still counts as the server's answer).
+  const markServer = (x, y, z, stateId) => {
+    const entry = pending.get(`${x},${y},${z}`);
+    if (entry && entry.armed) entry.server = stateId;
+  };
+  client.on("block_change", (packet) => {
+    const p = packet?.location;
+    if (p) markServer(p.x, p.y, p.z, packet.type);
+  });
+  client.on("multi_block_change", (packet) => {
+    const c = packet?.chunkCoordinates;
+    if (!c || !Array.isArray(packet.records)) return;
+    for (const r of packet.records) {
+      if (typeof r !== "number") continue;
+      markServer(
+        c.x * 16 + ((r >> 8) & 0x0f),
+        c.y * 16 + (r & 0x0f),
+        c.z * 16 + ((r >> 4) & 0x0f),
+        Math.floor(r / 4096),
+      );
+    }
+  });
+
+  client.on("acknowledge_player_digging", (packet) => {
+    const ack = Number(packet?.sequenceId ?? packet?.sequence ?? -1);
+    if (!(ack >= 0)) return;
+    const now = Date.now();
+    for (const [key, entry] of pending) {
+      if (entry.seq > ack && now - entry.at < 10000) continue;
+      pending.delete(key);
+      if (entry.server !== undefined) continue; // server told us the result
+      const cur = bot.blockAt?.(entry.pos);
+      if (!cur || cur.stateId === entry.stateId) continue;
+      // The server acknowledged the dig but never removed the block.
+      try {
+        bot._updateBlockState(entry.pos, entry.stateId);
+        rollbacks += 1;
+        // Don't let the pathfinder hammer the same block again right away.
+        try {
+          bot.pathfinder?.penalizeNode?.(entry.pos, 60, 20000);
+        } catch (_) {}
+        if (log && (rollbacks <= 3 || rollbacks % 20 === 0)) {
+          log(
+            `Dig: server kept ${cur.name === "air" ? "the block" : cur.name} at (${entry.pos.x}, ${entry.pos.y}, ${entry.pos.z}) - restored it locally (${rollbacks} so far)`,
+          );
+        }
+      } catch (_) {}
+    }
+  });
+}
+
 function attachViaVersionAdapter(bot, { log = null } = {}) {
   if (!bot || bot._mcbpViaAttached) return;
   bot._mcbpViaAttached = true;
@@ -342,10 +498,85 @@ function attachViaVersionAdapter(bot, { log = null } = {}) {
     }
   };
   patchSupportFeatures();
+  matchVanillaHitbox(bot);
+  // The registry (protocol) is known once the bot logs in.
+  if (bot.registry?.protocol) attachDigPrediction(bot, { log });
+  else if (typeof bot.once === "function") {
+    bot.once("login", () => attachDigPrediction(bot, { log }));
+  }
 
   const wireClient = (client) => {
     if (!client || client._mcbpViaClientWired) return;
     client._mcbpViaClientWired = true;
+
+    // 0. Login/configuration phase compatibility (what ViaVersion does for
+    // clients that lack these handlers). Modded/proxied servers (Fabric,
+    // Velocity, Geyser, plugin cookies) can hold a client in the configuration
+    // phase forever if a request is never answered - the server then only
+    // shows "lost connection: Disconnected" when the user gives up.
+    const hasServerboundPacket = (state, name) => {
+      try {
+        let proto = bot.registry?.protocol || null;
+        if (!proto && client.version) {
+          proto = require("minecraft-data")(client.version)?.protocol || null;
+        }
+        const packetDef = proto?.[state]?.toServer?.types?.packet;
+        const mappings = packetDef?.[1]?.[0]?.type?.[1]?.mappings;
+        if (mappings) return Object.values(mappings).includes(name);
+        return Boolean(proto?.[state]?.toServer?.types?.[`packet_${name}`]);
+      } catch (_) {
+        return false;
+      }
+    };
+    // Vanilla answers every cookie request; an unknown cookie is "no payload".
+    client.on("cookie_request", (packet) => {
+      const state = client.state || "configuration";
+      if (!hasServerboundPacket(state, "cookie_response")) return;
+      try {
+        client.write("cookie_response", {
+          key: packet?.cookie ?? packet?.key,
+          value: undefined,
+        });
+      } catch (_) {}
+    });
+
+    // Diagnostics: remember the last server packets seen before spawning and
+    // warn when the configuration phase stalls, so a silent hang shows up in
+    // the console with the packet the server is waiting on.
+    const recent = [];
+    let configSince = 0;
+    let stallTimer = null;
+    const stopStallTimer = () => {
+      if (stallTimer) clearInterval(stallTimer);
+      stallTimer = null;
+    };
+    client.on("packet", (_data, meta) => {
+      if (!meta || bot._mcbpHasSpawned) return;
+      if (meta.state === "configuration" || meta.state === "login") {
+        recent.push(meta.name);
+        if (recent.length > 8) recent.shift();
+        bot._mcbpViaLastConfigPackets = `${meta.state}: ${recent.join(", ")}`;
+      }
+      if (meta.state === "configuration" && !configSince) {
+        configSince = Date.now();
+        stopStallTimer();
+        stallTimer = setInterval(() => {
+          if (bot._mcbpHasSpawned || client.state !== "configuration") {
+            stopStallTimer();
+            return;
+          }
+          const secs = Math.round((Date.now() - configSince) / 1000);
+          if (log) {
+            log(
+              `ViaVersion: Still in the configuration phase after ${secs}s - server has not finished login (last packets: ${recent.join(", ") || "none"}). The server may require a client mod/resource pack or be waiting on a plugin handshake.`,
+            );
+          }
+        }, 15000);
+        if (typeof stallTimer.unref === "function") stallTimer.unref();
+      }
+      if (meta.state === "play") stopStallTimer();
+    });
+    client.once("end", stopStallTimer);
 
     // 1. Shield against PartialReadError / unknown packet crashes on newer/custom servers
     client.on("error", (err) => {
@@ -376,7 +607,11 @@ function attachViaVersionAdapter(bot, { log = null } = {}) {
     bot._mcbpTickEndAttached = true;
     bot.on("physicsTick", () => {
       const client = bot._client;
-      if (!client || client.state !== "play" || typeof client.write !== "function") {
+      if (
+        !client ||
+        client.state !== "play" ||
+        typeof client.write !== "function"
+      ) {
         return;
       }
       const needsTickEnd =
@@ -386,7 +621,7 @@ function attachViaVersionAdapter(bot, { log = null } = {}) {
       if (!needsTickEnd) return;
       const hasTickEndPacket = Boolean(
         bot.registry?.protocol?.play?.toServer?.types?.packet_tick_end ||
-          client.serializer?.proto?.types?.packet_tick_end,
+        client.serializer?.proto?.types?.packet_tick_end,
       );
       if (!hasTickEndPacket) return;
       try {
@@ -597,7 +832,9 @@ function isLikelyNpcOrFakePlayer(
       : 99999;
     if (
       (entity._mcbpSpawnedMidAirNearBot && ageMs < 1800) ||
-      (isInvisible && ageMs < 1500 && (tabEntry.ping === 0 || tabEntry.ping < 0))
+      (isInvisible &&
+        ageMs < 1500 &&
+        (tabEntry.ping === 0 || tabEntry.ping < 0))
     ) {
       return true;
     }
@@ -644,6 +881,8 @@ function isRealPlayerName(bot, username) {
 }
 
 module.exports = {
+  VANILLA_PLAYER_HALF_WIDTH,
+  attachDigPrediction,
   NATIVE_MAX_PROTOCOL,
   NATIVE_MAX_VERSION,
   VIA_SHIM_VERSIONS,

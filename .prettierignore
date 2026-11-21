@@ -3,6 +3,7 @@ out
 tmp
 node_modules
 mineflayer-runtime
+rust/planner/target
 Hidden
 .py
 package-lock.json

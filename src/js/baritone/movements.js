@@ -179,7 +179,9 @@ function isDoorOrGateOpen(block) {
       }
     }
     if (block._properties && "open" in block._properties) {
-      return block._properties.open === true || block._properties.open === "true";
+      return (
+        block._properties.open === true || block._properties.open === "true"
+      );
     }
   } catch (_) {}
   // Fallback: if shapes are empty (open fence gate), it's open
@@ -211,6 +213,12 @@ class BaritoneMovements {
     this.dontCreateFlow = true;
     this.dontMineUnderFallingBlock = true;
     this.allow1by1towers = true;
+    // Digging the block under our feet to go straight down (MovementDownward).
+    // Off while climbing out of a pit so the search never digs deeper first.
+    this.allowDigDown = true;
+    // Extra cost per block dug straight down. > 0 makes the search prefer a
+    // walkable staircase over a 1x1 shaft the bot cannot walk back out of.
+    this.digDownPenalty = 0;
     this.allowFreeMotion = false;
     this.allowParkour = true;
     this.allowParkourAscend = true;
@@ -359,10 +367,7 @@ class BaritoneMovements {
         if (n.endsWith("_door")) this.doors.add(block.id);
       }
 
-      if (
-        n.includes("fence") &&
-        !n.includes("fence_gate")
-      ) {
+      if (n.includes("fence") && !n.includes("fence_gate")) {
         this.fences.add(block.id);
       } else if (n.endsWith("_wall")) {
         this.fences.add(block.id);
@@ -545,7 +550,8 @@ class BaritoneMovements {
     if (type === this.snowLayerId) {
       let layers = 1;
       try {
-        const props = typeof raw.getProperties === "function" ? raw.getProperties() : null;
+        const props =
+          typeof raw.getProperties === "function" ? raw.getProperties() : null;
         if (props && props.layers) layers = Number(props.layers) || 1;
       } catch (_) {}
       maxShapeY = (layers - 1) * 0.125;
@@ -558,9 +564,7 @@ class BaritoneMovements {
       this.carpets.has(type) ||
       (type === this.snowLayerId && !snowThick);
 
-    const safe =
-      !hazard &&
-      (isEmptyOrCarpet || (openable && isOpen));
+    const safe = !hazard && (isEmptyOrCarpet || (openable && isOpen));
 
     const physical =
       !hazard &&
@@ -687,7 +691,7 @@ class BaritoneMovements {
     return cost;
   }
 
-  // Baritone MovementHelper.avoidAdjacent — penalizes stepping right next to cactus/lava/fire/berries
+  // Baritone MovementHelper.avoidAdjacent - penalizes stepping right next to cactus/lava/fire/berries
   adjacentHazardCost(pos) {
     if (!this.avoidAdjacentHazards) return 0;
     let penalty = 0;
@@ -836,8 +840,10 @@ class BaritoneMovements {
     }
 
     // Entities perched above blocks we'd break
-    if (blockA.physical && this.getNumEntitiesAt(blockA.position, 0, 1, 0) > 0) return;
-    if (blockH.physical && this.getNumEntitiesAt(blockH.position, 0, 1, 0) > 0) return;
+    if (blockA.physical && this.getNumEntitiesAt(blockA.position, 0, 1, 0) > 0)
+      return;
+    if (blockH.physical && this.getNumEntitiesAt(blockH.position, 0, 1, 0) > 0)
+      return;
 
     const toBreak = [];
     const toPlace = [];
@@ -901,7 +907,8 @@ class BaritoneMovements {
         ? WALK_ONE_BLOCK_COST * 1.15
         : WALK_ONE_BLOCK_COST + JUMP_ONE_BLOCK_COST;
 
-    if (blockHere.isWater) cost += WALK_ONE_IN_WATER_COST * 0.5 * this.liquidCost;
+    if (blockHere.isWater)
+      cost += WALK_ONE_IN_WATER_COST * 0.5 * this.liquidCost;
 
     const aCost = this.safeOrBreak(blockA, toBreak);
     if (aCost >= COST_INF) return;
@@ -938,7 +945,7 @@ class BaritoneMovements {
     );
   }
 
-  // Baritone MovementDiagonal — strictly validates BOTH orthogonal corner columns so
+  // Baritone MovementDiagonal - strictly validates BOTH orthogonal corner columns so
   // the 0.6-wide player hitbox NEVER clips through double-solid walls, fences, or cacti!
   getMoveDiagonal(node, dir, neighbors) {
     const blockC = this.getBlock(node, dir.x, 0, dir.z);
@@ -979,10 +986,20 @@ class BaritoneMovements {
       const s1 = this.getBlock(node, 0, cy, dir.z);
       const s2 = this.getBlock(node, dir.x, cy, 0);
       // Fences, walls, doors, and hazards on either corner ALWAYS block diagonal movement!
-      if (s1.fenceLike || s1.hazard || s1.adjacentDanger || (s1.openable && !s1.isOpen)) {
+      if (
+        s1.fenceLike ||
+        s1.hazard ||
+        s1.adjacentDanger ||
+        (s1.openable && !s1.isOpen)
+      ) {
         side1HardForbid = true;
       }
-      if (s2.fenceLike || s2.hazard || s2.adjacentDanger || (s2.openable && !s2.isOpen)) {
+      if (
+        s2.fenceLike ||
+        s2.hazard ||
+        s2.adjacentDanger ||
+        (s2.openable && !s2.isOpen)
+      ) {
         side2HardForbid = true;
       }
       if (!s1.safe) side1Open = false;
@@ -1052,7 +1069,9 @@ class BaritoneMovements {
         const drop = node.y - (blockLand.position.y + 1);
         if (drop <= this.maxDropDown) {
           const standSpot = this.getBlock(blockLand.position, 0, 1, 0);
-          return standSpot.safe ? { landing: standSpot, intoWater: false } : null;
+          return standSpot.safe
+            ? { landing: standSpot, intoWater: false }
+            : null;
         }
         return null;
       }
@@ -1080,7 +1099,8 @@ class BaritoneMovements {
 
     const toBreak = [];
     const toPlace = [];
-    let cost = WALK_OFF_BLOCK_COST + fallCost(dropDist) + CENTER_AFTER_FALL_COST;
+    let cost =
+      WALK_OFF_BLOCK_COST + fallCost(dropDist) + CENTER_AFTER_FALL_COST;
 
     // Penalize non-water drops > 3 blocks (causes fall damage in Minecraft)
     if (!landRes.intoWater && dropDist > 3) {
@@ -1099,7 +1119,8 @@ class BaritoneMovements {
     if (dCost >= COST_INF) return;
     cost += dCost;
 
-    cost += this.getNumEntitiesAt(blockLand.position, 0, 0, 0) * this.entityCost;
+    cost +=
+      this.getNumEntitiesAt(blockLand.position, 0, 0, 0) * this.entityCost;
     cost += this.adjacentHazardCost(blockLand.position);
     cost = this._withBacktrackPenalty(
       node,
@@ -1155,6 +1176,45 @@ class BaritoneMovements {
 
     if (blockHere.liquid) return;
 
+    // Baritone MovementDownward: mine the block under our feet and drop one
+    // block onto the floor below it. Without this the bot can only go down by
+    // walking existing slopes, so stone under a dirt layer was "unreachable".
+    if (block0.physical && !block0.safe) {
+      if (!this.canDig || !this.allowDigDown) return;
+      const floor = this.getBlock(node, 0, -2, 0);
+      if (!floor.loaded || !floor.solidFloor || floor.hazard || floor.isLava) {
+        return;
+      }
+      const toBreak = [];
+      const digCost = this.safeOrBreak(block0, toBreak);
+      if (digCost >= COST_INF) return;
+      let cost =
+        fallCost(1) +
+        CENTER_AFTER_FALL_COST +
+        digCost +
+        Math.max(0, Number(this.digDownPenalty) || 0);
+      cost += this.adjacentHazardCost(block0.position);
+      cost = this._withBacktrackPenalty(
+        node,
+        block0.position.x,
+        block0.position.y,
+        block0.position.z,
+        cost,
+      );
+      if (cost >= COST_INF) return;
+      neighbors.push(
+        new Move(
+          block0.position.x,
+          block0.position.y,
+          block0.position.z,
+          node.remainingBlocks,
+          cost,
+          toBreak,
+        ),
+      );
+      return;
+    }
+
     const landRes = this.getLandingBlock(node, { x: 0, z: 0 });
     if (!landRes || !landRes.landing) return;
     const blockLand = landRes.landing;
@@ -1173,7 +1233,8 @@ class BaritoneMovements {
     if (b0Cost >= COST_INF) return;
     cost += b0Cost;
 
-    cost += this.getNumEntitiesAt(blockLand.position, 0, 0, 0) * this.entityCost;
+    cost +=
+      this.getNumEntitiesAt(blockLand.position, 0, 0, 0) * this.entityCost;
     cost += this.adjacentHazardCost(blockLand.position);
     cost = this._withBacktrackPenalty(
       node,
@@ -1220,8 +1281,20 @@ class BaritoneMovements {
         toBreak.push(block1.position);
       }
       const block0 = this.getBlock(node, 0, -1, 0);
-      if (!block0.solidFloor || block0.height - node.y < -0.2) return;
-      if (block0.slowFloor) return;
+      // Pillaring (MovementPillar): jump and place a block under our feet.
+      // The block under a node in mid-air is the one the previous pillar step
+      // placed, so an empty (non-liquid, non-ladder) block0 is fine there -
+      // otherwise only the first block of a tower could ever be planned and
+      // the bot could never pillar out of a pit.
+      const placedBelow =
+        !block0.physical &&
+        block0.replaceable &&
+        !block0.liquid &&
+        !block0.climbable;
+      if (!placedBelow) {
+        if (!block0.solidFloor || block0.height - node.y < -0.2) return;
+        if (block0.slowFloor) return;
+      }
 
       const exP = this.exclusionPlace(block1.raw || block1);
       if (exP >= 100) return;
@@ -1258,7 +1331,7 @@ class BaritoneMovements {
     );
   }
 
-  // Baritone MovementParkour — realistic tick cost + strict takeoff, ceiling, and landing validation
+  // Baritone MovementParkour - realistic tick cost + strict takeoff, ceiling, and landing validation
   getMoveParkourForward(node, dir, neighbors) {
     const block0 = this.getBlock(node, 0, -1, 0);
     const blockHere = this.getBlock(node, 0, 0, 0);
@@ -1304,7 +1377,8 @@ class BaritoneMovements {
 
       if (ceilingClear && blockB.safe && blockC.safe && blockD.solidFloor) {
         let cost = baseCost + this.exclusionStep(blockC.raw || blockC);
-        cost += this.getNumEntitiesAt(blockC.position, 0, 0, 0) * this.entityCost;
+        cost +=
+          this.getNumEntitiesAt(blockC.position, 0, 0, 0) * this.entityCost;
         cost += this.adjacentHazardCost(blockC.position);
         cost = this._withBacktrackPenalty(
           node,
@@ -1376,9 +1450,7 @@ class BaritoneMovements {
         const blockE = this.getBlock(node, dx, -2, dz);
         if (blockE.solidFloor) {
           let cost =
-            baseCost +
-            fallCost(1) +
-            this.exclusionStep(blockD.raw || blockD);
+            baseCost + fallCost(1) + this.exclusionStep(blockD.raw || blockD);
           cost +=
             this.getNumEntitiesAt(blockD.position, 0, 0, 0) * this.entityCost;
           cost += this.adjacentHazardCost(blockD.position);

@@ -1,11 +1,10 @@
 /* ---------------------------------------------------------------
    Responsive behaviour (shared by login screens and the panel)
-   Everything is sized in rem, so scaling the root font keeps the
-   whole interface proportional from small windows to 4K.
+   Keep text readable while allowing controls to reflow or scroll.
    --------------------------------------------------------------- */
 
 html {
-  font-size: clamp(13px, 0.42vw + 10.5px, 19px);
+  font-size: clamp(15px, 0.2vw + 14.2px, 18px);
 }
 
 /* Wide screens: a little more breathing room */
@@ -86,7 +85,9 @@ html {
   .div-actions,
   #tab-control,
   #tab-inventory,
-  #tab-ai {
+  #tab-ai,
+  #tab-botting,
+  #tab-studio {
     max-height: 26rem;
     overflow-y: auto;
     overscroll-behavior: contain;
@@ -140,8 +141,36 @@ html {
   }
 
   .pads,
-  .ai-form-grid {
+  .ai-form-grid,
+  .ai-form-grid.ai-form-grid-2,
+  .ai-form-grid.ai-form-grid-4 {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .toolbar,
+  .console-head,
+  .studio-footer {
+    flex-wrap: wrap;
+  }
+
+  .toolbar .input-slim {
+    flex: 1 1 10rem;
+  }
+
+  .studio-picker {
+    flex: 1 1 10rem;
+  }
+
+  .studio-check {
+    flex-basis: 100%;
+  }
+
+  .studio-file {
+    flex: 1 1 8rem;
+  }
+
+  .studio-docs {
+    min-height: 15rem;
   }
 
   .ai-custom-pull {
@@ -175,6 +204,11 @@ html {
     gap: 0.3rem;
   }
 
+  #update-toast {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
   /* Login screens */
   .auth-card {
     padding: 1.15rem 1rem 1.3rem;
@@ -202,8 +236,18 @@ html {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .toolbar {
-    flex-wrap: wrap;
+  .msa-code-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 360px) {
+  .ai-brain-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ai-toolbar .muted-text {
+    flex-basis: 100%;
   }
 }
 
@@ -212,13 +256,8 @@ html {
   *,
   *::before,
   *::after {
-    animation-duration: 0.01ms !important;
-    animation-delay: 0ms !important;
-    transition-duration: 0.01ms !important;
-  }
-
-  .panel-dashboard,
-  #credit {
-    opacity: 1;
+    animation: none !important;
+    scroll-behavior: auto !important;
+    transition: none !important;
   }
 }

@@ -51,11 +51,16 @@ const { aiBrain } = require("./src/js/aiBrain");
 const { proxyManager } = require("./src/js/proxyManager");
 const { bottingManager } = require("./src/js/bottingManager");
 const { ChatQueue } = require("./src/js/chatQueue");
+const { installChatGuard } = require("./src/js/chatGuard");
 const { createAiTools } = require("./src/js/aiTools");
 const { attachStuckWatchdog } = require("./src/js/stuckWatchdog");
 const scriptStudio = require("./src/js/scriptStudio");
 const { sessionLogger } = require("./src/js/sessionLogger");
 const updater = require("./src/js/updater");
+const {
+  createScriptRepeater,
+  createScriptRunScheduler,
+} = require("./src/js/scriptRepeater");
 
 if (process.platform === "linux" && process.env.APPDIR) {
   const schemaDir = `${process.env.APPDIR}/usr/share/glib-2.0/schemas`;
@@ -455,6 +460,42 @@ function setOptionValue(option, scriptName, value) {
     .catch(() => false);
 }
 
+// Who "me" means for console commands (!do follow me): the first obeyed
+// player who is online, else the nearest player, else the bot's account.
+function consoleSender() {
+  const own = sessionState.mcName || sessionState.username || "";
+  const online = Object.keys(bot?.players || {});
+  const byLower = new Map(online.map((n) => [n.toLowerCase(), n]));
+  const obey = String(ollamaManager.config.agentAllowedPlayers || "")
+    .split(/[,\s]+/)
+    .map((n) => n.trim())
+    .filter(Boolean);
+  for (const n of obey) {
+    const real = byLower.get(n.toLowerCase());
+    if (
+      real &&
+      real.toLowerCase() !== String(bot?.username || "").toLowerCase()
+    ) {
+      return real;
+    }
+  }
+  const me = bot?.entity?.position;
+  if (me) {
+    let best = null;
+    let bestD = Infinity;
+    for (const [name, p] of Object.entries(bot.players || {})) {
+      if (!p?.entity || name === bot.username) continue;
+      const d = p.entity.position.distanceTo(me);
+      if (d < bestD) {
+        bestD = d;
+        best = name;
+      }
+    }
+    if (best && bestD < 64) return best;
+  }
+  return obey[0] || own;
+}
+
 // Code execution needs the opt-in AND an explicit allowed-players list.
 function aiCanRunCode(sender) {
   return (
@@ -469,6 +510,15 @@ const aiChatQueue = new ChatQueue({
   getConfig: () => ollamaManager.config,
   log: (text) => log(text),
 });
+
+// What must never reach a remote AI: own account names, email, server address.
+ollamaManager.setPrivacyContext(() => ({
+  names: [sessionState.mcName, sessionState.username, bot?.username].filter(
+    Boolean,
+  ),
+  secrets: [sessionState.email].filter(Boolean),
+  hosts: [bot?._client?.host, bot?._client?.socket?._host].filter(Boolean),
+}));
 
 const aiTools = createAiTools({
   getBot: () => bot,
@@ -560,7 +610,7 @@ function openMsaLoginPopup(verificationUri, userCode) {
     backgroundColor: "#16131f",
     icon: iconPath,
     title: code
-      ? `Microsoft Sign-In — Code: ${code} (Copied to Clipboard)`
+      ? `Microsoft Sign-In - Code: ${code} (Copied to Clipboard)`
       : "Microsoft Sign-In",
     webPreferences: {
       contextIsolation: true,
@@ -1003,7 +1053,76 @@ async function handleAiTaskDone(evt) {
 const AD_RE =
   /\/visit\b|\[ad\]|discord\.gg|https?:\/\/|www\.|\.(com|net|org|gg)\b|\bstore\b|\bshop\b|\bvote\b|\bgiveaway\b|\bper hour\b|\/hr\b|\bbuying\b|\bselling\b/i;
 
-async function handleAiChat(currentBot, text, senderUuid, position) {
+// Messages that arrive while the AI is still thinking or typing are kept
+// (latest per player) and answered right after, instead of being dropped.
+const pendingAiChat = new Map();
+let drainingAiChat = false;
+
+function stashAiChat(currentBot, args, sender) {
+  const key = String(sender || "?").toLowerCase();
+  pendingAiChat.delete(key);
+  pendingAiChat.set(key, { currentBot, args, at: Date.now() });
+  while (pendingAiChat.size > 4) {
+    pendingAiChat.delete(pendingAiChat.keys().next().value);
+  }
+  drainPendingAiChat();
+}
+
+async function drainPendingAiChat() {
+  if (drainingAiChat) return;
+  drainingAiChat = true;
+  try {
+    const started = Date.now();
+    while (pendingAiChat.size && Date.now() - started < 120000) {
+      if (ollamaManager.isGenerating || aiChatQueue.isBusy()) {
+        await new Promise((r) => setTimeout(r, 300));
+        continue;
+      }
+      const [key, item] = pendingAiChat.entries().next().value;
+      pendingAiChat.delete(key);
+      if (Date.now() - item.at > 60000 || bot !== item.currentBot) continue;
+      await handleAiChat(item.currentBot, ...item.args, { fromMailbox: true });
+    }
+  } catch (_) {
+  } finally {
+    drainingAiChat = false;
+  }
+}
+
+// "MichealBueno", "you there MichealBueno?", "hey MichealBueno": answer at
+// once without the model (which took 6-20s and tended to walk over).
+const PING_WORDS_RE =
+  /^(hey|hi|hello|yo|sup|oi|ey|hallo|are you there|r u there|u there|you there|are u there|you alive|u alive|wake up|hello\??)?$/i;
+function quickPingReply(content, me) {
+  const nick = me.length >= 5 ? me.slice(0, 4) : me;
+  const stripped = String(content || "")
+    .toLowerCase()
+    .replace(
+      new RegExp(
+        `@?${me.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[a-z0-9_]*`,
+        "gi",
+      ),
+      " ",
+    )
+    .replace(
+      new RegExp(
+        `\\b${nick.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[a-z0-9_]*`,
+        "gi",
+      ),
+      " ",
+    )
+    .replace(/[^a-z ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!PING_WORDS_RE.test(stripped)) return "";
+  const pick = (a) => a[Math.floor(Math.random() * a.length)];
+  if (/there|alive|wake/.test(stripped))
+    return pick(["yeah im here", "here", "ye whats up"]);
+  if (stripped) return pick(["hey", "yo", "hey whats up"]);
+  return pick(["yeah?", "ye?", "whats up"]);
+}
+
+async function handleAiChat(currentBot, text, senderUuid, position, opts = {}) {
   const cleanRaw = String(text || "").trim();
   if (position === "game_info") return;
   if (SYSTEM_CHAT_RE.test(cleanRaw)) {
@@ -1065,7 +1184,6 @@ async function handleAiChat(currentBot, text, senderUuid, position) {
     } catch (_) {}
   }
 
-  if (aiChatQueue.isBusy()) return;
   const addressed =
     Boolean(me) &&
     new RegExp(
@@ -1100,6 +1218,26 @@ async function handleAiChat(currentBot, text, senderUuid, position) {
   ) {
     return;
   }
+  // Just calling the bot's name: answer instantly, no model, no actions.
+  if (addressed || byNick) {
+    const quick = quickPingReply(parsed.content, me);
+    if (quick) {
+      log(`AIChat: [instant] ➙ ${parsed.sender}: ${quick}`);
+      ollamaManager.rememberExchange?.(
+        parsed.sender,
+        parsed.content,
+        quick,
+        [],
+      );
+      aiChatQueue.send([quick]);
+      return;
+    }
+  }
+  // Still thinking about / typing the previous answer: keep this one.
+  if (ollamaManager.isGenerating || aiChatQueue.isBusy()) {
+    stashAiChat(currentBot, [text, senderUuid, position], parsed.sender);
+    return;
+  }
   // In "reply to all" mode, only messages that talk to the bot can make it
   // do things; everything else is just conversation.
   const allMode = ollamaManager.config.triggerMode === "all";
@@ -1109,6 +1247,12 @@ async function handleAiChat(currentBot, text, senderUuid, position) {
     forceAgent: allMode && !talkingToMe ? false : null,
   });
   if (bot !== currentBot) return;
+  if (!res.ok && /already generating/i.test(String(res.error || ""))) {
+    if (!opts.fromMailbox) {
+      stashAiChat(currentBot, [text, senderUuid, position], parsed.sender);
+    }
+    return;
+  }
   if (!res.ok) {
     logAiThoughts(res);
     if (res.error && !res.silent) log(`AIChat error: ${res.error}`);
@@ -1156,7 +1300,7 @@ function handleServerNotice(currentBot, rawText) {
       const coords = p
         ? `at (${Math.floor(p.x)}, ${Math.floor(p.y)}, ${Math.floor(p.z)})`
         : "";
-      log(`Protection: Server blocked PvP ${coords} — pausing PvP attacks`);
+      log(`Protection: Server blocked PvP ${coords} - pausing PvP attacks`);
       sessionLogger.record(
         "Movement",
         "No-PvP Zone Detected",
@@ -1180,7 +1324,7 @@ function handleServerNotice(currentBot, rawText) {
         ? `at (${Math.floor(p.x)}, ${Math.floor(p.y)}, ${Math.floor(p.z)})`
         : "";
       log(
-        `Protection: Server blocked block breaking/building ${coords} — disabling pathfinder digging`,
+        `Protection: Server blocked block breaking/building ${coords} - disabling pathfinder digging`,
       );
       sessionLogger.record(
         "Movement",
@@ -2167,8 +2311,8 @@ function buildTelemetrySnapshot() {
       position: null,
       yaw: 0,
       pitch: 0,
-      dimension: "—",
-      gameMode: "—",
+      dimension: "-",
+      gameMode: "-",
       ping: 0,
       quickBarSlot: 0,
       heldItem: null,
@@ -2306,7 +2450,11 @@ async function maybeSpontaneousChat() {
   if (now - (ollamaManager.lastReplyTime || 0) < 120000) return;
 
   const ctx = buildLiveBotAiContext();
-  if (!ctx || !Array.isArray(ctx.nearbyPlayers) || ctx.nearbyPlayers.length === 0) {
+  if (
+    !ctx ||
+    !Array.isArray(ctx.nearbyPlayers) ||
+    ctx.nearbyPlayers.length === 0
+  ) {
     return;
   }
   const nearestPlayer = String(ctx.nearbyPlayers[0] || "")
@@ -2318,7 +2466,7 @@ async function maybeSpontaneousChat() {
   const res = await ollamaManager
     .generateChatReply({
       sender: nearestPlayer,
-      message: `[Spontaneous chat moment — ${nearestPlayer} is nearby (${ctx.nearbyPlayers[0]}). Say one short, natural, casual gamer remark about what you're doing right now, the time of day, or ask ${nearestPlayer} what they're up to. Keep it under 65 chars.]`,
+      message: `[Spontaneous chat moment - ${nearestPlayer} is nearby (${ctx.nearbyPlayers[0]}). Say one short, natural, casual gamer remark about what you're doing right now, the time of day, or ask ${nearestPlayer} what they're up to. Keep it under 65 chars.]`,
       botContext: ctx,
       bypassCooldown: false,
     })
@@ -2364,6 +2512,17 @@ function resolveScriptName(id) {
 }
 const scriptSources = new Map();
 const scriptRunIds = new Map();
+const scriptRunControllers = new Map();
+const scriptRunScheduler = createScriptRunScheduler({
+  onWaiting: (name) => log(`${name}: Waiting for the previous run to stop`),
+  onError: (name, err, generation) => {
+    if (!scriptRunScheduler.isCurrent(name, generation)) return;
+    log(`Error in ${name}: ${err?.message || err}`);
+    activeScripts.delete(name);
+    setAiScriptFlag(name, false);
+    sendToRenderer("script-state", name, false);
+  },
+});
 
 function setAiScriptFlag(scriptName, on) {
   const flag = AI_SCRIPT_FLAGS[scriptName];
@@ -2409,6 +2568,37 @@ function renderScriptOptionHtml(option, scriptName) {
   return "";
 }
 
+const SCRIPT_OBJECTIVES = {
+  gearup: "Gather materials and craft/equip the selected gear tier",
+  mine: "Find and mine the configured block",
+  excavator: "Dig out the configured area",
+  autofarm: "Harvest and replant nearby crops",
+  autofish: "Fish and collect catches",
+  autobuild: "Build the configured structure",
+  chesttransfer: "Move items between inventory and chests",
+  follow: "Follow the configured player",
+  goto: "Walk to the configured coordinates",
+  guard: "Guard the area and fight hostiles",
+  hunt: "Hunt animals for food",
+  killaura: "Attack nearby targets",
+  survival: "Stay alive: eat, fight back and avoid hazards",
+  autoeat: "Eat when hungry",
+  autoarmor: "Wear the best armor",
+  autototem: "Keep a totem in the off-hand",
+  autotool: "Hold the best tool for the block being mined",
+  invmanager: "Keep the inventory sorted and drop junk",
+  antiafk: "Avoid being kicked for AFK",
+  autorespawn: "Respawn and go back after death",
+  autoreconnect: "Reconnect when disconnected",
+  safewalk: "Avoid walking off edges",
+};
+
+function describeScriptObjective(scriptName) {
+  return (
+    SCRIPT_OBJECTIVES[String(scriptName).toLowerCase()] || `Run ${scriptName}`
+  );
+}
+
 function registerScriptFile(fullPath, type) {
   delete require.cache[require.resolve(fullPath)];
   const scriptDetails = require(fullPath);
@@ -2434,12 +2624,18 @@ function registerScriptFile(fullPath, type) {
     });
   }
   // Module log lines go through here so problems can be handed to the AI.
+  const trackActivity = !AI_SELF_SCRIPTS.has(scriptName.toLowerCase());
   const scriptLog = (text) => {
     log(text);
+    // Every module's latest status line is its live sub-objective in the AI
+    // Brain, so the agent always knows what each running module is doing.
+    if (trackActivity && activeScripts.has(scriptName)) {
+      aiBrain.recordScriptActivity(scriptName, String(text), bot);
+    }
     maybeAiFixModule(scriptName, String(text));
   };
 
-  let formattedHTML = `<div class="${escapeAttr(scriptName)}-script script-container" data-script="${escapeAttr(scriptName)}" data-type="${escapeAttr(type)}"><p class="${escapeAttr(scriptName)}-name script-name" data-script="${escapeAttr(scriptName)}">${escapeAttr(scriptName)}</p><form class="script-options">`;
+  let formattedHTML = `<div class="${escapeAttr(scriptName)}-script script-container" data-script="${escapeAttr(scriptName)}" data-type="${escapeAttr(type)}"><button type="button" class="${escapeAttr(scriptName)}-name script-name" data-script="${escapeAttr(scriptName)}" aria-pressed="false">${escapeAttr(scriptName)}</button><form class="script-options">`;
   for (const option of options) {
     formattedHTML += renderScriptOptionHtml(option, scriptName);
   }
@@ -2457,14 +2653,15 @@ function registerScriptFile(fullPath, type) {
     aiSync: Boolean(scriptDetails.info.aiSync),
   });
 
-  scriptFunctions.set(scriptName, () => {
+  scriptFunctions.set(scriptName, (generation) => {
+    const runBot = bot;
     const rawLibs = loadLibraries();
     // Wrap libs.mcData so local AI scripts that access `mcData.blocksByName`, `mcData.itemsByName`,
     // `mcData.blocks[name]`, or `mcData.items[name]` directly without calling `mcData(bot.version)`
     // transparently resolve from `bot.registry`!
     const wrappedMcData = new Proxy(rawLibs.mcData, {
       get(target, prop) {
-        const reg = bot?.registry;
+        const reg = runBot?.registry;
         if (reg) {
           if (prop === "blocks" || prop === "blocksByName") {
             return reg.blocksByName;
@@ -2477,51 +2674,102 @@ function registerScriptFile(fullPath, type) {
         return target[prop];
       },
     });
-    const libs = { ...rawLibs, mcData: wrappedMcData };
+    const libs = {
+      ...rawLibs,
+      mcData: wrappedMcData,
+      ai: createScriptAi(),
+    };
     const runId = (scriptRunIds.get(scriptName) || 0) + 1;
     scriptRunIds.set(scriptName, runId);
+    const controller = new AbortController();
+    scriptRunControllers.set(scriptName, controller);
+    const isCurrentRun = () =>
+      !controller.signal.aborted && scriptRunIds.get(scriptName) === runId;
+    const runLog = (text) => {
+      if (isCurrentRun()) scriptLog(text);
+    };
+    const runClearLog = (text) => {
+      if (isCurrentRun()) clearLog(text);
+    };
+    const repeater = createScriptRepeater(controller.signal, (err) => {
+      runLog(`Error in ${scriptName}: ${err?.message || err}`);
+    });
+    repeater.stop = () => controller.abort();
+    repeater.isCurrent = () => scriptRunIds.get(scriptName) === runId;
+    repeater.report = (text) => {
+      if (repeater.isCurrent()) scriptLog(text);
+    };
+    if (trackActivity) {
+      aiBrain.setScriptObjective(
+        scriptName,
+        describeScriptObjective(scriptName),
+        bot,
+      );
+    }
     return Promise.resolve()
       .then(() =>
-        scriptDetails.script(
-          bot,
-          scriptLog,
-          clearLog,
-          getOption,
-          (func, intervalNum) => {
-            const safeInterval =
-              Number.isFinite(Number(intervalNum)) && Number(intervalNum) >= 50
-                ? Number(intervalNum)
-                : 1000;
-            return new Promise((resolve) => {
-              const timer = setInterval(async () => {
-                if (!activeScripts.has(scriptName)) {
-                  clearInterval(timer);
-                  resolve(true);
-                } else {
-                  try {
-                    await func();
-                  } catch (err) {
-                    scriptLog(`Error in ${scriptName}: ${err.message}`);
-                  }
-                }
-              }, safeInterval);
-            });
-          },
-          libs,
-        ),
+        controller.signal.aborted
+          ? undefined
+          : runWithPathOwner(
+              scriptName,
+              "script",
+              () =>
+                scriptDetails.script(
+                  runBot,
+                  runLog,
+                  runClearLog,
+                  getOption,
+                  repeater,
+                  libs,
+                ),
+              controller.signal,
+            ),
       )
       .catch((err) => {
-        scriptLog(`Error in ${scriptName}: ${err.message || err}`);
+        runLog(`Error in ${scriptName}: ${err?.message || err}`);
       })
       .finally(() => {
+        controller.abort();
+        if (scriptRunControllers.get(scriptName) === controller) {
+          scriptRunControllers.delete(scriptName);
+        }
         // A newer run (quick off/on toggle) owns the state now.
-        if (scriptRunIds.get(scriptName) !== runId) return;
+        if (
+          scriptRunIds.get(scriptName) !== runId ||
+          !scriptRunScheduler.isCurrent(scriptName, generation)
+        )
+          return;
+        aiBrain.clearScriptActivity(scriptName, bot);
         activeScripts.delete(scriptName);
         setAiScriptFlag(scriptName, false);
         sendToRenderer("script-state", scriptName, false);
       });
   });
   return scriptName;
+}
+
+// libs.ai for scripts: same calls whether Ollama or DeepSeek is the provider.
+function createScriptAi() {
+  const m = ollamaManager;
+  return {
+    get provider() {
+      return m.isRemote() ? "deepseek" : "ollama";
+    },
+    isReady: () => (m.isRemote() ? Boolean(m.deepseekKey) : true),
+    ask: (prompt, opts) => m.complete(prompt, opts),
+    chat: (messages, opts = {}) => m.complete({ ...opts, messages }),
+    async json(prompt, opts = {}) {
+      const text = await m.complete(prompt, { ...opts, json: true });
+      const body = text.replace(/^```(?:json)?\s*|\s*```$/g, "");
+      try {
+        return JSON.parse(body);
+      } catch (_) {
+        const hit = body.match(/[\[{][\s\S]*[\]}]/);
+        if (!hit) throw new Error("ai: model did not return JSON");
+        return JSON.parse(hit[0]);
+      }
+    },
+  };
 }
 
 function loadScriptsFromDir(fullDirectory, type) {
@@ -2572,8 +2820,8 @@ async function maybeAiFixModule(scriptName, text) {
     aifixOpt !== "off" &&
     Boolean(
       ollamaManager.config.agentEnabled ||
-        activeScripts.has("AIAgent") ||
-        activeScripts.has("AIChat"),
+      activeScripts.has("AIAgent") ||
+      activeScripts.has("AIChat"),
     );
   if (aifixOpt !== "on" && !autoAssistGearUp) return;
   if (st.busy) return;
@@ -2648,7 +2896,9 @@ function startScriptByName(rawId) {
   activeScripts.add(id);
   setAiScriptFlag(id, true);
   sendToRenderer("script-state", id, true);
-  runScriptAs(id, runner);
+  scriptRunScheduler.start(id, (generation) =>
+    runScriptAs(id, () => runner(generation)),
+  );
   return true;
 }
 
@@ -2656,12 +2906,19 @@ function stopScriptByName(rawId) {
   const id = resolveScriptName(rawId);
   if (!activeScripts.has(id)) return false;
   activeScripts.delete(id);
+  scriptRunScheduler.cancel(id);
+  scriptRunControllers.get(id)?.abort();
+  aiBrain.clearScriptActivity(id, bot);
+  if (id === "AutoReconnect" && bot?._mcbpAutoReconnect) {
+    bot._mcbpAutoReconnect.enabled = false;
+  }
   setAiScriptFlag(id, false);
   sendToRenderer("script-state", id, false);
   return true;
 }
 
 function loadAllScripts() {
+  for (const id of [...activeScripts]) stopScriptByName(id);
   scriptFunctions.clear();
   scriptSources.clear();
   scriptOptionDefs.clear();
@@ -2698,7 +2955,7 @@ function disconnectBot(isManual = true) {
   }
   if (isManual) {
     manualDisconnect = true;
-    activeScripts.clear();
+    for (const id of [...activeScripts]) stopScriptByName(id);
   }
   cachedSigns = [];
   aiChatQueue.clear();
@@ -3118,7 +3375,7 @@ async function handleBotControl(payload = {}) {
           activeRadarTarget.username === username;
 
         if (isAlreadyGuarding) {
-          activeScripts.delete("Guard");
+          stopScriptByName("Guard");
           activeRadarTarget = { subAction: "", username: "", entityId: null };
           clearPathfinderGoal(bot);
           sendToRenderer("script-state", "Guard", false);
@@ -3127,8 +3384,7 @@ async function handleBotControl(payload = {}) {
         }
 
         if (activeScripts.has("Hunt")) {
-          activeScripts.delete("Hunt");
-          sendToRenderer("script-state", "Hunt", false);
+          stopScriptByName("Hunt");
         }
 
         activeRadarTarget = { subAction: "guard", username, entityId: null };
@@ -3146,12 +3402,7 @@ async function handleBotControl(payload = {}) {
             .catch(() => {});
         }
         if (!activeScripts.has("Guard")) {
-          const runner = scriptFunctions.get("Guard");
-          if (runner) {
-            activeScripts.add("Guard");
-            sendToRenderer("script-state", "Guard", true);
-            runScriptAs("Guard", runner);
-          }
+          startScriptByName("Guard");
         }
         log(`Guard: Assigned to protect ${username}`);
         return;
@@ -3164,7 +3415,7 @@ async function handleBotControl(payload = {}) {
           activeRadarTarget.username === username;
 
         if (isAlreadyHunting) {
-          activeScripts.delete("Hunt");
+          stopScriptByName("Hunt");
           activeRadarTarget = { subAction: "", username: "", entityId: null };
           clearPathfinderGoal(bot);
           sendToRenderer("script-state", "Hunt", false);
@@ -3173,8 +3424,7 @@ async function handleBotControl(payload = {}) {
         }
 
         if (activeScripts.has("Guard")) {
-          activeScripts.delete("Guard");
-          sendToRenderer("script-state", "Guard", false);
+          stopScriptByName("Guard");
         }
 
         activeRadarTarget = { subAction: "hunt", username, entityId: null };
@@ -3192,12 +3442,7 @@ async function handleBotControl(payload = {}) {
             .catch(() => {});
         }
         if (!activeScripts.has("Hunt")) {
-          const runner = scriptFunctions.get("Hunt");
-          if (runner) {
-            activeScripts.add("Hunt");
-            sendToRenderer("script-state", "Hunt", true);
-            runScriptAs("Hunt", runner);
-          }
+          startScriptByName("Hunt");
         }
         log(`Hunt: Pursuing ${username}`);
         return;
@@ -3517,14 +3762,12 @@ function registerIpcHandlers() {
 
       let connectHost = address.ip;
       let connectPort = address.port;
-      if (
-        viaTarget.needed &&
-        !isMicrosoft &&
-        !useProxy &&
-        !server._skipViaProxy
-      ) {
+      // Set once the bot exists; the ViaProxy auth plugin asks for it when an
+      // online-mode server sends its encryption request.
+      let bridgedBot = null;
+      if (viaTarget.needed && !useProxy && !server._skipViaProxy) {
         log(
-          `ViaVersion: MC ${viaTarget.targetVersion} detected — starting local ViaProxy bridge (26.1 ⇄ ${viaTarget.targetVersion})...`,
+          `ViaVersion: MC ${viaTarget.targetVersion} detected - starting local ViaProxy bridge (26.1 ⇄ ${viaTarget.targetVersion})...`,
         );
         const bridge = await viaProxyBridge.startBridge({
           targetHost: address.ip,
@@ -3532,6 +3775,18 @@ function registerIpcHandlers() {
           targetVersion: viaTarget.targetVersion,
           cacheDir: path.join(app.getPath("userData"), "viaproxy"),
           log: (t) => log(t),
+          // Microsoft accounts: join online-mode servers with the bot's own
+          // session (ViaProxy never sees the token).
+          joinServer: isMicrosoft
+            ? (serverIdHash) => {
+                const session = bridgedBot?._client?.session;
+                return viaProxyBridge.mojangJoinServer({
+                  accessToken: session?.accessToken,
+                  profileId: session?.selectedProfile?.id,
+                  serverIdHash,
+                });
+              }
+            : null,
         });
         if (bridge.ok) {
           activeViaBridge = bridge;
@@ -3543,8 +3798,16 @@ function registerIpcHandlers() {
           );
         } else {
           log(
-            `ViaVersion: ViaProxy unavailable (${bridge.error}) — using built-in MC ${viaTarget.targetVersion} protocol shim`,
+            `ViaVersion: ViaProxy unavailable (${bridge.error}) - using built-in MC ${viaTarget.targetVersion} protocol shim`,
           );
+          if (
+            viaTarget.protocol >= 777 ||
+            /^26\.(3|[4-9])/.test(String(viaTarget.targetVersion))
+          ) {
+            log(
+              `ViaVersion: MC ${viaTarget.targetVersion} changed packet IDs and block/item data, so the built-in shim usually stalls during login. Install Java ${viaProxyBridge.MIN_JAVA_MAJOR}+ so the ViaProxy bridge can be used.`,
+            );
+          }
           normalizedVersion = resolveSupportedVersion(
             viaTarget.targetVersion,
             mcData,
@@ -3589,7 +3852,7 @@ function registerIpcHandlers() {
             } catch (_) {}
           }
           log(
-            `Microsoft Auth: Code ${code} (copied to clipboard!) — Open ${uri}`,
+            `Microsoft Auth: Code ${code} (copied to clipboard!) - Open ${uri}`,
           );
           sendToRenderer("msa-code", {
             userCode: code,
@@ -3602,12 +3865,34 @@ function registerIpcHandlers() {
 
       const currentBot = mineflayer.createBot(botOptions);
       bot = currentBot;
+      bridgedBot = currentBot;
       currentBot.loadPlugin(pathfinder);
+      const engineLogAt = new Map();
+      currentBot.on("pathfinder_engine_switched", (info = {}) => {
+        if (bot !== currentBot) return;
+        const text = `Pathfinder: ${info.from} hit a problem (${info.reason}) - switched to ${info.to === "stock" ? "mineflayer-pathfinder" : "Baritone"}`;
+        // Short hops (drop pickup in a pit) can switch often; show each kind
+        // of switch at most every 30s in the console.
+        const key = `${info.from}>${info.to}:${info.reason}`;
+        const now = Date.now();
+        if (now - (engineLogAt.get(key) || 0) > 30000) {
+          engineLogAt.set(key, now);
+          log(text);
+        }
+        aiBrain.recordEngineSwitch(info, currentBot);
+        sessionLogger.record("Movement", "Pathfinder Engine Switch", text);
+      });
       currentBot.mcData = mcData;
       currentBot.Movements = Movements;
       currentBot.pathfinderGoals = goals;
       attachViaVersionAdapter(currentBot, { log: (t) => log(t) });
       attachSubServerChatFix(currentBot, { log: (t) => log(t) });
+      // Every outgoing message (panel, AI, scripts) is cleaned, split,
+      // paced and adapted to what the server says back.
+      installChatGuard(currentBot, {
+        log: (t) => log(t),
+        serverKey: `${address.ip}:${address.port}`,
+      });
 
       currentBot.once("spawn", () => {
         if (bot !== currentBot) return;
@@ -3882,7 +4167,7 @@ function registerIpcHandlers() {
           const fallbackVer = resolveVersionFromKickOrError(kickText, mcData);
           if (fallbackVer && fallbackVer !== normalizedVersion) {
             log(
-              `ViaVersion: Server requested MC ${fallbackVer} — auto-retrying connection...`,
+              `ViaVersion: Server requested MC ${fallbackVer} - auto-retrying connection...`,
             );
             setTimeout(() => {
               if (!manualDisconnect) {
@@ -3926,13 +4211,21 @@ function registerIpcHandlers() {
         }
       });
 
-      currentBot.on("end", () => {
+      currentBot.on("end", (endReason) => {
         if (bot !== currentBot) return;
+        const phase = currentBot._client?.state || "";
+        if (!currentBot._mcbpHasSpawned) {
+          log(
+            `Connection closed before spawning (phase: ${phase || "unknown"}${endReason ? `, reason: ${endReason}` : ""})${currentBot._mcbpViaLastConfigPackets ? ` - last server packets: ${currentBot._mcbpViaLastConfigPackets}` : ""}`,
+          );
+        } else if (endReason && endReason !== "socketClosed") {
+          log(`Connection ended: ${endReason}`);
+        }
         const autoRecCfg = currentBot._mcbpAutoReconnect;
         const shouldAutoReconnect =
           !manualDisconnect &&
           lastConnectServer &&
-          (activeScripts.has("AutoReconnect") || autoRecCfg?.enabled);
+          activeScripts.has("AutoReconnect");
         const scriptsToRestore =
           shouldAutoReconnect && autoRecCfg?.resumeScripts !== false
             ? new Set(activeScripts)
@@ -3941,8 +4234,8 @@ function registerIpcHandlers() {
               : null;
         const delayMs = autoRecCfg?.delayMs || 5000;
 
+        for (const id of [...activeScripts]) stopScriptByName(id);
         bot = null;
-        activeScripts.clear();
         stopTelemetryLoop();
         sendToRenderer("connection-state", { state: "disconnected" });
         log("Bot disconnected");
@@ -4032,7 +4325,7 @@ function registerIpcHandlers() {
         }
         log(`AIChat: Generating reply for "${promptText}"...`);
         const aiRes = await runAiReply({
-          sender: sessionState.mcName || sessionState.username || "User",
+          sender: consoleSender() || "User",
           message: promptText,
           bypassCooldown: true,
         });
@@ -4064,10 +4357,7 @@ function registerIpcHandlers() {
           return;
         }
         try {
-          const out = await aiTools.runCommands(
-            text,
-            sessionState.mcName || sessionState.username || "",
-          );
+          const out = await aiTools.runCommands(text, consoleSender());
           log(`Console (!do): ${out}`);
         } catch (err) {
           log(`Console (!do) error: ${err.message || err}`);
@@ -4093,7 +4383,7 @@ function registerIpcHandlers() {
         const query = args.join(" ").trim().toLowerCase();
         if (!query) {
           for (const s of signs) {
-            const label = s.text || `(${s.name} — empty)`;
+            const label = s.text || `(${s.name} - empty)`;
             log(`Sign (${s.x}, ${s.y}, ${s.z}) [${s.distance}m]: ${label}`);
           }
         } else {
@@ -4128,12 +4418,7 @@ function registerIpcHandlers() {
               : rawTierArg;
         await setOptionValue("tier", "GearUp", tierArg);
         if (!activeScripts.has("GearUp")) {
-          const runner = scriptFunctions.get("GearUp");
-          if (runner) {
-            activeScripts.add("GearUp");
-            sendToRenderer("script-state", "GearUp", true);
-            runScriptAs("GearUp", runner);
-          }
+          startScriptByName("GearUp");
         }
         log(`GearUp: Started progression to ${tierArg} tier`);
       } else if (cmd === "weapon") {
@@ -4249,6 +4534,10 @@ function registerIpcHandlers() {
         delete rest[flag];
       }
     }
+    if (typeof rest.deepseekApiKey === "string") {
+      ollamaManager.setApiKey(rest.deepseekApiKey);
+    }
+    delete rest.deepseekApiKey;
     const updated = ollamaManager.saveConfig(rest);
     // Preload a newly chosen model so the next reply is fast.
     if (ollamaManager.isActive() && ("model" in rest || "agentModel" in rest)) {
@@ -4276,7 +4565,24 @@ function registerIpcHandlers() {
     return st;
   });
 
+  ipcMain.handle("ai-test-key", async (_event, key) => {
+    const res = await ollamaManager.checkApiKey(key);
+    if (res.ok && typeof key === "string" && key.trim()) {
+      ollamaManager.setApiKey(key);
+    }
+    const st = await ollamaManager.getStatus();
+    sendToRenderer("ollama-status", st);
+    return { ...res, status: st };
+  });
+
   ipcMain.handle("ollama-auto-setup", async (_event, payload = {}) => {
+    if (ollamaManager.isRemote()) {
+      return {
+        ok: true,
+        model: ollamaManager.resolveModel(),
+        status: await ollamaManager.getStatus(),
+      };
+    }
     const preferredModel = String(payload?.model || "").trim();
     sessionLogger.record(
       "UI Click",
@@ -4296,7 +4602,7 @@ function registerIpcHandlers() {
     const st = await ollamaManager.getStatus();
     sendToRenderer("ollama-status", st);
     if (res.ok) {
-      log(`AIChat: Auto-Setup complete — ${res.model} is ready!`);
+      log(`AIChat: Auto-Setup complete - ${res.model} is ready!`);
       sessionLogger.record(
         "AI Setup",
         "Ollama Auto-Setup Complete",
@@ -4311,6 +4617,13 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle("ollama-pull-model", async (_event, modelName) => {
+    if (ollamaManager.isRemote()) {
+      return {
+        ok: false,
+        error: "Cloud models need no download.",
+        status: await ollamaManager.getStatus(),
+      };
+    }
     const clean = String(modelName || "").trim();
     sessionLogger.record("UI Click", `Pulling Ollama model: ${clean}`, "");
     pushSessionLogStatus();
@@ -4349,9 +4662,11 @@ function registerIpcHandlers() {
     );
     pushSessionLogStatus();
 
-    await ollamaManager.ensureServerRunning((prog) =>
-      sendToRenderer("ollama-progress", prog),
-    );
+    if (!ollamaManager.isRemote()) {
+      await ollamaManager.ensureServerRunning((prog) =>
+        sendToRenderer("ollama-progress", prog),
+      );
+    }
     const res = await runAiReply({
       sender:
         payload?.sender ||
@@ -4506,22 +4821,35 @@ function registerIpcHandlers() {
     const progress = (p) => sendToRenderer("studio-gen-progress", p);
 
     try {
-      progress({ stage: "starting", message: "Checking local Ollama..." });
+      const remote = ollamaManager.isRemote();
+      if (remote) {
+        if (!ollamaManager.deepseekKey)
+          return { ok: false, error: "Add your DeepSeek API key first." };
+      } else {
+        progress({ stage: "starting", message: "Checking local Ollama..." });
+      }
       let st = await ollamaManager.getStatus();
-      if (!st.installed) {
+      if (!remote && !st.installed) {
         const inst = await ollamaManager.installOllamaBinary(progress);
         if (!inst.ok) return { ok: false, error: inst.error };
       }
-      const started = await ollamaManager.ensureServerRunning(progress);
-      if (!started.ok) return { ok: false, error: started.error };
-      st = await ollamaManager.getStatus();
+      if (!remote) {
+        const started = await ollamaManager.ensureServerRunning(progress);
+        if (!started.ok) return { ok: false, error: started.error };
+        st = await ollamaManager.getStatus();
+      }
 
       const model = String(
-        payload.model || ollamaManager.resolveScriptModel(st.installedModels),
+        (remote && !/^deepseek-/.test(payload.model || "")
+          ? ""
+          : payload.model) ||
+          ollamaManager.resolveScriptModel(st.installedModels),
       ).trim();
-      const installed = st.installedModels.some(
-        (m) => m.name === model || m.name === `${model}:latest`,
-      );
+      const installed =
+        remote ||
+        st.installedModels.some(
+          (m) => m.name === model || m.name === `${model}:latest`,
+        );
       if (!installed) {
         const pulled = await ollamaManager.pullModel(model, progress);
         sendToRenderer("ollama-status", await ollamaManager.getStatus());
@@ -4541,33 +4869,39 @@ function registerIpcHandlers() {
       });
       let planText = "";
       let lastSent = 0;
-      const planRes = await ollamaManager.streamChat({
-        model,
-        messages: planMessages,
-        signal: ctrl.signal,
-        options: { temperature: 0.25, num_predict: 900, num_ctx: 8192 },
-        onToken: (text) => {
-          const now = Date.now();
-          if (now - lastSent > 120) {
-            lastSent = now;
-            const snippet = String(text || "")
-              .replace(/<think>[\s\S]*?<\/think>/gi, "")
-              .replace(/\s+/g, " ")
-              .trim()
-              .slice(-110);
-            progress({
-              stage: "planning",
-              message: `Planning with ${model}: ${snippet || "analyzing requirements..."}`,
-            });
-          }
-        },
-      });
+      // The cloud model writes good code in one pass, so the separate (paid)
+      // planning call is skipped there.
+      const planRes = remote
+        ? { ok: false }
+        : await ollamaManager.streamChat({
+            model,
+            messages: planMessages,
+            signal: ctrl.signal,
+            options: { temperature: 0.25, num_predict: 900, num_ctx: 8192 },
+            onToken: (text) => {
+              const now = Date.now();
+              if (now - lastSent > 120) {
+                lastSent = now;
+                const snippet = String(text || "")
+                  .replace(/<think>[\s\S]*?<\/think>/gi, "")
+                  .replace(/\s+/g, " ")
+                  .trim()
+                  .slice(-110);
+                progress({
+                  stage: "planning",
+                  message: `Planning with ${model}: ${snippet || "analyzing requirements..."}`,
+                });
+              }
+            },
+          });
       if (ctrl.signal.aborted) return { ok: false, error: "Cancelled" };
       if (planRes.ok && planRes.text) {
         planText = String(planRes.text)
           .replace(/<think>[\s\S]*?<\/think>/gi, "")
           .trim();
-        aiBrain.recordThought(`Studio Plan (${model}): ${planText.slice(0, 220)}`);
+        aiBrain.recordThought(
+          `Studio Plan (${model}): ${planText.slice(0, 220)}`,
+        );
       }
 
       // Stage 2: Write the complete script from the plan + Mineflayer docs
@@ -4665,10 +4999,7 @@ function registerIpcHandlers() {
           text: candidate,
         });
         const candidateCheck = await scriptStudio.dryRunScript(candidate);
-        if (
-          candidateCheck.ok ||
-          !/^Syntax/.test(candidateCheck.error || "")
-        ) {
+        if (candidateCheck.ok || !/^Syntax/.test(candidateCheck.error || "")) {
           code = candidate;
           validation = candidateCheck;
         }
@@ -4823,7 +5154,7 @@ function registerIpcHandlers() {
     });
     if (res.ok) {
       log(
-        `Proxy: Tested ${res.tested} proxies — ${res.working} verified working`,
+        `Proxy: Tested ${res.tested} proxies - ${res.working} verified working`,
       );
     }
     sendToRenderer("proxy-status", proxyManager.getStatus());
@@ -4889,6 +5220,7 @@ if (gotLock) {
       baseDirs: [__dirname],
     });
     sessionLogger.init(resolveLogsDir(), { appVersion: app.getVersion() });
+    aiBrain.setBotProvider(() => bot);
     aiBrain.onUpdate((snap) => sendToRenderer("ai-brain-status", snap));
     bottingManager.onUpdate((st) => sendToRenderer("botting-status", st));
     registerIpcHandlers();

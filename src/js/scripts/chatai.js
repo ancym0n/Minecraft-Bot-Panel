@@ -22,7 +22,16 @@ const info = {
 // that is already running is shared, never started twice.
 async function prepareOllama(log, clearLog, tag, { model, isActive }) {
   const status = await ollamaManager.getStatus();
+  if (!isActive()) return { ok: false, cancelled: true };
   const targetModel = model();
+  if (ollamaManager.isRemote()) {
+    if (!status.serverRunning) {
+      const error = "DeepSeek API key is missing";
+      log(`${tag} error: ${error}`);
+      return { ok: false, error };
+    }
+    return { ok: true, model: targetModel };
+  }
   const hasModel = status.installedModels.some(
     (m) => m.name === targetModel || m.name === `${targetModel}:latest`,
   );
@@ -69,7 +78,8 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   clearLog("AIChat:");
   const res = await prepareOllama(log, clearLog, "AIChat", {
     model: () => ollamaManager.resolveModel(),
-    isActive: () => Boolean(ollamaManager.config.enabled),
+    isActive: () =>
+      !scriptRepeater.signal?.aborted && Boolean(ollamaManager.config.enabled),
   });
   if (res.ok) {
     const cfg = ollamaManager.config;
@@ -78,7 +88,8 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
     );
   }
   // Stay alive while toggled on; the chat listener does the replying.
-  await scriptRepeater(() => {}, info.default.interval);
+  if (!scriptRepeater.signal?.aborted)
+    await scriptRepeater(() => {}, info.default.interval);
 }
 
 module.exports = { info, script, prepareOllama };

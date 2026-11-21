@@ -14,6 +14,7 @@ const { Vec3 } = require("vec3");
 const { BaritoneAStar } = require("./astar");
 const { BacktrackMemory } = require("./calculationContext");
 const { BaritoneMovements, Move, isDoorOrGateOpen } = require("./movements");
+const { createStockFallbackEngine } = require("./dualPathfinder");
 
 let PhysicsClass = null;
 let LockClass = null;
@@ -123,12 +124,15 @@ function getTurnAngleRad(p, n1, n2) {
 const ownerStore = new AsyncLocalStorage();
 const PATH_PRIORITY = { system: 1, script: 1, ai: 2, user: 3 };
 
-function runWithPathOwner(owner, priority, fn) {
+function runWithPathOwner(owner, priority, fn, signal) {
   const prio =
     typeof priority === "number"
       ? priority
       : PATH_PRIORITY[String(priority || "").toLowerCase()] || 1;
-  return ownerStore.run({ owner: String(owner || "system"), priority: prio }, fn);
+  return ownerStore.run(
+    { owner: String(owner || "system"), priority: prio, signal },
+    fn,
+  );
 }
 
 const LEASE_TTL_MS = 45000; // a static goal that never finishes stops blocking after this
@@ -136,14 +140,25 @@ const LEASE_GRACE_MS = 4000; // internal helpers may clear and restore a goal br
 const DEFERRED_TTL_MS = 60000;
 const BUSY_WAIT_MS = 30000;
 
-function injectBaritonePathfinder(bot) {
+const FAILOVER_MAX_SWITCHES_PER_GOAL = 4;
+const FAILOVER_MIN_INTERVAL_MS = 1200;
+const FAILOVER_STUCK_WINDOW_MS = 20000;
+const FAILOVER_STUCK_REASONS = new Set(["stuck", "dig_error", "place_error"]);
+
+// `options.mcbpStockPathfinder` may carry the mineflayer-pathfinder package used
+// as the fallback engine (mineflayer's loadPlugin passes the bot options as the
+// second argument, which simply has no such key).
+function injectBaritonePathfinder(bot, options = {}) {
   loadPathfinderHelpers();
 
   // Remove any previously registered stock monitorMovement listener before injecting ours
   if (bot._mcbpBaritoneMonitor && typeof bot.removeListener === "function") {
     bot.removeListener("physicsTick", bot._mcbpBaritoneMonitor);
   }
-  if (bot._mcbpStockPathfinderMonitor && typeof bot.removeListener === "function") {
+  if (
+    bot._mcbpStockPathfinderMonitor &&
+    typeof bot.removeListener === "function"
+  ) {
     bot.removeListener("physicsTick", bot._mcbpStockPathfinderMonitor);
   }
   // If stock mineflayer-pathfinder was loaded earlier, detach its `monitorMovement` listener
@@ -196,10 +211,217 @@ function injectBaritonePathfinder(bot) {
   bot.pathfinder.enablePathShortcut = false;
   bot.pathfinder.LOSWhenPlacingBlocks = true;
 
+  // --- Dual-engine failover: Baritone <-> stock mineflayer-pathfinder ----------
+  // Baritone stays the public API (goals, leases, events). When it reports
+  // noPath / an empty timeout or gets stuck twice, the same goal is handed to
+  // the stock engine; when that one fails, Baritone takes over again.
+  const facadeApi = bot.pathfinder;
+  const stockPkgOpt =
+    options && typeof options === "object" ? options.mcbpStockPathfinder : null;
+  let fallback = null;
+  let fallbackTried = false;
+  let engine = "baritone";
+  let pendingSwitch = null;
+  let switchesForGoal = 0;
+  let totalSwitches = 0;
+  let lastSwitchAt = 0;
+  let lastSwitchReason = "";
+  let stuckTimes = [];
+  let noPathBy = new Set();
+  let stockErrors = 0;
+  bot.pathfinder.enableFailover = true;
+
+  function getFallback() {
+    if (fallback) return fallback;
+    if (fallbackTried || !bot.registry?.blocksByName?.water) return null;
+    fallbackTried = true;
+    try {
+      fallback = createStockFallbackEngine(bot, {
+        pkg: stockPkgOpt,
+        getFacade: () => facadeApi,
+      });
+    } catch (_) {
+      fallback = null;
+    }
+    return fallback;
+  }
+
+  function resetFailoverCounters() {
+    switchesForGoal = 0;
+    stuckTimes = [];
+    noPathBy = new Set();
+    pendingSwitch = null;
+  }
+
+  function canSwitch() {
+    return Boolean(
+      facadeApi.enableFailover !== false &&
+      stateGoal &&
+      switchesForGoal < FAILOVER_MAX_SWITCHES_PER_GOAL &&
+      Date.now() - lastSwitchAt >= FAILOVER_MIN_INTERVAL_MS,
+    );
+  }
+
+  function isPathFailure(results) {
+    if (!results || !stateGoal) return false;
+    if (results.status === "noPath") {
+      try {
+        return !(
+          bot.entity?.position && stateGoal.isEnd(bot.entity.position.floored())
+        );
+      } catch (_) {
+        return true;
+      }
+    }
+    return (
+      results.status === "timeout" &&
+      (!results.path || results.path.length === 0)
+    );
+  }
+
+  function noteSwitch(from, to, reason) {
+    lastSwitchAt = Date.now();
+    switchesForGoal += 1;
+    totalSwitches += 1;
+    lastSwitchReason = String(reason || "problem");
+    stuckTimes = [];
+    try {
+      bot.emit("pathfinder_engine_switched", {
+        from,
+        to,
+        reason: lastSwitchReason,
+        totalSwitches,
+        switchesForGoal,
+      });
+    } catch (_) {}
+  }
+
+  // Drops Baritone's current path without emitting path_reset / path_stop.
+  function clearBaritonePathSilently() {
+    path = [];
+    pathIsSegment = false;
+    astarContext = null;
+    astarPartial = false;
+    pathUpdated = false;
+    placing = false;
+    placingBlock = null;
+    returningPos = null;
+    if (digging) {
+      bot.on("diggingAborted", detectDiggingStopped);
+      bot.on("diggingCompleted", detectDiggingStopped);
+      try {
+        bot.stopDigging();
+      } catch (_) {}
+    }
+    lockEquipItem.release();
+    lockPlaceBlock.release();
+    lockUseBlock.release();
+    legalStop();
+  }
+
+  function switchToStock(reason) {
+    if (engine !== "baritone" || !canSwitch()) return false;
+    const fb = getFallback();
+    if (!fb) return false;
+    clearBaritonePathSilently();
+    try {
+      fb.start(stateGoal, dynamicGoal, stateMovements);
+    } catch (_) {
+      return false;
+    }
+    engine = "stock";
+    noteSwitch("baritone", "stock", reason);
+    return true;
+  }
+
+  function switchToBaritone(reason = "") {
+    if (engine !== "stock") return false;
+    try {
+      fallback?.halt();
+    } catch (_) {}
+    engine = "baritone";
+    clearBaritonePathSilently();
+    if (reason) noteSwitch("stock", "baritone", reason);
+    return true;
+  }
+
+  // Baritone path results go through here so a failure can be handed to the
+  // stock engine instead of making goto() reject.
+  function emitPathUpdate(results) {
+    if (engine === "baritone" && isPathFailure(results)) {
+      if (!noPathBy.has("stock") && canSwitch() && getFallback()) {
+        noPathBy.add("baritone");
+        if (switchToStock(`baritone ${results.status}`)) return;
+      }
+      noPathBy.add("baritone");
+    }
+    bot.emit("path_update", results);
+  }
+
+  // Events emitted by the stock engine while it drives the bot.
+  function stockEventFilter(name, args, emitReal) {
+    if (name === "goal_updated") return true; // internal to the hand-over
+    if (name === "path_update") {
+      const results = args[0];
+      if (isPathFailure(results)) {
+        if (!noPathBy.has("baritone") && canSwitch()) {
+          noPathBy.add("stock");
+          pendingSwitch = `stock ${results.status}`;
+          return true;
+        }
+        noPathBy.add("stock");
+      }
+      return emitReal();
+    }
+    if (name === "goal_reached" || name === "path_stop") {
+      engine = "baritone";
+      stateGoal = null;
+      resetFailoverCounters();
+      const res = emitReal();
+      if (!stateGoal) {
+        legalStop();
+        releaseLease();
+      }
+      return res;
+    }
+    return emitReal();
+  }
+
+  bot.on("path_reset", (reason) => {
+    if (!stateGoal || !FAILOVER_STUCK_REASONS.has(reason)) return;
+    const now = Date.now();
+    stuckTimes = stuckTimes.filter((t) => now - t < FAILOVER_STUCK_WINDOW_MS);
+    stuckTimes.push(now);
+    if (stuckTimes.length >= 2 && canSwitch())
+      pendingSwitch = `${engine} ${reason}`;
+  });
+
+  bot.pathfinder.getActiveEngine = () => engine;
+  bot.pathfinder.hasFallbackEngine = () => Boolean(getFallback());
+  bot.pathfinder.getEngineStats = () => ({
+    active: engine,
+    hasFallback: Boolean(fallback),
+    totalSwitches,
+    switchesForGoal,
+    lastSwitchReason,
+  });
+  bot.pathfinder.switchEngine = (reason = "manual") => {
+    if (!stateGoal) return false;
+    lastSwitchAt = 0;
+    return engine === "baritone"
+      ? switchToStock(reason)
+      : switchToBaritone(reason);
+  };
+
   bot.pathfinder.penalizeNode = (pos, amount = 45, ttlMs = 25000) => {
     backtrackMemory.penalizeNode(pos, amount, ttlMs);
   };
-  bot.pathfinder.penalizeEdge = (fromPos, toPos, amount = 65, ttlMs = 25000) => {
+  bot.pathfinder.penalizeEdge = (
+    fromPos,
+    toPos,
+    amount = 65,
+    ttlMs = 25000,
+  ) => {
     backtrackMemory.penalizeEdge(fromPos, toPos, amount, ttlMs);
   };
   bot.pathfinder.clearPenalties = () => {
@@ -309,7 +531,11 @@ function injectBaritonePathfinder(bot) {
   }
 
   function pathFromPlayer(targetPath) {
-    if (!Array.isArray(targetPath) || targetPath.length === 0 || !bot.entity?.position) {
+    if (
+      !Array.isArray(targetPath) ||
+      targetPath.length === 0 ||
+      !bot.entity?.position
+    ) {
       return;
     }
     let minI = 0;
@@ -327,7 +553,8 @@ function injectBaritonePathfinder(bot) {
     const dx = n1.x - bot.entity.position.x;
     const dy = n1.y - bot.entity.position.y;
     const dz = n1.z - bot.entity.position.z;
-    const reached = Math.abs(dx) <= 0.35 && Math.abs(dz) <= 0.35 && Math.abs(dy) < 1;
+    const reached =
+      Math.abs(dx) <= 0.35 && Math.abs(dz) <= 0.35 && Math.abs(dy) < 1;
     if (
       minI + 1 < targetPath.length &&
       n1.toBreak.length === 0 &&
@@ -383,7 +610,10 @@ function injectBaritonePathfinder(bot) {
       movements.prepareForSearch(backtrackMemory);
     }
     if (movements.allowEntityDetection) {
-      if (resetEntityIntersects && typeof movements.clearCollisionIndex === "function") {
+      if (
+        resetEntityIntersects &&
+        typeof movements.clearCollisionIndex === "function"
+      ) {
         movements.clearCollisionIndex();
       }
       if (typeof movements.updateCollisionIndex === "function") {
@@ -493,6 +723,21 @@ function injectBaritonePathfinder(bot) {
 
   function rawSetGoal(goal, dynamic = false) {
     const isDyn = Boolean(dynamic);
+    const equivalent = Boolean(
+      goal &&
+      stateGoal &&
+      isDyn === dynamicGoal &&
+      areGoalsEquivalent(goal, stateGoal),
+    );
+    if (engine === "stock") {
+      // Same target re-sent while the stock engine drives: keep it going.
+      if (equivalent) {
+        stateGoal = goal;
+        return;
+      }
+      switchToBaritone("");
+    }
+    if (!equivalent) resetFailoverCounters();
     // Avoid thrashing active path when scripts re-send an equivalent goal,
     // while keeping `bot.pathfinder.goal === goal` true for reference checks.
     if (
@@ -532,7 +777,11 @@ function injectBaritonePathfinder(bot) {
   }
 
   function isBlocked(ctx) {
-    return leaseActive() && lease.owner !== ctx.owner && ctx.priority < lease.priority;
+    return (
+      leaseActive() &&
+      lease.owner !== ctx.owner &&
+      ctx.priority < lease.priority
+    );
   }
 
   function releaseLease() {
@@ -540,7 +789,7 @@ function injectBaritonePathfinder(bot) {
     const now = Date.now();
     let best = null;
     for (const d of deferred.values()) {
-      if (now - d.at > DEFERRED_TTL_MS) continue;
+      if (d.ctx.signal?.aborted || now - d.at > DEFERRED_TTL_MS) continue;
       if (
         !best ||
         d.ctx.priority > best.ctx.priority ||
@@ -554,7 +803,7 @@ function injectBaritonePathfinder(bot) {
     if (best) {
       setImmediate(() => {
         if (leaseActive()) return;
-        ownerStore.run({ owner: best.ctx.owner, priority: best.ctx.priority }, () =>
+        ownerStore.run(best.ctx, () =>
           bot.pathfinder.setGoal(best.goal, best.dynamic),
         );
       });
@@ -567,8 +816,26 @@ function injectBaritonePathfinder(bot) {
   bot.pathfinder.setGoal = (goal, dynamic = false) => {
     const ctx = resolveCtx();
     const now = Date.now();
+    if (goal && ctx.signal?.aborted) return;
+    if (
+      !goal &&
+      ctx.explicit &&
+      leaseActive() &&
+      lease.owner !== ctx.owner &&
+      ctx.priority <= lease.priority
+    ) {
+      deferred.delete(ctx.owner);
+      bot.emit("path_denied", ctx.owner, lease.owner);
+      return;
+    }
     if (isBlocked(ctx)) {
-      if (goal) deferred.set(ctx.owner, { ctx, goal, dynamic: Boolean(dynamic), at: now });
+      if (goal)
+        deferred.set(ctx.owner, {
+          ctx,
+          goal,
+          dynamic: Boolean(dynamic),
+          at: now,
+        });
       else deferred.delete(ctx.owner);
       bot.emit("path_denied", ctx.owner, lease.owner);
       return;
@@ -579,9 +846,18 @@ function injectBaritonePathfinder(bot) {
       else releaseLease();
       return;
     }
-    if (leaseActive() && lease.owner !== ctx.owner && stateGoal && ctx.priority > lease.priority) {
+    if (
+      leaseActive() &&
+      lease.owner !== ctx.owner &&
+      stateGoal &&
+      ctx.priority > lease.priority
+    ) {
       deferred.set(lease.owner, {
-        ctx: { owner: lease.owner, priority: lease.priority },
+        ctx: {
+          owner: lease.owner,
+          priority: lease.priority,
+          signal: lease.signal,
+        },
         goal: stateGoal,
         dynamic: dynamicGoal,
         at: now,
@@ -590,6 +866,7 @@ function injectBaritonePathfinder(bot) {
     lease = {
       owner: ctx.owner,
       priority: ctx.priority,
+      signal: ctx.signal,
       at: now,
       dynamic: Boolean(dynamic),
       graceUntil: 0,
@@ -607,11 +884,19 @@ function injectBaritonePathfinder(bot) {
     resetPath("movements_updated");
   };
 
-  bot.pathfinder.isMoving = () => path.length > 0;
-  bot.pathfinder.isMining = () => digging;
-  bot.pathfinder.isBuilding = () => placing;
+  bot.pathfinder.isMoving = () =>
+    engine === "stock" && fallback ? fallback.isMoving() : path.length > 0;
+  bot.pathfinder.isMining = () =>
+    engine === "stock" && fallback ? fallback.isMining() : digging;
+  bot.pathfinder.isBuilding = () =>
+    engine === "stock" && fallback ? fallback.isBuilding() : placing;
   bot.pathfinder.stop = () => {
     if (isBlocked(resolveCtx())) return;
+    if (engine === "stock") {
+      switchToBaritone("");
+      stop();
+      return;
+    }
     stopPathing = true;
   };
   function gotoNow(goal) {
@@ -638,23 +923,56 @@ function injectBaritonePathfinder(bot) {
   // Held-back callers wait for the current owner instead of failing or fighting.
   bot.pathfinder.goto = (goal) => {
     const ctx = resolveCtx();
-    if (!isBlocked(ctx)) return gotoNow(goal);
+    const cancelled = () => {
+      const error = new Error("Path cancelled");
+      error.name = "AbortError";
+      return error;
+    };
+    if (ctx.signal?.aborted) return Promise.reject(cancelled());
+    if (!isBlocked(ctx)) {
+      const running = gotoNow(goal);
+      if (!ctx.signal) return running;
+      const onAbort = () => {
+        if (stateGoal === goal && lease?.owner === ctx.owner) {
+          ownerStore.run(ctx, () => bot.pathfinder.setGoal(null));
+        }
+      };
+      ctx.signal.addEventListener("abort", onAbort, { once: true });
+      if (ctx.signal.aborted) onAbort();
+      return running.finally(() =>
+        ctx.signal.removeEventListener("abort", onAbort),
+      );
+    }
     return new Promise((resolve, reject) => {
       const holder = lease ? lease.owner : "another task";
-      const timer = setTimeout(() => {
+      const cleanup = () => {
+        clearTimeout(timer);
         bot.removeListener("path_lease_released", onFree);
+        ctx.signal?.removeEventListener("abort", onAbort);
+      };
+      const onAbort = () => {
+        cleanup();
+        reject(cancelled());
+      };
+      const timer = setTimeout(() => {
+        cleanup();
         reject(new Error(`Pathfinder busy: ${holder} is using it`));
       }, BUSY_WAIT_MS);
       const onFree = () => {
         if (isBlocked(ctx)) return;
-        clearTimeout(timer);
-        bot.removeListener("path_lease_released", onFree);
+        cleanup();
+        if (ctx.signal?.aborted) {
+          reject(cancelled());
+          return;
+        }
         const run = ctx.explicit
-          ? () => ownerStore.run({ owner: ctx.owner, priority: ctx.priority }, () => gotoNow(goal))
-          : () => gotoNow(goal);
+          ? () => ownerStore.run(ctx, () => bot.pathfinder.goto(goal))
+          : () => bot.pathfinder.goto(goal);
         run().then(resolve, reject);
       };
       bot.on("path_lease_released", onFree);
+      ctx.signal?.addEventListener("abort", onAbort, { once: true });
+      if (ctx.signal?.aborted) onAbort();
     });
   };
 
@@ -685,7 +1003,10 @@ function injectBaritonePathfinder(bot) {
         refBlock.clone().offset(edge.x + 0.5, 1, edge.z + 0.5),
       ) > 0.4
     ) {
-      bot.lookAt(bot.entity.position.offset(viewVec.x, viewVec.y, viewVec.z), false);
+      bot.lookAt(
+        bot.entity.position.offset(viewVec.x, viewVec.y, viewVec.z),
+        false,
+      );
       bot.setControlState("sneak", true);
       bot.setControlState("back", true);
       return false;
@@ -754,11 +1075,16 @@ function injectBaritonePathfinder(bot) {
       Math.floor(anchor.y),
       Math.floor(anchor.z),
     );
-    const gen = bot.pathfinder.getPathFromTo(stateMovements, startPos, stateGoal, {
-      timeout: bot.pathfinder.thinkTimeout,
-      primaryTimeout: bot.pathfinder.primaryTimeout,
-      tickTimeout: Math.min(25, bot.pathfinder.tickTimeout),
-    });
+    const gen = bot.pathfinder.getPathFromTo(
+      stateMovements,
+      startPos,
+      stateGoal,
+      {
+        timeout: bot.pathfinder.thinkTimeout,
+        primaryTimeout: bot.pathfinder.primaryTimeout,
+        tickTimeout: Math.min(25, bot.pathfinder.tickTimeout),
+      },
+    );
     const nextStep = gen.next();
     const res = nextStep?.value?.result;
     if (res && res.path && res.path.length > 0) {
@@ -773,6 +1099,35 @@ function injectBaritonePathfinder(bot) {
   function monitorMovement() {
     if (!bot.entity || !bot.entity.position) return;
 
+    if (pendingSwitch) {
+      const reason = pendingSwitch;
+      pendingSwitch = null;
+      if (stateGoal) {
+        if (engine === "baritone") switchToStock(reason);
+        else switchToBaritone(reason);
+      }
+    }
+    if (engine === "stock") {
+      if (!stateGoal || !fallback) {
+        switchToBaritone("");
+      } else {
+        try {
+          fallback.syncMovements(stateMovements);
+          fallback.tick(stockEventFilter);
+          return;
+        } catch (err) {
+          // A broken stock engine must never crash the physics loop: hand the
+          // goal back to Baritone and give up on stock after repeated errors.
+          stockErrors += 1;
+          lastSwitchAt = 0;
+          switchToBaritone(
+            `stock error: ${String(err?.message || err).slice(0, 80)}`,
+          );
+          if (stockErrors >= 3) facadeApi.enableFailover = false;
+        }
+      }
+    }
+
     // Free motion direct chase when enabled and straight line is clear
     if (
       stateMovements &&
@@ -784,7 +1139,10 @@ function injectBaritonePathfinder(bot) {
       const target = stateGoal.entity;
       if (target.position && physics.canStraightLine([target.position])) {
         bot.lookAt(target.position.offset(0, 1.6, 0));
-        if (target.position.distanceSquared(bot.entity.position) > stateGoal.rangeSq) {
+        if (
+          target.position.distanceSquared(bot.entity.position) >
+          stateGoal.rangeSq
+        ) {
           bot.setControlState("forward", true);
         } else {
           legalStop();
@@ -798,7 +1156,10 @@ function injectBaritonePathfinder(bot) {
         stop();
         return;
       }
-      if (typeof stateGoal.hasChanged === "function" && stateGoal.hasChanged()) {
+      if (
+        typeof stateGoal.hasChanged === "function" &&
+        stateGoal.hasChanged()
+      ) {
         resetPath("goal_moved", false);
       }
     }
@@ -807,7 +1168,8 @@ function injectBaritonePathfinder(bot) {
       const results = astarContext.compute();
       results.path = postProcessPath(results.path);
       pathFromPlayer(results.path);
-      bot.emit("path_update", results);
+      emitPathUpdate(results);
+      if (engine !== "baritone") return;
       path = results.path;
       pathIsSegment = Boolean(results.isSegment);
       astarPartial = results.status === "partial";
@@ -830,7 +1192,8 @@ function injectBaritonePathfinder(bot) {
           }
         } else if (!pathUpdated) {
           const results = bot.pathfinder.getPathTo(stateMovements, stateGoal);
-          bot.emit("path_update", results);
+          emitPathUpdate(results);
+          if (engine !== "baritone") return;
           path = results.path;
           pathIsSegment = Boolean(results.isSegment);
           astarPartial = results.status === "partial";
@@ -977,7 +1340,10 @@ function injectBaritonePathfinder(bot) {
               )
               .then(() => {
                 bot.setControlState("sneak", false);
-                if (bot.pathfinder.LOSWhenPlacingBlocks && placingBlock.returnPos) {
+                if (
+                  bot.pathfinder.LOSWhenPlacingBlocks &&
+                  placingBlock.returnPos
+                ) {
                   returningPos = placingBlock.returnPos.clone();
                 }
               })
@@ -1006,7 +1372,11 @@ function injectBaritonePathfinder(bot) {
     let dz = nextPoint.z - p.z;
     const arriveTol = nextPoint.parkour ? 0.42 : 0.35;
 
-    if (Math.abs(dx) <= arriveTol && Math.abs(dz) <= arriveTol && Math.abs(dy) < 1) {
+    if (
+      Math.abs(dx) <= arriveTol &&
+      Math.abs(dz) <= arriveTol &&
+      Math.abs(dy) < 1
+    ) {
       lastNodeTime = performance.now();
       if (stopPathing) {
         stop();
@@ -1073,10 +1443,10 @@ function injectBaritonePathfinder(bot) {
 
     const canUsePhysicsSim = Boolean(
       physics &&
-        physics.physics &&
-        bot.world &&
-        bot.controlState &&
-        Array.isArray(bot.inventory?.slots),
+      physics.physics &&
+      bot.world &&
+      bot.controlState &&
+      Array.isArray(bot.inventory?.slots),
     );
     if (bot.entity.isInWater) {
       const ceilingBlocked = Boolean(

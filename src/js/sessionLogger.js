@@ -26,10 +26,10 @@ class SessionLogger {
       this.currentFilePath = path.join(this.logsDir, `session-${stamp}.md`);
 
       const header = [
-        `# MCBP Session Log — ${this.formatHumanDateTime(this.sessionStartTime)}`,
+        `# MCBP Session Log - ${this.formatHumanDateTime(this.sessionStartTime)}`,
         "",
         `- **App Version**: v${meta.appVersion || "0.2.0"}`,
-        `- **Platform**: \`${process.platform}\` (\`${os.arch()}\`) — ${os.type()} ${os.release()}`,
+        `- **Platform**: \`${process.platform}\` (\`${os.arch()}\`) - ${os.type()} ${os.release()}`,
         `- **Log File**: \`${path.basename(this.currentFilePath)}\``,
         "",
         "## Session Event & Action Timeline",
@@ -249,7 +249,7 @@ class SessionLogger {
           ) {
             entries.push({
               time,
-              raw: `${category}: ${event}${details ? ` — ${details}` : ""}`,
+              raw: `${category}: ${event}${details ? ` - ${details}` : ""}`,
               sourceFile: fileName,
             });
           }
@@ -295,7 +295,11 @@ class SessionLogger {
       const fileObj = files[fIdx];
       let all = this.parseEntriesFromFile(fileObj.path, type);
       if (q) {
-        all = all.filter((e) => String(e.raw || "").toLowerCase().includes(q));
+        all = all.filter((e) =>
+          String(e.raw || "")
+            .toLowerCase()
+            .includes(q),
+        );
       }
       const end = bIdx !== null ? Math.min(bIdx, all.length) : all.length;
       const needed = limit - collected.length;
@@ -317,10 +321,11 @@ class SessionLogger {
     const hasMore = fIdx < files.length && (bIdx === null || bIdx > 0);
     return {
       entries: collected,
-      nextBeforeIndex: bIdx ?? 0,
+      nextBeforeIndex: bIdx,
       nextFileIndex: fIdx,
       hasMore,
-      sourceFile: activeFile || files[Math.min(fIdx, files.length - 1)]?.name || "",
+      sourceFile:
+        activeFile || files[Math.min(fIdx, files.length - 1)]?.name || "",
     };
   }
 

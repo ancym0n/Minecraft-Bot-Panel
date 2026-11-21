@@ -167,14 +167,31 @@ function createScopedRequire(baseDir) {
   }
 }
 
+// Baritone plugin with the matching mineflayer-pathfinder package as its
+// automatic fallback engine (one stable function per package so mineflayer's
+// loadPlugin de-duplication keeps working).
+const pathfinderPluginCache = new WeakMap();
+function makePathfinderPlugin(injectBaritonePathfinder, pathfinderPkg) {
+  if (!pathfinderPkg || typeof pathfinderPkg !== "object") {
+    return injectBaritonePathfinder;
+  }
+  let plugin = pathfinderPluginCache.get(pathfinderPkg);
+  if (!plugin) {
+    plugin = function mcbpBaritonePathfinder(bot) {
+      return injectBaritonePathfinder(bot, {
+        mcbpStockPathfinder: pathfinderPkg,
+      });
+    };
+    pathfinderPluginCache.set(pathfinderPkg, plugin);
+  }
+  return plugin;
+}
+
 function loadLibraries() {
   const baseDir = selectActiveBaseDir();
   const req = createScopedRequire(baseDir);
   const { installViaVersionProtocolShims } = require("./viaAdapter");
-  const {
-    injectBaritonePathfinder,
-    BaritoneMovements,
-  } = require("./baritone");
+  const { injectBaritonePathfinder, BaritoneMovements } = require("./baritone");
   try {
     installViaVersionProtocolShims(req);
     const mineflayer = req("mineflayer");
@@ -196,7 +213,7 @@ function loadLibraries() {
       mineflayer,
       mcData,
       Vec3,
-      pathfinder: injectBaritonePathfinder,
+      pathfinder: makePathfinderPlugin(injectBaritonePathfinder, pathfinderPkg),
       Movements: BaritoneMovements,
       stockPathfinder: pathfinderPkg.pathfinder,
       stockMovements: pathfinderPkg.Movements,
@@ -223,7 +240,7 @@ function loadLibraries() {
       mineflayer,
       mcData,
       Vec3,
-      pathfinder: injectBaritonePathfinder,
+      pathfinder: makePathfinderPlugin(injectBaritonePathfinder, pathfinderPkg),
       Movements: BaritoneMovements,
       stockPathfinder: pathfinderPkg.pathfinder,
       stockMovements: pathfinderPkg.Movements,
@@ -545,7 +562,7 @@ async function ensureMineflayer(iconPath, onLog) {
     const target = app && app.isPackaged ? runtimeDir() : appRoot();
     try {
       if (onLog)
-        onLog("Mineflayer not found locally — downloading latest packages...");
+        onLog("Mineflayer not found locally - downloading latest packages...");
       if (ui) await ui.set(0.1, "Checking npm registry...");
       const specs = PACKAGES.map((p) => `${p}@latest`);
       await runNpmInstall(target, specs, (pct, text) => {

@@ -50,6 +50,8 @@ if (wanted.includes("mac") && host !== "darwin") {
   process.exit(1);
 }
 
+require("./build-wasm");
+
 const bin = path.join(
   __dirname,
   "..",

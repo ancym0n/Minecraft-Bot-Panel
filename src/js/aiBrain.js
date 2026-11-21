@@ -1,4 +1,4 @@
-// AI Brain — persistent working memory, goal/plan tracker, spatial landmarks,
+// AI Brain - persistent working memory, goal/plan tracker, spatial landmarks,
 // real-time problem-solving diagnostician, and self-querying Minecraft mechanics knowledge engine.
 
 const MINECRAFT_MECHANICS_KB = {
@@ -9,9 +9,9 @@ const MINECRAFT_MECHANICS_KB = {
   smelting:
     "Furnace Mechanics: Needs input item in top slot and fuel in bottom slot. Each smelting operation takes 10 seconds (200 ticks). Fuels: lava_bucket (100 items), coal_block (80), dried_kelp_block (20), coal/charcoal (8), blaze_rod (12), planks/logs (1.5), sticks/saplings (0.5). Blast Furnace smelts ores 2x faster (5s); Smoker cooks food 2x faster (5s).",
   mining_y_levels:
-    "Modern 1.18–26.1 Ore Y-Levels: Coal (Y=96 to 136, or surface mountains), Copper (Y=48), Iron (Y=16 underground or Y=112+ mountains), Lapis (Y=0), Gold (Y=-16), Redstone (Y=-59), Diamond (Y=-53 to -59, avoid lava at Y=-54), Emerald (mountains Y=100+), Ancient Debris (Nether Y=15).",
+    "Modern 1.18-26.1 Ore Y-Levels: Coal (Y=96 to 136, or surface mountains), Copper (Y=48), Iron (Y=16 underground or Y=112+ mountains), Lapis (Y=0), Gold (Y=-16), Redstone (Y=-59), Diamond (Y=-53 to -59, avoid lava at Y=-54), Emerald (mountains Y=100+), Ancient Debris (Nether Y=15).",
   combat:
-    "1.9+ / Modern Combat Mechanics: Weapons have attack cooldowns (Sword: 0.625s / 1.6APS, Axe: 1.0–1.25s, Trident: 0.9s, Mace: 1.6s). Critical hits deal 150% damage when attacking while falling (velocity.y < 0, not on ground, not in water/ladders, not sprinting at impact). Eating golden_apple or high-saturation food (cooked_beef, golden_carrot) restores health rapidly.",
+    "1.9+ / Modern Combat Mechanics: Weapons have attack cooldowns (Sword: 0.625s / 1.6APS, Axe: 1.0-1.25s, Trident: 0.9s, Mace: 1.6s). Critical hits deal 150% damage when attacking while falling (velocity.y < 0, not on ground, not in water/ladders, not sprinting at impact). Eating golden_apple or high-saturation food (cooked_beef, golden_carrot) restores health rapidly.",
   survival_hazards:
     "Hazards & Self-Preservation: Lava deals 4 dmg/0.5s (carry water_bucket to turn lava into obsidian or extinguish fire). Drowning happens when oxygen reaches 0 underwater (swim up / hold jump). Fall damage starts >3 blocks (4+ blocks); water_bucket MLG, hay_block, slime_block, or bed negates/reduces fall damage. Starvation happens at 0 food; sprint requires >6 food (3 shanks).",
   dimensions:
@@ -32,6 +32,246 @@ class AiBrain {
     this.landmarks = new Map();
     this.lastUpdatedAt = Date.now();
     this.listeners = new Set();
+    // What the bot is doing right now to move the objective forward, and why.
+    this.subObjective = "";
+    this.subReason = "";
+    this.subSource = "";
+    this.subObjectiveFor = "";
+    this.subAt = 0;
+    // Objective the AI typed itself (think tool) - survives between turns.
+    this.aiObjective = "";
+    this.aiPlan = "";
+    // Latest status line of every running module (GearUp, Mine, KillAura...).
+    this.scriptActivity = new Map();
+    // Pathfinder engine state (Baritone <-> stock mineflayer-pathfinder).
+    this.pathfinderInfo = {
+      engine: "baritone",
+      switches: 0,
+      lastReason: "",
+      at: 0,
+    };
+  }
+
+  // Sets what the bot is doing right now to reach the objective.
+  setSubObjective(
+    text,
+    { reason = "", source = "", objective = "" } = {},
+    bot = null,
+  ) {
+    const clean = String(text || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 200);
+    if (clean === this.subObjective && String(reason || "") === this.subReason)
+      return;
+    this.subObjective = clean;
+    this.subReason = clean
+      ? String(reason || "")
+          .trim()
+          .slice(0, 200)
+      : "";
+    this.subSource = clean ? String(source || "") : "";
+    this.subObjectiveFor = clean ? String(objective || "") : "";
+    this.subAt = clean ? Date.now() : 0;
+    this.emitUpdate(bot);
+  }
+
+  // The AI writes its own objective / sub-objective / plan via the think tool.
+  setAiObjective(
+    { objective = "", subObjective = "", plan = "" } = {},
+    bot = null,
+  ) {
+    let changed = false;
+    if (objective) {
+      this.aiObjective = String(objective).trim().slice(0, 200);
+      changed = true;
+    }
+    if (plan) {
+      this.aiPlan = String(plan).trim().slice(0, 300);
+      changed = true;
+    }
+    if (subObjective) {
+      this.setSubObjective(
+        subObjective,
+        {
+          source: "AIAgent",
+          objective: this.aiObjective || this.currentGoal,
+        },
+        bot,
+      );
+    } else if (changed) {
+      this.emitUpdate(bot);
+    }
+  }
+
+  clearAiObjective(bot = null) {
+    this.aiObjective = "";
+    this.aiPlan = "";
+    this.emitUpdate(bot);
+  }
+
+  // Module status lines become that module's live sub-objective.
+  recordScriptActivity(scriptName, text, bot = null) {
+    const name = String(scriptName || "").trim();
+    const line = String(text || "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!name || !line) return;
+    const prev = this.scriptActivity.get(name);
+    const now = Date.now();
+    if (prev && prev.text === line && now - prev.at < 2000) return;
+    this.scriptActivity.set(name, {
+      script: name,
+      objective: prev?.objective || `Run ${name}`,
+      text: line.slice(0, 180),
+      at: now,
+    });
+    // Status updates are frequent; do not flood the UI more than ~3x a second.
+    if (!this._scriptEmitAt || now - this._scriptEmitAt > 300) {
+      this._scriptEmitAt = now;
+      this.emitUpdate(bot);
+    }
+  }
+
+  setScriptObjective(scriptName, objective, bot = null) {
+    const name = String(scriptName || "").trim();
+    if (!name) return;
+    const prev = this.scriptActivity.get(name);
+    this.scriptActivity.set(name, {
+      script: name,
+      objective: String(objective || `Run ${name}`).slice(0, 160),
+      text: prev?.text || "starting",
+      at: Date.now(),
+    });
+    this.emitUpdate(bot);
+  }
+
+  clearScriptActivity(scriptName, bot = null) {
+    if (this.scriptActivity.delete(String(scriptName || "").trim())) {
+      this.emitUpdate(bot);
+    }
+  }
+
+  recordEngineSwitch(info = {}, bot = null) {
+    this.pathfinderInfo = {
+      engine: String(info.to || info.engine || this.pathfinderInfo.engine),
+      switches: Number(info.totalSwitches ?? this.pathfinderInfo.switches + 1),
+      lastReason: String(info.reason || ""),
+      at: Date.now(),
+    };
+    this.emitUpdate(bot);
+  }
+
+  // Records a failure the bot recovered from by itself (e.g. skipped an
+  // unreachable block) so the AI does not retry the exact same thing.
+  recordProblem(action, problem, fix = "", bot = null) {
+    const text = String(problem || "").slice(0, 200);
+    if (!text) return;
+    const diag = this.diagnoseProblem(text, bot);
+    this.problemLog.push({
+      action: String(action || "task"),
+      problem: text,
+      diagnosis: diag?.diagnosis || "Attempt failed",
+      fix: fix || diag?.fix || "",
+      at: Date.now(),
+    });
+    if (this.problemLog.length > 10) {
+      this.problemLog.splice(0, this.problemLog.length - 10);
+    }
+    this.emitUpdate(bot);
+  }
+
+  getObjective() {
+    if (this.currentGoal && this.currentGoal !== "Idle")
+      return this.currentGoal;
+    if (this.aiObjective) return this.aiObjective;
+    return "Idle";
+  }
+
+  // Short reasoning hints for the current objective: what usually blocks it
+  // and what to try next, built from live inventory and recent failures.
+  reasonAboutObjective(bot = null) {
+    const hints = [];
+    const objective =
+      `${this.getObjective()} ${this.subObjective}`.toLowerCase();
+    const items = (() => {
+      try {
+        return bot?.inventory?.items?.() || [];
+      } catch (_) {
+        return [];
+      }
+    })();
+    const has = (re) => items.some((i) => re.test(i.name));
+    const pickTiers = ["wooden", "stone", "iron", "diamond", "netherite"];
+    const bestPick =
+      pickTiers.filter((t) => has(new RegExp(`^${t}_pickaxe$`))).pop() || "";
+    if (
+      bot?.inventory &&
+      /stone|cobble|coal|ore|iron|diamond|gold|redstone|lapis|copper/.test(
+        objective,
+      )
+    ) {
+      if (!bestPick) {
+        hints.push(
+          "no pickaxe yet: get logs -> planks -> sticks -> crafting_table -> wooden_pickaxe first",
+        );
+      } else if (/iron|copper|lapis/.test(objective) && bestPick === "wooden") {
+        hints.push(
+          "iron/copper/lapis need a stone_pickaxe: mine 3 cobblestone and craft it",
+        );
+      } else if (
+        /diamond|gold|redstone|emerald/.test(objective) &&
+        ["wooden", "stone"].includes(bestPick)
+      ) {
+        hints.push(
+          "diamond/gold/redstone need an iron_pickaxe: smelt 3 iron first",
+        );
+      }
+    }
+    if (/log|wood|tree|plank/.test(objective)) {
+      hints.push(
+        "logs can be broken from up to 4.5m away; stand at the trunk base and mine upward",
+      );
+    }
+    const recent = this.problemLog.filter((p) => Date.now() - p.at < 180000);
+    if (recent.length >= 2) {
+      const same = recent.slice(-3).map((p) => p.problem.slice(0, 60));
+      hints.push(
+        `already failed: ${same.join(" / ")} - try a different target or approach`,
+      );
+    }
+    if (this.pathfinderInfo.at && Date.now() - this.pathfinderInfo.at < 60000) {
+      hints.push(
+        `pathfinder switched to ${this.pathfinderInfo.engine} engine (${this.pathfinderInfo.lastReason}); if both fail call unstuck or choose a closer target`,
+      );
+    }
+    return hints.slice(0, 4);
+  }
+
+  // Full task context as plain lines (used by the prompt and the UI).
+  getTaskContextLines(bot = null) {
+    const lines = [];
+    const objective = this.getObjective();
+    lines.push(
+      `Objective: ${objective}${this.goalOwner && objective !== "Idle" ? ` (for ${this.goalOwner})` : ""}`,
+    );
+    if (this.aiObjective && this.aiObjective !== objective) {
+      lines.push(`Your own objective: ${this.aiObjective}`);
+    }
+    if (this.currentStep) lines.push(`Plan step: ${this.currentStep}`);
+    if (this.subObjective) {
+      lines.push(
+        `Sub-objective (doing now): ${this.subObjective}${this.subReason ? ` - because ${this.subReason}` : ""}`,
+      );
+    }
+    if (this.aiPlan) lines.push(`Your plan: ${this.aiPlan}`);
+    for (const a of this.scriptActivity.values()) {
+      if (Date.now() - a.at > 120000) continue;
+      lines.push(
+        `Module ${a.script}: objective "${a.objective}", now: ${a.text}`,
+      );
+    }
+    return lines;
   }
 
   onUpdate(fn) {
@@ -171,7 +411,8 @@ class AiBrain {
 
     if (/spawn protection|can'?t break|protected|not allowed to/i.test(err)) {
       return {
-        diagnosis: "Server spawn/claim protection blocks building or mining here",
+        diagnosis:
+          "Server spawn/claim protection blocks building or mining here",
         fix: "Walk 30+ blocks away from spawn or run /rtp /wild before mining or placing blocks.",
       };
     }
@@ -187,14 +428,18 @@ class AiBrain {
         fix: "Craft 4 planks from 1 log, craft crafting_table, and place_block(crafting_table).",
       };
     }
-    if (/missing.*pickaxe|need.*pickaxe|stone_pickaxe|iron_pickaxe/i.test(err)) {
+    if (
+      /missing.*pickaxe|need.*pickaxe|stone_pickaxe|iron_pickaxe/i.test(err)
+    ) {
       return {
         diagnosis: "Missing required pickaxe tier to harvest this ore",
         fix: "Follow tool progression: wood -> wooden_pickaxe -> stone -> stone_pickaxe -> iron_ore -> iron_pickaxe.",
       };
     }
     if (/stuck|no path|could not reach|timed out/i.test(err)) {
-      const y = bot?.entity?.position ? Math.floor(bot.entity.position.y) : null;
+      const y = bot?.entity?.position
+        ? Math.floor(bot.entity.position.y)
+        : null;
       return {
         diagnosis: `Pathfinding blocked${y !== null ? ` at Y=${y}` : ""}`,
         fix: "Call unstuck, step onto open surface ground, or pick a closer exposed target block.",
@@ -226,14 +471,22 @@ class AiBrain {
         q.includes(topic) ||
         (topic === "progression" &&
           /pickaxe|tier|tool|mine|wood|stone|iron|diamond|craft/i.test(q)) ||
-        (topic === "armor" && /armor|helmet|chestplate|leggings|boots|shield/i.test(q)) ||
-        (topic === "smelting" && /smelt|furnace|fuel|coal|ingot|cook/i.test(q)) ||
-        (topic === "mining_y_levels" && /level|y=|depth|ore|diamond|iron|coal/i.test(q)) ||
-        (topic === "combat" && /pvp|fight|attack|crit|sword|axe|eat|heal/i.test(q)) ||
-        (topic === "survival_hazards" && /lava|water|drown|fall|starv|fire/i.test(q)) ||
-        (topic === "dimensions" && /nether|end|portal|obsidian|blaze|dragon/i.test(q)) ||
+        (topic === "armor" &&
+          /armor|helmet|chestplate|leggings|boots|shield/i.test(q)) ||
+        (topic === "smelting" &&
+          /smelt|furnace|fuel|coal|ingot|cook/i.test(q)) ||
+        (topic === "mining_y_levels" &&
+          /level|y=|depth|ore|diamond|iron|coal/i.test(q)) ||
+        (topic === "combat" &&
+          /pvp|fight|attack|crit|sword|axe|eat|heal/i.test(q)) ||
+        (topic === "survival_hazards" &&
+          /lava|water|drown|fall|starv|fire/i.test(q)) ||
+        (topic === "dimensions" &&
+          /nether|end|portal|obsidian|blaze|dragon/i.test(q)) ||
         (topic === "multiplayer_servers" &&
-          /server|lobby|hub|npc|compass|towny|smp|tpa|rtp|spawn|protect/i.test(q))
+          /server|lobby|hub|npc|compass|towny|smp|tpa|rtp|spawn|protect/i.test(
+            q,
+          ))
       ) {
         sections.push(text);
       }
@@ -341,7 +594,11 @@ class AiBrain {
         `Latest Problem Diagnosis: ${latestProb.problem} -> ${latestProb.diagnosis}. Recommended Fix: ${latestProb.fix}`,
       );
     }
-    if (Array.isArray(recentLogs) && recentLogs.length > 0 && /error|log|bug|fail|stuck/i.test(q)) {
+    if (
+      Array.isArray(recentLogs) &&
+      recentLogs.length > 0 &&
+      /error|log|bug|fail|stuck/i.test(q)
+    ) {
       const errLines = recentLogs
         .filter((l) => /error|fail|stuck|denied|protection|kick/i.test(l))
         .slice(-5);
@@ -357,15 +614,22 @@ class AiBrain {
     return sections.join("\n");
   }
 
+  // Lets callers without a bot reference (the chat prompt builder) still get
+  // inventory-aware reasoning hints.
+  setBotProvider(fn) {
+    this.botProvider = typeof fn === "function" ? fn : null;
+  }
+
   buildBrainPromptSection(bot = null, sender = "", obeyList = []) {
-    const parts = [];
-    if (this.currentGoal && this.currentGoal !== "Idle") {
-      parts.push(
-        `Goal: ${this.currentGoal}${this.goalOwner ? ` (for ${this.goalOwner})` : ""}`,
-      );
+    if (!bot && this.botProvider) {
+      try {
+        bot = this.botProvider() || null;
+      } catch (_) {}
     }
-    if (this.currentStep) {
-      parts.push(`Current Step: ${this.currentStep}`);
+    const parts = [];
+    const objective = this.getObjective();
+    if (objective !== "Idle" || this.subObjective || this.scriptActivity.size) {
+      parts.push(...this.getTaskContextLines(bot));
     }
     if (this.planSteps.length > 0) {
       const pending = this.planSteps
@@ -374,7 +638,12 @@ class AiBrain {
         .map((s) => `${s.index}. ${s.label}`)
         .join(" -> ");
       if (pending) parts.push(`Upcoming Plan: ${pending}`);
+      const done = this.planSteps.filter((s) => s.status === "done").length;
+      if (done)
+        parts.push(`Progress: ${done}/${this.planSteps.length} steps done`);
     }
+    const hints = this.reasonAboutObjective(bot);
+    if (hints.length) parts.push(`Reasoning hints: ${hints.join("; ")}`);
     if (this.landmarks.size > 0) {
       const lms = Array.from(this.landmarks.values())
         .slice(-5)
@@ -382,11 +651,18 @@ class AiBrain {
         .join(", ");
       parts.push(`Landmarks: ${lms}`);
     }
-    if (this.problemLog.length > 0) {
-      const lastP = this.problemLog[this.problemLog.length - 1];
-      if (Date.now() - lastP.at < 120000) {
-        parts.push(`Recent Issue: ${lastP.diagnosis} (Fix: ${lastP.fix})`);
-      }
+    const recentProblems = this.problemLog.filter(
+      (p) => Date.now() - p.at < 120000,
+    );
+    if (recentProblems.length > 0) {
+      const lastP = recentProblems[recentProblems.length - 1];
+      parts.push(
+        `Recent Issue: ${lastP.problem} -> ${lastP.diagnosis} (Fix: ${lastP.fix})`,
+      );
+    }
+    const lastThought = this.thoughts[this.thoughts.length - 1];
+    if (lastThought && Date.now() - lastThought.at < 300000) {
+      parts.push(`Your last thought: ${lastThought.text.slice(0, 160)}`);
     }
     if (Array.isArray(obeyList) && obeyList.length > 0) {
       const isMaster =
@@ -400,19 +676,34 @@ class AiBrain {
   }
 
   getSnapshot(bot = null) {
-    const recentActions = this.actionLog.slice(-6).reverse().map((a) => ({
-      ...a,
-      tool: a.name,
-      result: a.summary,
-    }));
-    const recentProblems = this.problemLog.slice(-4).reverse().map((p) => ({
-      ...p,
-      tool: p.action,
-      error: p.problem,
-    }));
+    const recentActions = this.actionLog
+      .slice(-6)
+      .reverse()
+      .map((a) => ({
+        ...a,
+        tool: a.name,
+        result: a.summary,
+      }));
+    const recentProblems = this.problemLog
+      .slice(-4)
+      .reverse()
+      .map((p) => ({
+        ...p,
+        tool: p.action,
+        error: p.problem,
+      }));
     return {
       currentGoal: this.currentGoal || "Idle",
-      activeGoal: this.currentGoal || "Idle",
+      activeGoal: this.getObjective(),
+      objective: this.getObjective(),
+      aiObjective: this.aiObjective,
+      aiPlan: this.aiPlan,
+      subObjective: this.subObjective,
+      subReason: this.subReason,
+      subSource: this.subSource,
+      scriptActivity: Array.from(this.scriptActivity.values()),
+      pathfinder: { ...this.pathfinderInfo },
+      reasoningHints: this.reasonAboutObjective(bot),
       goalOwner: this.goalOwner || "",
       currentStep: this.currentStep || "",
       activeStep: this.currentStep || "",

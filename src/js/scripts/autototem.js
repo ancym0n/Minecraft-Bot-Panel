@@ -26,6 +26,8 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
     getOption("autolog", info.name),
     getOption("minhp", info.name),
   ]);
+  const signal = scriptRepeater.signal;
+  if (signal?.aborted) return;
 
   const autoLog = autoLogOpt === "on";
   const parsedMinHp = parseFloat(rawMinHp);
@@ -37,7 +39,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   let busy = false;
 
   async function totemTick() {
-    if (!bot || !bot.inventory || busy) return;
+    if (signal?.aborted || !bot || !bot.inventory || busy) return;
     busy = true;
     try {
       const offhandItem = bot.inventory.slots[45];
@@ -60,6 +62,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
       }
 
       if (
+        !signal?.aborted &&
         autoLog &&
         typeof bot.health === "number" &&
         bot.health > 0 &&
@@ -68,19 +71,20 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
         const currentOffhand = bot.inventory.slots[45];
         if (!currentOffhand || currentOffhand.name !== "totem_of_undying") {
           log(
-            `AutoTotem: Health critical (${bot.health.toFixed(1)} HP) with no totem — disconnecting!`,
+            `AutoTotem: Health critical (${bot.health.toFixed(1)} HP) with no totem - disconnecting!`,
           );
           bot.quit("AutoLog: Low HP");
         }
       }
-    } catch (_) {
+    } catch (error) {
+      if (!signal?.aborted) log(`AutoTotem: ${error.message || error}`);
     } finally {
       busy = false;
     }
   }
 
   await totemTick();
-  await scriptRepeater(totemTick, info.default.interval);
+  if (!signal?.aborted) await scriptRepeater(totemTick, info.default.interval);
 }
 
 module.exports = {

@@ -36,39 +36,44 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   }
 
   let busy = false;
+  const signal = scriptRepeater.signal;
   let lastEquippedName = "";
 
   async function onBlockBreakProgress(block) {
-    if (!bot || !block || busy) return;
+    if (signal?.aborted || !bot || !block || busy) return;
     const [mineToolOpt, saveDurOpt] = await Promise.all([
       getOption("minetool", info.name),
       getOption("savedur", info.name),
     ]);
-    if (mineToolOpt === "off") return;
+    if (signal?.aborted || mineToolOpt === "off") return;
     busy = true;
     try {
       const tool = await equipBestToolForBlock(bot, block, {
         saveLowDurability: saveDurOpt !== "off",
       });
+      if (signal?.aborted) return;
       if (tool && tool.name !== lastEquippedName) {
         lastEquippedName = tool.name;
         clearLog("AutoTool:");
         log(`AutoTool: Switched to ${tool.name} for ${block.name}`);
       }
-    } catch (_) {
+    } catch (error) {
+      if (!signal?.aborted) log(`AutoTool: ${error.message || error}`);
     } finally {
       busy = false;
     }
   }
 
   async function autoToolTick() {
-    if (!bot || !bot.entity || !bot.inventory || busy) return;
+    if (signal?.aborted || !bot || !bot.entity || !bot.inventory || busy)
+      return;
 
     const [mineToolOpt, weaponOpt, saveDurOpt] = await Promise.all([
       getOption("minetool", info.name),
       getOption("weapon", info.name),
       getOption("savedur", info.name),
     ]);
+    if (signal?.aborted) return;
 
     const useMineTool = mineToolOpt !== "off" || weaponOpt === "off";
     const useWeapon = weaponOpt !== "off";
@@ -85,6 +90,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
         const tool = await equipBestToolForBlock(bot, targetBlock, {
           saveLowDurability,
         });
+        if (signal?.aborted) return;
         if (tool && tool.name !== lastEquippedName) {
           lastEquippedName = tool.name;
           clearLog("AutoTool:");
@@ -98,7 +104,18 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
           bot.targetDigBlock === targetBlock
         ) {
           const face = getVisibleDigFace(bot, targetBlock);
-          bot.dig(targetBlock, true, face).catch(() => {});
+          await bot.lookAt(
+            targetBlock.position.offset(
+              0.5 + face.x * 0.5,
+              0.5 + face.y * 0.5,
+              0.5 + face.z * 0.5,
+            ),
+            true,
+          );
+          if (signal?.aborted || bot.targetDigBlock !== targetBlock) return;
+          bot.dig(targetBlock, "ignore", face).catch((error) => {
+            if (!signal?.aborted) log(`AutoTool: ${error.message || error}`);
+          });
         }
         return;
       }
@@ -117,7 +134,11 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
           }
         }
         if (threatNear) {
-          const weapon = await equipBestWeapon(bot, { saveLowDurability });
+          const weapon = await equipBestWeapon(bot, {
+            saveLowDurability,
+            signal,
+          });
+          if (signal?.aborted) return;
           if (weapon && weapon.name !== lastEquippedName) {
             lastEquippedName = weapon.name;
             clearLog("AutoTool:");
@@ -134,7 +155,8 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
           await equipBestToolForBlock(bot, cursorBlock, { saveLowDurability });
         }
       }
-    } catch (_) {
+    } catch (error) {
+      if (!signal?.aborted) log(`AutoTool: ${error.message || error}`);
     } finally {
       busy = false;
     }
@@ -147,7 +169,8 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
 
   try {
     await autoToolTick();
-    await scriptRepeater(autoToolTick, info.default.interval);
+    if (!signal?.aborted)
+      await scriptRepeater(autoToolTick, info.default.interval);
   } finally {
     if (bot) {
       bot.removeListener("diggingAborted", onBlockBreakProgress);

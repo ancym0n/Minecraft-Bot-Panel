@@ -24,6 +24,13 @@ const {
 const { aiBrain } = require("./aiBrain");
 const { runWithPathOwner } = require("./baritone");
 const {
+  MiningSkipList,
+  pickMiningTarget,
+  canMineFromHere,
+  approachForMining,
+  eyeDistance,
+} = require("./miningReach");
+const {
   craftItemByName,
   craftAnyPlanks,
   ensureCraftingTablePlaced,
@@ -212,8 +219,22 @@ const TOOL_SCHEMAS = [
   ),
   fn(
     "think",
-    "Your private notepad. Write your plan or what went wrong here; players never see it. Use it before retrying a failed task.",
-    { thought: str("Your private thought") },
+    "Your private notepad; players never see it. Before starting or retrying a task, reason here: write the overall objective, the sub-objective you will do next to get closer to it, and a short plan (prerequisites first, e.g. no pickaxe -> get logs -> craft table -> wooden_pickaxe). Also write what went wrong when something failed. The objective and sub-objective are remembered and shown to you as [AI Brain] context on every turn.",
+    {
+      thought: str(
+        "Your reasoning: what is happening, what failed, what to try next",
+      ),
+      objective: str(
+        "The overall goal you are working on, e.g. 'craft iron armor for Steve' (optional, keep until done)",
+      ),
+      sub_objective: str(
+        "The concrete next step toward the objective, e.g. 'mine 3 cobblestone for a stone_pickaxe' (optional)",
+      ),
+      plan: str("Short ordered plan of remaining steps (optional)"),
+      done: str(
+        "Set to 'yes' when the objective is finished or abandoned (optional)",
+      ),
+    },
     ["thought"],
   ),
   fn(
@@ -379,7 +400,7 @@ function createAiTools(ctx) {
     if (!entity) {
       throw new Error(
         key
-          ? `${key} is too far away (out of view distance, coordinates unknown) — ask ${key} for their coordinates`
+          ? `${key} is too far away (out of view distance, coordinates unknown) - ask ${key} for their coordinates`
           : `${name} is not online`,
       );
     }
@@ -632,7 +653,10 @@ function createAiTools(ctx) {
       w.busy = true;
       try {
         const diag = diagnoseWalkingObstruction(bot);
-        if (typeof bot.pathfinder.penalizeNode === "function" && bot.entity?.position) {
+        if (
+          typeof bot.pathfinder.penalizeNode === "function" &&
+          bot.entity?.position
+        ) {
           bot.pathfinder.penalizeNode(bot.entity.position, 55);
         }
         if (w.attempt === 1) {
@@ -644,7 +668,10 @@ function createAiTools(ctx) {
             reason: `AIAgent Stuck (${label})`,
           }).catch(() => {});
           if (getBot() === bot && bot.entity) {
-            if (bot.pathfinder.goal === goal && typeof bot.pathfinder.repath === "function") {
+            if (
+              bot.pathfinder.goal === goal &&
+              typeof bot.pathfinder.repath === "function"
+            ) {
               bot.pathfinder.repath();
             } else {
               bot.pathfinder.setGoal(goal, dynamic);
@@ -655,7 +682,10 @@ function createAiTools(ctx) {
             `AIAgent: Still stuck going to ${label} (${diag.summary}), allowing block clearing`,
           );
           setHardMode(bot, true);
-          if (bot.pathfinder.goal === goal && typeof bot.pathfinder.repath === "function") {
+          if (
+            bot.pathfinder.goal === goal &&
+            typeof bot.pathfinder.repath === "function"
+          ) {
             bot.pathfinder.repath();
           } else {
             bot.pathfinder.setGoal(goal, dynamic);
@@ -1632,106 +1662,131 @@ function createAiTools(ctx) {
       stopWatch(bot);
       const task = {};
       bot._mcbpAiTask = task;
-      const failed = new Set();
-      const key = (p) => `${p.x},${p.y},${p.z}`;
-      const colKey = (p) => `col:${p.x},${p.z}`;
+      const skips = new MiningSkipList();
+      const isCancelled = () => getBot() !== bot || bot._mcbpAiTask !== task;
       const isValidCandidate = (p) =>
-        !failed.has(key(p)) &&
-        !failed.has(colKey(p)) &&
-        !bot._mcbpProtectedBlocks?.has(key(p));
+        !skips.has(p) && !bot._mcbpProtectedBlocks?.has(`${p.x},${p.y},${p.z}`);
+      const objective = `Mine ${amount} ${name}`;
+      const sub = (text, reason = "") =>
+        aiBrain.setSubObjective(
+          text,
+          { reason, source: "mine_block", objective },
+          bot,
+        );
+      const isTargetGone = (p) => {
+        const b = bot.blockAt(p);
+        return !b || !matchSet.has(b.type);
+      };
       let mined = 0;
       let fails = 0;
-      let explored = false;
+      let totalFails = 0;
+      let explored = 0;
       let denied = "";
       let lastError = "";
       try {
-        while (mined < amount && fails < 4) {
-          if (getBot() !== bot || bot._mcbpAiTask !== task) break;
+        while (mined < amount && fails < 4 && totalFails < 10) {
+          if (isCancelled()) break;
           let positions = bot.findBlocks({
             matching: matchIds,
             maxDistance: 64,
-            count: 48,
+            count: 64,
           });
-          let pos = positions.find(isValidCandidate);
-          if (!pos && !explored) {
-            explored = true;
-            log(`AIAgent: No ${name} nearby, exploring 20m to search...`);
+          let pos = pickMiningTarget(bot, positions, isValidCandidate);
+          if (!pos && explored < 2) {
+            explored += 1;
+            sub(
+              `Explore ~24m to find ${name}`,
+              `no reachable ${name} loaded nearby (${mined}/${amount} mined)`,
+            );
+            log(`AIAgent: No ${name} nearby, exploring to search...`);
             const me = bot.entity.position;
             const angle = Math.random() * Math.PI * 2;
-            const ex = Math.round(me.x + Math.cos(angle) * 20);
-            const ez = Math.round(me.z + Math.sin(angle) * 20);
+            const ex = Math.round(me.x + Math.cos(angle) * 24);
+            const ez = Math.round(me.z + Math.sin(angle) * 24);
             await withTimeout(
               bot.pathfinder.goto(new goals.GoalXZ(ex, ez)),
-              8000,
+              12000,
               () => bot.pathfinder.setGoal(null),
             ).catch(() => {});
             positions = bot.findBlocks({
               matching: matchIds,
               maxDistance: 64,
-              count: 48,
+              count: 64,
             });
-            pos = positions.find(isValidCandidate);
+            pos = pickMiningTarget(bot, positions, isValidCandidate);
           }
           if (!pos) {
             lastError = `no more reachable ${name} within 64 blocks`;
             break;
           }
+          const where = `(${pos.x}, ${pos.y}, ${pos.z})`;
           try {
-            // Walk to 1 block distance from the block before mining so drops in caves don't get stuck behind walls
-            await withTimeout(
-              bot.pathfinder.goto(new goals.GoalNear(pos.x, pos.y, pos.z, 1)),
-              18000,
-              () => bot.pathfinder.setGoal(null),
-            ).catch(async () => {
-              await withTimeout(
-                bot.pathfinder.goto(
-                  new goals.GoalLookAtBlock(pos, bot.world, { reach: 3 }),
-                ),
-                12000,
-                () => bot.pathfinder.setGoal(null),
+            // Walk only until the block is within arm's reach (~4.5m from the
+            // eyes) with line of sight - no need to stand right next to it.
+            if (!canMineFromHere(bot, pos)) {
+              sub(
+                `Get within reach of ${name} at ${where} [${eyeDistance(bot, pos).toFixed(1)}m]`,
+                `${mined}/${amount} mined; blocks can be broken from up to 4.5m away`,
               );
-            });
-            const target = bot.blockAt(pos);
-            if (!target || !matchSet.has(target.type)) continue;
-            const digStart = Date.now();
-            let ok = false;
-            for (let pass = 0; pass < 3; pass++) {
-              const liveBlk = bot.blockAt(pos);
-              if (!liveBlk || !matchSet.has(liveBlk.type)) {
-                ok = true;
-                break;
+              const reachable = await approachForMining(bot, goals, pos, {
+                timeoutMs: 18000,
+                isCancelled,
+              });
+              if (isCancelled()) break;
+              if (!reachable) {
+                throw new Error(
+                  `could not get within reach of ${name} at ${where}`,
+                );
               }
-              ok = await smartDig(bot, liveBlk, { autoTool: true });
-              await sleep(180);
+            }
+            if (isTargetGone(pos)) continue;
+            sub(
+              `Break ${name} at ${where} (${mined + 1}/${amount})`,
+              "in reach now",
+            );
+            const digStart = Date.now();
+            for (let pass = 0; pass < 4 && !isTargetGone(pos); pass++) {
+              if (isCancelled()) break;
+              if (!canMineFromHere(bot, pos)) {
+                // A blocker was removed or we slid away - get back in reach.
+                await approachForMining(bot, goals, pos, {
+                  timeoutMs: 6000,
+                  isCancelled,
+                });
+              }
+              const liveBlk = bot.blockAt(pos);
+              if (!liveBlk || !matchSet.has(liveBlk.type)) break;
+              const ok = await smartDig(bot, liveBlk, { autoTool: true });
+              await sleep(150);
               if (bot._mcbpDenied && bot._mcbpDenied.at >= digStart) {
                 denied = bot._mcbpDenied.text;
                 break;
               }
               if (ok === false) break;
-              const afterBlk = bot.blockAt(pos);
-              if (!afterBlk || !matchSet.has(afterBlk.type)) {
-                ok = true;
-                break;
-              }
-              // Dug an intervening blocker in front of the ore — step within 1 block
-              await withTimeout(
-                bot.pathfinder.goto(new goals.GoalNear(pos.x, pos.y, pos.z, 1)),
-                3500,
-                () => bot.pathfinder.setGoal(null),
-              ).catch(() => {});
             }
-            if (denied) break;
-            if (ok === false) throw new Error("dig was interrupted");
+            if (denied || isCancelled()) break;
+            if (!isTargetGone(pos)) {
+              throw new Error(
+                `${name} at ${where} is still there after digging`,
+              );
+            }
             mined += 1;
-            // Step onto the spot and sweep nearby dropped item entities within 5.5m
+            fails = 0;
+            sub(`Pick up the ${name} drop`, `${mined}/${amount} mined`);
             await collectNearbyDropsAround(bot, goals, pos, 1500).catch(
               () => {},
             );
           } catch (err) {
-            failed.add(key(pos));
-            failed.add(colKey(pos));
+            skips.skip(pos, { ttlMs: 90000, columnAbove: true });
             fails += 1;
+            totalFails += 1;
             lastError = err.message || String(err);
+            aiBrain.recordProblem(
+              "mine_block",
+              lastError,
+              `skipping ${name} at ${where} and trying another`,
+              bot,
+            );
             await escapeHazardsAndObstructions(bot, { log }).catch(() => {});
             // Blocked twice: let the pathfinder clear obstructing blocks.
             if (fails === 2) setHardMode(bot, true);
@@ -1740,8 +1795,9 @@ function createAiTools(ctx) {
       } finally {
         if (bot._mcbpAiHardMode) setHardMode(bot, false);
       }
-      const cancelled = getBot() !== bot || bot._mcbpAiTask !== task;
+      const cancelled = isCancelled();
       if (!cancelled) bot._mcbpAiTask = null;
+      aiBrain.setSubObjective("", {}, bot);
       if (cancelled) return `Stopped mining (${mined} ${name} mined)`;
       if (denied) {
         throw new Error(
@@ -3110,13 +3166,36 @@ function createAiTools(ctx) {
       return `Selected hotbar slot ${n}${bot.heldItem ? ` (${bot.heldItem.name})` : ""}`;
     },
 
-    think({ thought }) {
+    think({ thought, objective, sub_objective, plan, done } = {}) {
       const t = String(thought || "").trim();
+      const bot = getBot();
       if (t) {
-        aiBrain.recordThought(t, getBot());
+        aiBrain.recordThought(t, bot);
         log(`AIAgent (thinking): ${t.slice(0, 300)}`);
       }
-      return "noted";
+      if (/^(yes|true|done|1)$/i.test(String(done || "").trim())) {
+        aiBrain.clearAiObjective(bot);
+        aiBrain.setSubObjective("", {}, bot);
+        return "noted, objective cleared";
+      }
+      if (objective || sub_objective || plan) {
+        aiBrain.setAiObjective(
+          {
+            objective: String(objective || "").trim(),
+            subObjective: String(sub_objective || "").trim(),
+            plan: String(plan || "").trim(),
+          },
+          bot,
+        );
+        if (objective || sub_objective) {
+          log(
+            `AIAgent (objective): ${aiBrain.getObjective()}${sub_objective ? ` ➙ ${String(sub_objective).slice(0, 140)}` : ""}`,
+          );
+        }
+      }
+      const ctx = aiBrain.getTaskContextLines(bot);
+      const hints = aiBrain.reasonAboutObjective(bot);
+      return `noted. ${ctx.join(" | ")}${hints.length ? ` | hints: ${hints.join("; ")}` : ""}`;
     },
 
     query_game_mechanics({ topic } = {}) {
@@ -3397,7 +3476,9 @@ function createAiTools(ctx) {
   // Everything the AI does is attributed to it, so it can take the pathfinder over
   // from running scripts (GearUp, mining...) and hand it back when it is done.
   function executeTool(rawName, args = {}, meta = {}) {
-    return runWithPathOwner("AI", 2, () => executeToolInner(rawName, args, meta));
+    return runWithPathOwner("AI", 2, () =>
+      executeToolInner(rawName, args, meta),
+    );
   }
 
   async function executeToolInner(rawName, args = {}, meta = {}) {
@@ -3583,6 +3664,9 @@ function createAiTools(ctx) {
   function stopAll() {
     clearTaskQueue();
     const bot = getBot();
+    if (aiBrain.subSource === "mine_block" || aiBrain.subSource === "AIAgent") {
+      aiBrain.setSubObjective("", {}, bot);
+    }
     if (!bot) return;
     stopWatch(bot);
     bot._mcbpAiTask = null;

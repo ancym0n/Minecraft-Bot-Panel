@@ -4,7 +4,9 @@
 // when Java 17+ is available, and falls back gracefully to the native JS protocol shim otherwise.
 
 const { execFile, spawn } = require("child_process");
+const crypto = require("crypto");
 const fs = require("fs");
+const http = require("http");
 const https = require("https");
 const net = require("net");
 const os = require("os");
@@ -13,6 +15,15 @@ const path = require("path");
 const VIAPROXY_RELEASES_API =
   "https://api.github.com/repos/ViaVersion/ViaProxy/releases/latest";
 const USER_AGENT = "minecraft-bot-panel-viaproxy";
+// ViaProxy plugin that hands online-mode session joins back to the panel.
+const AUTH_PLUGIN_JAR = path.join(
+  __dirname,
+  "..",
+  "viaproxy-plugin",
+  "mcbp-auth-bridge.jar",
+);
+const MOJANG_JOIN_URL =
+  "https://sessionserver.mojang.com/session/minecraft/join";
 const MIN_JAVA_MAJOR = 17;
 const MIN_JAR_BYTES = 1024 * 1024; // 1 MB sanity threshold
 
@@ -53,24 +64,29 @@ function findJavaBinary() {
 function checkJavaVersion({ timeoutMs = 4000 } = {}) {
   return new Promise((resolve) => {
     const bin = findJavaBinary();
-    execFile(bin, ["-version"], { timeout: timeoutMs }, (err, stdout, stderr) => {
-      if (err) {
-        return resolve({
-          available: false,
-          major: null,
+    execFile(
+      bin,
+      ["-version"],
+      { timeout: timeoutMs },
+      (err, stdout, stderr) => {
+        if (err) {
+          return resolve({
+            available: false,
+            major: null,
+            bin,
+            raw: String(stderr || stdout || err.message || "").trim(),
+          });
+        }
+        const raw = String(stderr || stdout || "").trim();
+        const major = parseJavaMajorVersion(raw);
+        resolve({
+          available: Number.isFinite(major) && major >= MIN_JAVA_MAJOR,
+          major,
           bin,
-          raw: String(stderr || stdout || err.message || "").trim(),
+          raw: raw.split(/\r?\n/)[0] || raw,
         });
-      }
-      const raw = String(stderr || stdout || "").trim();
-      const major = parseJavaMajorVersion(raw);
-      resolve({
-        available: Number.isFinite(major) && major >= MIN_JAVA_MAJOR,
-        major,
-        bin,
-        raw: raw.split(/\r?\n/)[0] || raw,
-      });
-    });
+      },
+    );
   });
 }
 
@@ -172,13 +188,16 @@ async function fetchLatestViaProxyRelease({ timeoutMs = 12000 } = {}) {
   for await (const chunk of res) chunks.push(chunk);
   const json = JSON.parse(Buffer.concat(chunks).toString("utf8"));
   const assets = Array.isArray(json.assets) ? json.assets : [];
-  const jarAsset = assets.find(
+  const jarAssets = assets.filter(
     (a) =>
       typeof a?.name === "string" &&
       /^ViaProxy.*\.jar$/i.test(a.name) &&
       !/sources|javadoc|dev/i.test(a.name) &&
       a.browser_download_url,
   );
+  // Prefer the regular build; the "+java8" one is bytecode-downgraded.
+  const jarAsset =
+    jarAssets.find((a) => !/java8/i.test(a.name)) || jarAssets[0];
   if (!jarAsset) {
     throw new Error("Could not find ViaProxy .jar asset in latest release");
   }
@@ -197,8 +216,20 @@ async function ensureViaProxyJar({
 } = {}) {
   fs.mkdirSync(cacheDir, { recursive: true });
   const jarPath = path.join(cacheDir, "ViaProxy.jar");
+  // Sidecar with the release asset name. Caches without it (or holding the
+  // "+java8" build, whose downgraded log4j crashes on startup under Java 21)
+  // are downloaded again once.
+  const assetPath = `${jarPath}.asset`;
   try {
-    if (fs.existsSync(jarPath) && fs.statSync(jarPath).size >= MIN_JAR_BYTES) {
+    const asset = fs.existsSync(assetPath)
+      ? fs.readFileSync(assetPath, "utf8").trim()
+      : "";
+    if (
+      asset &&
+      !/java8/i.test(asset) &&
+      fs.existsSync(jarPath) &&
+      fs.statSync(jarPath).size >= MIN_JAR_BYTES
+    ) {
       return { ok: true, jarPath, cached: true };
     }
   } catch (_) {}
@@ -231,13 +262,22 @@ async function ensureViaProxyJar({
   }
 
   fs.renameSync(tmpPath, jarPath);
+  try {
+    fs.writeFileSync(assetPath, release.name, "utf8");
+  } catch (_) {}
   if (log) {
-    log(`ViaVersion: ViaProxy ${release.tag} cached (${Math.round(stat.size / (1024 * 1024))} MB)`);
+    log(
+      `ViaVersion: ViaProxy ${release.tag} cached (${Math.round(stat.size / (1024 * 1024))} MB)`,
+    );
   }
   return { ok: true, jarPath, cached: false, tag: release.tag };
 }
 
-function waitForTcpListen(host, port, { timeoutMs = 15000, child = null } = {}) {
+function waitForTcpListen(
+  host,
+  port,
+  { timeoutMs = 15000, child = null } = {},
+) {
   return new Promise((resolve, reject) => {
     const started = Date.now();
     let done = false;
@@ -295,6 +335,7 @@ async function startBridge({
   cacheDir = resolveDefaultCacheDir(),
   log = null,
   readyTimeoutMs = 18000,
+  joinServer = null,
 } = {}) {
   const javaInfo = await checkJavaVersion();
   if (!javaInfo.available) {
@@ -342,12 +383,38 @@ async function startBridge({
     "utf8",
   );
 
+  // Online-mode servers: ViaProxy fires JoinServerRequestEvent, our plugin
+  // forwards the server id hash here and the panel joins with the bot's own
+  // session (the token never leaves this process).
+  let authServer = null;
+  const javaProps = [];
+  if (typeof joinServer === "function" && fs.existsSync(AUTH_PLUGIN_JAR)) {
+    try {
+      const auth = await startAuthEndpoint(joinServer, log);
+      authServer = auth.server;
+      const pluginsDir = path.join(sessionDir, "plugins");
+      fs.mkdirSync(pluginsDir, { recursive: true });
+      fs.copyFileSync(
+        AUTH_PLUGIN_JAR,
+        path.join(pluginsDir, "mcbp-auth-bridge.jar"),
+      );
+      javaProps.push(
+        `-Dmcbp.auth.url=${auth.url}`,
+        `-Dmcbp.auth.secret=${auth.secret}`,
+      );
+    } catch (err) {
+      if (log)
+        log(`ViaVersion: Online-mode auth bridge unavailable (${err.message})`);
+    }
+  }
+
   const child = spawn(
     javaInfo.bin,
     [
       "-Djava.awt.headless=true",
       "-DskipUpdateCheck",
       "-Xmx256m",
+      ...javaProps,
       "-jar",
       jarPath,
       "config",
@@ -372,6 +439,11 @@ async function startBridge({
     if (stopped) return;
     stopped = true;
     activeBridges.delete(bridge);
+    if (authServer) {
+      try {
+        authServer.close();
+      } catch (_) {}
+    }
     try {
       if (!child.killed) child.kill("SIGTERM");
     } catch (_) {}
@@ -393,6 +465,7 @@ async function startBridge({
     targetPort: Number(targetPort) || 25565,
     targetVersion: cleanTargetVer,
     clientVersion: "26.1",
+    onlineAuth: Boolean(authServer),
     pid: child.pid,
     stop,
   };
@@ -422,6 +495,112 @@ async function startBridge({
   }
 }
 
+// Loopback-only endpoint the ViaProxy plugin calls with the server id hash.
+function startAuthEndpoint(joinServer, log = null) {
+  const secret = crypto.randomBytes(24).toString("hex");
+  const server = http.createServer((req, res) => {
+    const reply = (code, text = "") => {
+      res.writeHead(code, { "Content-Type": "text/plain" });
+      res.end(text);
+    };
+    if (req.method !== "POST" || req.url !== "/join") return reply(404);
+    const given = String(req.headers["x-mcbp-secret"] || "");
+    if (
+      given.length !== secret.length ||
+      !crypto.timingSafeEqual(Buffer.from(given), Buffer.from(secret))
+    ) {
+      return reply(403);
+    }
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (c) => {
+      body += c;
+      if (body.length > 200) req.destroy();
+    });
+    req.on("end", async () => {
+      const serverIdHash = body.trim();
+      if (!/^-?[0-9a-f]{1,64}$/i.test(serverIdHash)) return reply(400);
+      try {
+        await joinServer(serverIdHash);
+        reply(204);
+      } catch (err) {
+        if (log)
+          log(
+            `ViaVersion: Online-mode session join failed: ${err.message || err}`,
+          );
+        reply(502, String(err.message || err).slice(0, 200));
+      }
+    });
+  });
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.unref();
+      const { port } = server.address();
+      resolve({ server, secret, url: `http://127.0.0.1:${port}/join` });
+    });
+  });
+}
+
+// Mojang session join (what the vanilla client does on an encryption request).
+// Retries once on HTTP 429 (session server rate limit after quick reconnects).
+async function mojangJoinServer(opts) {
+  try {
+    return await mojangJoinServerOnce(opts);
+  } catch (err) {
+    if (!/HTTP 429/.test(String(err.message))) throw err;
+    await new Promise((r) => setTimeout(r, 2500));
+    return mojangJoinServerOnce(opts);
+  }
+}
+
+function mojangJoinServerOnce({
+  accessToken,
+  profileId,
+  serverIdHash,
+  timeoutMs = 15000,
+}) {
+  return new Promise((resolve, reject) => {
+    if (!accessToken || !profileId) {
+      return reject(new Error("bot has no Microsoft session yet"));
+    }
+    const body = JSON.stringify({
+      accessToken,
+      selectedProfile: String(profileId).replace(/-/g, ""),
+      serverId: serverIdHash,
+    });
+    const req = https.request(
+      MOJANG_JOIN_URL,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+          "User-Agent": USER_AGENT,
+        },
+        timeout: timeoutMs,
+      },
+      (res) => {
+        let text = "";
+        res.on("data", (c) => (text += c));
+        res.on("end", () => {
+          if (res.statusCode === 204 || res.statusCode === 200)
+            return resolve();
+          const detail = /^\s*</.test(text) ? "" : ` ${text.slice(0, 160)}`;
+          reject(
+            new Error(`Mojang session server HTTP ${res.statusCode}${detail}`),
+          );
+        });
+      },
+    );
+    req.on("timeout", () =>
+      req.destroy(new Error("Mojang session server timed out")),
+    );
+    req.on("error", reject);
+    req.end(body);
+  });
+}
+
 function stopAllBridges() {
   for (const bridge of Array.from(activeBridges)) {
     try {
@@ -441,4 +620,7 @@ module.exports = {
   ensureViaProxyJar,
   startBridge,
   stopAllBridges,
+  mojangJoinServer,
+  startAuthEndpoint,
+  AUTH_PLUGIN_JAR,
 };

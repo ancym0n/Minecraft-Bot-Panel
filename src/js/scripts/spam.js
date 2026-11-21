@@ -49,6 +49,8 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
     getOption("delay", info.name),
     getOption("repeat", info.name),
   ]);
+  const signal = scriptRepeater.signal;
+  if (signal?.aborted) return;
 
   const spamMessage = String(rawMessage || "").trim();
   if (!spamMessage) {
@@ -70,7 +72,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   let totalMessageCount = 0;
 
   function spam() {
-    if (!bot || typeof bot.chat !== "function") return;
+    if (signal?.aborted || !bot || typeof bot.chat !== "function") return;
     const formattedMessage = antiKickStatus
       ? `${spamMessage} | ${antiKickString()}`
       : spamMessage;
@@ -81,7 +83,7 @@ async function script(bot, log, clearLog, getOption, scriptRepeater) {
   }
 
   spam();
-  if (repeat === "on") {
+  if (!signal?.aborted && repeat === "on") {
     await scriptRepeater(spam, realDelay);
   }
 }

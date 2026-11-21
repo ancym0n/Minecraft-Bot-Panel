@@ -387,3 +387,101 @@ test("NPC and Anti-Cheat FakePlayer detector filters NPCs/self while keeping rea
   assert.equal(isRealPlayerName(bot, "MyBot"), false);
   assert.equal(isRealPlayerName(bot, "§e[NPC] Guide"), false);
 });
+
+test("attachViaVersionAdapter answers configuration cookie requests like vanilla and records pre-spawn packets", () => {
+  const bot = new EventEmitter();
+  const client = new EventEmitter();
+  const written = [];
+  client.state = "configuration";
+  client.version = "1.21.4";
+  client.write = (name, params) => written.push({ name, params });
+  bot._client = client;
+  bot.registry = require("minecraft-data")("1.21.4");
+  attachViaVersionAdapter(bot, { log: () => {} });
+
+  client.emit("packet", {}, { state: "configuration", name: "select_known_packs" });
+  client.emit("cookie_request", { cookie: "velocity:forwarding" });
+  assert.deepEqual(written.at(-1), {
+    name: "cookie_response",
+    params: { key: "velocity:forwarding", value: undefined },
+  });
+  assert.match(bot._mcbpViaLastConfigPackets, /configuration: select_known_packs/);
+  client.emit("end");
+});
+
+test("ViaProxy online-mode auth endpoint: secret required, joins with the hash, reports failures; plugin jar ships", async () => {
+  const fs = require("fs");
+  const { startAuthEndpoint, AUTH_PLUGIN_JAR } = require("../src/js/viaProxyBridge");
+  assert.ok(fs.statSync(AUTH_PLUGIN_JAR).size > 1000, "prebuilt ViaProxy plugin jar is present");
+  const joined = [];
+  let fail = false;
+  const { server, secret, url } = await startAuthEndpoint(async (hash) => {
+    if (fail) throw new Error("Mojang session server HTTP 429");
+    joined.push(hash);
+  });
+  const post = (body, sec) =>
+    fetch(url, { method: "POST", body, headers: { "X-MCBP-Secret": sec } }).then((r) => r.status);
+  try {
+    assert.ok(url.startsWith("http://127.0.0.1:"));
+    assert.equal(await post("-302a97c1f", "wrong"), 403);
+    assert.equal(await post("not a hash!", secret), 400);
+    assert.equal(await post("-302a97c1f", secret), 204);
+    assert.deepEqual(joined, ["-302a97c1f"]);
+    fail = true;
+    assert.equal(await post("4f1a", secret), 502);
+  } finally {
+    server.close();
+  }
+});
+
+test("Dig prediction: sequence numbers are sent and a break the server never confirmed is rolled back on ack", async () => {
+  const { EventEmitter } = require("events");
+  const { Vec3 } = require("vec3");
+  const { attachDigPrediction, VANILLA_PLAYER_HALF_WIDTH } = require("../src/js/viaAdapter");
+  assert.ok(VANILLA_PLAYER_HALF_WIDTH > 0.3000000119 && VANILLA_PLAYER_HALF_WIDTH < 0.3000003);
+  const mcData = require("minecraft-data")("26.1");
+  const stone = mcData.blocksByName.stone.defaultState;
+  const states = new Map([["1,64,1", stone], ["2,64,1", stone]]);
+  const bot = new EventEmitter();
+  bot.registry = mcData;
+  bot.entity = { position: new Vec3(0, 65, 0) };
+  bot.blockAt = (p) => ({ position: p, stateId: states.get(`${p.x},${p.y},${p.z}`) ?? 0, name: (states.get(`${p.x},${p.y},${p.z}`) ?? 0) ? "stone" : "air" });
+  bot._updateBlockState = (p, id) => {
+    const old = bot.blockAt(p);
+    states.set(`${p.x},${p.y},${p.z}`, id);
+    bot.emit("blockUpdate", old, bot.blockAt(p));
+  };
+  const client = new EventEmitter();
+  const sent = [];
+  client.write = (name, params) => sent.push({ name, params });
+  bot._client = client;
+  attachDigPrediction(bot);
+
+  // Mineflayer: start, finish, then predict air locally.
+  const a = new Vec3(1, 64, 1);
+  client.write("block_dig", { status: 0, location: a, face: 1 });
+  client.write("block_dig", { status: 2, location: a, face: 1 });
+  bot._updateBlockState(a, 0);
+  assert.deepEqual(sent.map((s) => s.params.sequence), [1, 2]);
+  await new Promise((r) => setImmediate(r));
+  client.emit("acknowledge_player_digging", { sequenceId: 2 });
+  assert.equal(states.get("1,64,1"), stone, "server never removed it: restored");
+
+  // Confirmed break: the server's update (air) arrives before the ack.
+  const b = new Vec3(2, 64, 1);
+  client.write("block_dig", { status: 2, location: b, face: 1 });
+  bot._updateBlockState(b, 0);
+  await new Promise((r) => setImmediate(r));
+  client.emit("block_change", { location: { x: 2, y: 64, z: 1 }, type: 0 }); // server: air
+  client.emit("acknowledge_player_digging", { sequenceId: 3 });
+  assert.equal(states.get("2,64,1"), 0, "confirmed break stays air");
+
+  // A multi_block_change confirming air also counts.
+  const c = new Vec3(1, 64, 1);
+  client.write("block_dig", { status: 2, location: c, face: 1 });
+  bot._updateBlockState(c, 0);
+  await new Promise((r) => setImmediate(r));
+  client.emit("multi_block_change", { chunkCoordinates: { x: 0, y: 4, z: 0 }, records: [(0 << 12) | (1 << 8) | (1 << 4) | 0] });
+  client.emit("acknowledge_player_digging", { sequenceId: 4 });
+  assert.equal(states.get("1,64,1"), 0);
+});

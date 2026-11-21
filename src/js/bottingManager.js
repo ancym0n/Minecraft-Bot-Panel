@@ -16,6 +16,7 @@ const {
 } = require("./botUtils");
 const { proxyManager } = require("./proxyManager");
 const { aiBrain } = require("./aiBrain");
+const { installChatGuard } = require("./chatGuard");
 
 class BottingManager {
   constructor() {
@@ -160,7 +161,10 @@ class BottingManager {
     const cleanHost = String(host || "localhost").trim();
     const cleanPort = Number(port) || 25565;
     const botCount = Math.max(1, Math.min(25, parseInt(count, 10) || 1));
-    const staggerMs = Math.max(250, Math.min(15000, parseInt(delayMs, 10) || 1200));
+    const staggerMs = Math.max(
+      250,
+      Math.min(15000, parseInt(delayMs, 10) || 1200),
+    );
 
     // Support comma-separated custom names or prefix_N numbering
     const rawNames = String(prefix || "MCBP_Bot")
@@ -197,8 +201,13 @@ class BottingManager {
     this.emitUpdate();
 
     try {
-      if (proxyMode !== "direct" && proxyManager.getWorkingProxies().length === 0) {
-        log(`Botting: Preparing & testing proxies before launching ${names.length} bot(s)...`);
+      if (
+        proxyMode !== "direct" &&
+        proxyManager.getWorkingProxies().length === 0
+      ) {
+        log(
+          `Botting: Preparing & testing proxies before launching ${names.length} bot(s)...`,
+        );
         if (proxyManager.proxies.size === 0) {
           await proxyManager.fetchFreeProxies({ maxCount: 80 }).catch(() => {});
         }
@@ -333,6 +342,10 @@ class BottingManager {
     }
 
     entry.bot = instance;
+    installChatGuard(instance, {
+      log: (t) => log(`Botting (${username}): ${t}`),
+      serverKey: `${host}:${port}`,
+    });
     instance.loadPlugin(pathfinder);
     instance.mcData = mcData;
     instance.Movements = Movements;
@@ -487,7 +500,9 @@ class BottingManager {
     const list = botId
       ? [this.bots.get(botId)].filter(Boolean)
       : Array.from(this.bots.values());
-    const active = list.filter((e) => e.bot && e.bot.entity && e.state === "connected");
+    const active = list.filter(
+      (e) => e.bot && e.bot.entity && e.state === "connected",
+    );
     if (active.length === 0 && action !== "reconnect") {
       return { ok: false, error: "No connected swarm bots to run action" };
     }
@@ -556,9 +571,13 @@ class BottingManager {
           // Spread in a circle around the target player
           const angle = (2 * Math.PI * idx) / Math.max(1, active.length);
           const radius = 2.2;
-          const tx = Math.floor(playerObj.entity.position.x + Math.cos(angle) * radius);
+          const tx = Math.floor(
+            playerObj.entity.position.x + Math.cos(angle) * radius,
+          );
           const ty = Math.floor(playerObj.entity.position.y);
-          const tz = Math.floor(playerObj.entity.position.z + Math.sin(angle) * radius);
+          const tz = Math.floor(
+            playerObj.entity.position.z + Math.sin(angle) * radius,
+          );
           b.pathfinder?.setGoal(new goals.GoalNear(tx, ty, tz, 1), false);
         }
       });
@@ -590,7 +609,9 @@ class BottingManager {
         entry.antiAfk = turnOn;
       });
       this.ensureTickLoop();
-      log(`Botting: Anti-AFK ${turnOn ? "ON" : "OFF"} for ${active.length} bot(s)`);
+      log(
+        `Botting: Anti-AFK ${turnOn ? "ON" : "OFF"} for ${active.length} bot(s)`,
+      );
       this.emitUpdate();
       return { ok: true, status: this.getStatus() };
     }
